@@ -79,3 +79,56 @@ def test_jpeg_upload_is_served_as_jpeg(tmp_path, monkeypatch):
     with TestClient(app) as client:
         job = client.post("/api/jobs", files={"file": ("a.jpg", buffer.getvalue(), "image/jpeg")}).json()["jobId"]
         assert client.get(f"/api/jobs/{job}/source.img").headers["content-type"] == "image/jpeg"
+
+
+# --------------------------------------------------------------- بندانگشتی‌ها
+def test_thumbnail_limits_longest_side(tmp_path):
+    tall = tmp_path / "tall.png"
+    Image.new("RGB", (1200, 15000), "white").save(tall)
+    image = preview.thumbnail(tall)
+    assert image.height == preview.THUMB_MAX_SIDE
+    assert image.width == round(1200 * preview.THUMB_MAX_SIDE / 15000)
+
+
+def test_thumbnail_keeps_small_images_at_original_size(tmp_path):
+    small = tmp_path / "small.png"
+    Image.new("RGB", (200, 100), "white").save(small)
+    assert preview.thumbnail(small).size == (200, 100)
+
+
+def test_thumbnail_handles_transparent_png(tmp_path):
+    page = tmp_path / "alpha.png"
+    Image.new("RGBA", (900, 400), (0, 0, 0, 0)).save(page)
+    image = preview.thumbnail(page)
+    assert image.mode == "RGB" and image.size == (480, 213)
+
+
+def test_thumb_endpoint_for_source_and_render(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(ocr, "recognize", lambda path: [_line()])
+    buffer = BytesIO()
+    Image.new("RGB", (1600, 900), "white").save(buffer, format="PNG")
+    with TestClient(app) as client:
+        job = client.post("/api/jobs", files={"file": ("a.png", buffer.getvalue(), "image/png")}).json()["jobId"]
+        thumb = client.get(f"/api/jobs/{job}/thumb/source")
+        assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/png"
+        assert Image.open(BytesIO(thumb.content)).size == (480, 270)
+        # کش: بایت‌های یکسان در درخواست دوم.
+        assert client.get(f"/api/jobs/{job}/thumb/source").content == thumb.content
+        # پیش‌نمایش‌های ساخته‌نشده ۴۰۴ می‌دهند.
+        assert client.get(f"/api/jobs/{job}/thumb/render").status_code == 404
+        assert client.get(f"/api/jobs/{job}/thumb/bogus").status_code == 404
+        assert client.get("/api/jobs/" + "a" * 32 + "/thumb/source").status_code == 404
+
+
+def test_thumb_cache_invalidates_when_preview_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(ocr, "recognize", lambda path: [_line()])
+    with TestClient(app) as client:
+        job = client.post("/api/jobs", files={"file": ("a.png", _png(), "image/png")}).json()["jobId"]
+        client.post(f"/api/jobs/{job}/ocr")
+        first = client.get(f"/api/jobs/{job}/thumb/ocr").content
+        monkeypatch.setattr(ocr, "recognize", lambda path: [_line([[60, 40], [90, 40], [90, 70], [60, 70]])])
+        client.post(f"/api/jobs/{job}/ocr")
+        assert client.get(f"/api/jobs/{job}/ocr-preview").status_code == 200
+        assert client.get(f"/api/jobs/{job}/thumb/ocr").content != first

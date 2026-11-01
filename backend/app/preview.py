@@ -72,3 +72,18 @@ def overlay(path: Path, lines: list) -> Image.Image:
         draw.rectangle(badge, fill=BADGE_COLOR)
         draw.text((badge[0] + pad, badge[1] + pad - left), label, fill=BADGE_TEXT_COLOR, font=badge_font)
     return image
+
+
+# ------------------------------------------------------------------ thumbnail
+THUMB_MAX_SIDE = 480
+
+
+def thumbnail(path: Path, max_side: int = THUMB_MAX_SIDE) -> Image.Image:
+    """نسخهٔ کوچک تصویر برای نمایش در فهرست؛ ابعاد بزرگ‌ترین ضلع محدود می‌شود."""
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGB") if source.mode not in ("RGB", "L") else source.copy()
+    except (OSError, ValueError) as exc:
+        raise PreviewError("خواندن تصویر برای ساخت بندانگشتی ناموفق بود.") from exc
+    image.thumbnail((max_side, max_side), Image.LANCZOS)
+    return image
