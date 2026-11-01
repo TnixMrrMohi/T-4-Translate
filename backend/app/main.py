@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+from datetime import datetime, timezone
 import warnings
 import json
 import os
@@ -69,7 +70,8 @@ async def _read_image(file: UploadFile, save: bool = False) -> dict:
                     temp.seek(0)
                     with (workspace / "source.img").open("wb") as output:
                         shutil.copyfileobj(temp, output)
-                    info.update({"jobId": job_id, "status": "uploaded"})
+                    info.update({"jobId": job_id, "status": "uploaded",
+                                 "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds")})
                     (workspace / "state.json.tmp").write_text(json.dumps(info), encoding="utf-8")
                     os.replace(workspace / "state.json.tmp", workspace / "state.json")
                 except Exception:
@@ -99,6 +101,48 @@ def get_job(job_id: str) -> dict:
         return json.loads((root / job_id / "state.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise HTTPException(404, "کار پیدا نشد.") from None
+
+
+MAX_JOB_LIST = 50
+
+
+def jobs_root() -> Path:
+    return Path(os.environ.get("T4_DATA_DIR", str(Path.home() / ".t4-translate"))) / "jobs"
+
+
+@app.get("/api/jobs")
+def list_jobs(limit: int = 20) -> dict:
+    """کارهای ذخیره‌شده روی همین سیستم، تازه‌ترین اول؛ برای بازکردن کار قبلی در رابط."""
+    limit = max(1, min(MAX_JOB_LIST, limit))
+    root = jobs_root()
+    if not root.is_dir():
+        return {"items": []}
+    items = []
+    for workspace in root.iterdir():
+        if not workspace.is_dir() or len(workspace.name) != 32:
+            continue
+        try:
+            state = json.loads((workspace / "state.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(state, dict) or state.get("jobId") != workspace.name:
+            continue
+        created = state.get("createdAt")
+        sort_key = 0.0
+        try:
+            sort_key = datetime.fromisoformat(created).timestamp()
+        except (TypeError, ValueError):
+            try:
+                sort_key = (workspace / "state.json").stat().st_mtime
+                created = datetime.fromtimestamp(sort_key, timezone.utc).isoformat(timespec="seconds")
+            except OSError:
+                continue
+        items.append({"jobId": workspace.name, "createdAt": created,
+                      "width": state.get("width"), "height": state.get("height"),
+                      "format": state.get("format"), "sizeBytes": state.get("sizeBytes"),
+                      "status": state.get("status", "uploaded"), "_sort": sort_key})
+    items.sort(key=lambda item: item.pop("_sort"), reverse=True)
+    return {"items": items[:limit]}
 
 
 async def run_native_safely(func, *args):

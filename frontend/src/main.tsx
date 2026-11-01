@@ -4,11 +4,13 @@ import './style.css';
 
 type Source = {revision: string; items: {number: number; text: string}[]};
 type Job = {jobId: string; width: number; height: number; format: string; status: string};
+type JobSummary = Job & {createdAt: string; sizeBytes?: number};
 const key = 't4-last-job';
 
 function App() {
   const [status, setStatus] = useState('در حال بررسی ارتباط با سرویس…');
   const [job, setJob] = useState<Job | null>(null);
+  const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [source, setSource] = useState<Source | null>(null);
@@ -31,7 +33,30 @@ function App() {
     setMessage('برنامه ریست شد. عکس جدید را انتخاب کنید.');
     localStorage.removeItem(key);
     uploadStarted.current = false;
+    void loadJobs();
   };
+
+  async function loadJobs(signal?: AbortSignal) {
+    try {
+      const response = await fetch('/api/jobs?limit=20', {signal});
+      if (!response.ok) return;
+      const data = await response.json();
+      if (Array.isArray(data.items)) setJobs(data.items);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+    }
+  }
+
+  function openJob(item: JobSummary) {
+    if (busy || loadingData) return;
+    if (item.jobId === job?.jobId) return;
+    if (translation && !window.confirm('ترجمهٔ فعلی ذخیره نشده ممکن است از دست برود. کار قبلی باز شود؟')) return;
+    uploadStarted.current = false;
+    localStorage.setItem(key, item.jobId);
+    setJob({jobId: item.jobId, width: item.width, height: item.height, format: item.format, status: item.status});
+    setPreviewUrl(`/api/jobs/${item.jobId}/source.img?v=${Date.now()}`);
+    setMessage('کار قبلی از حافظهٔ همین سیستم باز شد.');
+  }
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -66,6 +91,7 @@ function App() {
         }
       }).catch(e => {if (e.name !== 'AbortError') setMessage('بازیابی آخرین تصویر ممکن نشد.');});
     }
+    void loadJobs(controller.signal);
     return () => {controller.abort(); currentRequest.current?.abort();};
   }, []);
 
@@ -73,7 +99,7 @@ function App() {
     if (!job) return;
     const controller = new AbortController();
     setLoadingData(true);
-    setSource(null); setTranslation(''); setWarnings('');
+    setSource(null); setTranslation(''); setWarnings(''); setOcrPreviewUrl(''); setRenderUrl(''); setCleanUrl('');
     Promise.all([
       fetch(`/api/jobs/${job.jobId}/translation-source`, {signal: controller.signal}),
       fetch(`/api/jobs/${job.jobId}/translations`, {signal: controller.signal}),
@@ -168,6 +194,7 @@ function App() {
       localStorage.setItem(key, result.jobId); setJob(result); setSource(null); setTranslation(''); setWarnings(''); setCleanUrl(''); setRenderUrl(''); setPreviewUrl(''); setOcrPreviewUrl('');
       setPreviewUrl(`/api/jobs/${result.jobId}/source.img?v=${Date.now()}`);
       setMessage('تصویر انتخاب شد. پردازش و ترجمه آماده‌اند.');
+      void loadJobs();
     } catch (error) {
       if (error instanceof Error && error.name !== 'AbortError') setMessage(error.message);
     } finally {setBusy(false); currentRequest.current = null;}
@@ -237,6 +264,31 @@ function App() {
             <img className="result-image" src={previewUrl} alt="پیش‌نمایش تصویر اصلی" />
             <figcaption style={{color: '#9bf3cc', fontWeight: 'bold', textAlign: 'center', marginTop: '8px'}}>مرحله ۱: پیش‌نمایش عکس اصلی</figcaption>
           </figure>
+        )}
+
+        {jobs.length > 0 && (
+          <section aria-label="کارهای قبلی" style={{marginTop: '24px', width: '100%', maxWidth: '800px', textAlign: 'right'}}>
+            <h3 style={{margin: '0 0 8px 0', color: '#eef9f4', fontSize: '16px'}}>کارهای قبلی روی این سیستم</h3>
+            <ul style={{listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '6px'}}>
+              {jobs.map(item => (
+                <li key={item.jobId} style={{display: 'flex', alignItems: 'center', gap: '10px', justifyContent: 'space-between', background: '#0b171d', border: `1px solid ${item.jobId === job?.jobId ? '#00ffcc' : '#ffffff20'}`, borderRadius: '10px', padding: '8px 12px'}}>
+                  <span style={{color: '#eef9f4', fontSize: '13px'}}>
+                    {new Intl.DateTimeFormat('fa-IR', {dateStyle: 'short', timeStyle: 'short'}).format(new Date(item.createdAt))}
+                    {' · '}
+                    <span dir="ltr">{item.width}×{item.height} {item.format}</span>
+                  </span>
+                  <button
+                    className="ocr"
+                    disabled={busy || loadingData || item.jobId === job?.jobId}
+                    onClick={() => openJob(item)}
+                    style={{padding: '5px 12px', fontSize: '12px'}}
+                  >
+                    {item.jobId === job?.jobId ? 'باز است' : 'بازکردن'}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
 
         {job && (
