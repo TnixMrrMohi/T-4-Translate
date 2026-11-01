@@ -299,6 +299,12 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     expect(screen.queryByRole('button', {name: /×/})).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
 
+    // تصاویر مقایسه از نسخهٔ نمایشی با عرض کافی می‌آیند، نه بندانگشتی ۴۸۰ پیکسلی.
+    const middle = screen.getAllByRole('img').map(img => img.getAttribute('src') ?? '');
+    expect(middle.filter(src => src.includes('/display/')).length).toBeGreaterThanOrEqual(2);
+    expect(middle.some(src => /\/thumb\//.test(src))).toBe(false);
+    expect(middle.some(src => src.includes('width=1000'))).toBe(true);
+
     // بازگشت به حالت کنار هم.
     await user.click(screen.getByRole('button', {name: 'کنار هم'}));
     expect(screen.getByRole('heading', {name: 'نسخهٔ ورودی'})).toBeInTheDocument();

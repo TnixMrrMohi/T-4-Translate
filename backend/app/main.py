@@ -521,6 +521,58 @@ async def get_thumb(job_id: str, kind: str):
                         headers={"Cache-Control": "no-store"})
 
 
+DISPLAY_MIN_WIDTH = 240
+DISPLAY_MAX_WIDTH = 2000
+
+
+def _write_display(source: Path, width: int, image_path: Path, meta_path: Path) -> None:
+    """نسخهٔ نمایشی با کیفیت (WebP) در نخ کارگر ساخته و اتمی ذخیره می‌شود."""
+    image = preview.scaled_width(source, width)
+    tmp = image_path.with_name(image_path.name + ".tmp")
+    try:
+        image.save(tmp, format="WEBP", quality=92, method=4)
+        os.replace(tmp, image_path)
+    finally:
+        image.close()
+        if tmp.exists():
+            tmp.unlink()
+    stat = source.stat()
+    meta_tmp = meta_path.with_name(meta_path.name + ".tmp")
+    meta_tmp.write_text(json.dumps({"size": stat.st_size, "mtimeNs": stat.st_mtime_ns,
+                                    "width": width}), encoding="utf-8")
+    os.replace(meta_tmp, meta_path)
+
+
+@app.get("/api/jobs/{job_id}/display/{kind}")
+async def get_display(job_id: str, kind: str, width: int = 1000):
+    """نسخهٔ نمایشی با عرض مشخص و کیفیت بالا؛ برای مقایسهٔ پرده‌ای و نمایش خوانا."""
+    if kind not in THUMB_SOURCES:
+        raise HTTPException(404, "نوع پیش‌نمایش ناشناخته است.")
+    width = max(DISPLAY_MIN_WIDTH, min(DISPLAY_MAX_WIDTH, width))
+    workspace = workspace_for(job_id)
+    source = workspace / THUMB_SOURCES[kind]
+    if not source.is_file():
+        raise HTTPException(404, "پیش‌نمایش موجود نیست.")
+    image_path = workspace / f"display-{kind}-{width}.webp"
+    meta_path = workspace / f"display-{kind}-{width}.json"
+    stat = source.stat()
+    stamp = {"size": stat.st_size, "mtimeNs": stat.st_mtime_ns, "width": width}
+    try:
+        cached = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        cached = None
+    if cached != stamp or not image_path.is_file():
+        try:
+            await run_native_safely(_write_display, source, width, image_path, meta_path)
+        except preview.PreviewError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except Exception:
+            raise HTTPException(500, "ساخت نسخهٔ نمایشی ناموفق بود.") from None
+    # اعتبار فایل با size/mtime مبدأ بررسی می‌شود؛ کش کوتاه مرورگر از ساخت مکرر جلوگیری می‌کند.
+    return FileResponse(image_path, media_type="image/webp",
+                        headers={"Cache-Control": "private, max-age=60"})
+
+
 # Only enabled by the packaged desktop launcher; development uses Vite separately.
 if os.environ.get("T4_DESKTOP") == "1":
     app.add_middleware(DesktopOriginGuard)

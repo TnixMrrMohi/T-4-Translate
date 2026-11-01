@@ -26,11 +26,11 @@ export function CompareSlider({jobId, width, height, format, sourceVersion, rend
   const outputLabel = outputKind === 'render' ? 'ترجمه‌شده' : 'پاک‌شده';
   const sourceExt = format === 'JPEG' ? 'jpg' : format.toLowerCase();
 
-  // صفحهٔ معمولی با تصویر کامل (کیفیت اصلی) نمایش داده می‌شود؛ صفحهٔ بسیار بلند
-  // برای جلوگیری از مصرف حافظه از بندانگشتی استفاده می‌کند.
-  const sharp = aspect <= 1.8;
-  const inputUrl = `/api/jobs/${jobId}/${sharp ? 'source.img' : 'thumb/source'}?v=${sourceVersion}`;
-  const outputUrl = `/api/jobs/${jobId}/${sharp ? outputKind : `thumb/${outputKind}`}?v=${outputVersion}`;
+  // نسخهٔ نمایشی با عرض کافی (۱۰۰۰ پیکسل) از بک‌اند گرفته می‌شود تا متن حتی در
+  // صفحهٔ باریک و بلند وب‌تون خوانا باشد؛ بندانگشتی ۴۸۰ پیکسلی برای مقایسه تار است.
+  const displayQuery = `width=1000`;
+  const inputUrl = `/api/jobs/${jobId}/display/source?${displayQuery}`;
+  const outputUrl = `/api/jobs/${jobId}/display/${outputKind}?${displayQuery}`;
 
   const updateFromPointer = (clientX: number) => {
     const rect = trackRef.current?.getBoundingClientRect();
@@ -65,10 +65,9 @@ export function CompareSlider({jobId, width, height, format, sourceVersion, rend
     else if (event.key === 'End') {event.preventDefault(); setPosition(100);}
   };
 
-  // صفحهٔ بلند با عرض کامل و پیمایش عمودی؛ صفحهٔ معمولی از ارتفاع کارت پر می‌شود.
-  const wrapperStyle: React.CSSProperties = aspect > 1.8
-    ? {width: '100%', aspectRatio: `${width} / ${height}`}
-    : {height: '100%', aspectRatio: `${width} / ${height}`};
+  // همیشه با عرض کامل کارت و نسبت ابعاد واقعی صفحه؛ صفحهٔ بلند داخل کارت پیمایش عمودی می‌شود
+  // تا عرض و در نتیجه خوانایی متن حفظ شود.
+  const wrapperStyle: React.CSSProperties = {width: '100%', aspectRatio: `${width} / ${height}`};
 
   // لایهٔ ورودی بریده می‌شود؛ باقی تصویر خروجی را نشان می‌دهد.
   const inputClip = `inset(0 ${100 - position}% 0 0)`;
@@ -123,12 +122,12 @@ export function CompareSlider({jobId, width, height, format, sourceVersion, rend
         <div className="compare">
           <div className="compare-side">
             <h3>نسخهٔ ورودی</h3>
-            <img className="cmp-side-img" src={`/api/jobs/${jobId}/thumb/source?v=${sourceVersion}`} alt="نسخهٔ ورودی (تصویر اصلی)" />
+            <img className="cmp-side-img" src={`/api/jobs/${jobId}/display/source?${displayQuery}`} alt="نسخهٔ ورودی (تصویر اصلی)" />
             <a className="cmp-download" href={`/api/jobs/${jobId}/source.img?v=${sourceVersion}`} download={`t4-${jobId}-source.${sourceExt}`}>دانلود ورودی</a>
           </div>
           <div className="compare-side">
             <h3>نسخهٔ خروجی</h3>
-            <img className="cmp-side-img" src={`/api/jobs/${jobId}/thumb/${outputKind}?v=${outputVersion}`} alt="نسخهٔ خروجی (ترجمهٔ فارسی)" />
+            <img className="cmp-side-img" src={`/api/jobs/${jobId}/display/${outputKind}?${displayQuery}`} alt="نسخهٔ خروجی (ترجمهٔ فارسی)" />
             <a className="cmp-download" href={`/api/jobs/${jobId}/${outputKind}?v=${outputVersion}`} download={`t4-${jobId}-${outputKind}.png`}>دانلود خروجی</a>
           </div>
         </div>

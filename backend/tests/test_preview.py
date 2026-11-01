@@ -141,3 +141,44 @@ def test_thumb_cache_invalidates_when_preview_changes(tmp_path, monkeypatch):
         client.post(f"/api/jobs/{job}/ocr")
         assert client.get(f"/api/jobs/{job}/ocr-preview").status_code == 200
         assert client.get(f"/api/jobs/{job}/thumb/ocr").content != first
+
+
+# --------------------------------------------------------------- نسخهٔ نمایشی
+def test_scaled_width_keeps_width_and_proportions(tmp_path):
+    page = tmp_path / "tall.png"
+    Image.new("RGB", (690, 5880), "white").save(page)
+    image = preview.scaled_width(page, 1000)
+    assert image.width == 1000
+    assert image.height == round(5880 * 1000 / 690)
+
+
+def test_scaled_width_caps_huge_pages(tmp_path):
+    page = tmp_path / "huge.png"
+    Image.new("RGB", (1500, 15000), "white").save(page)
+    image = preview.scaled_width(page, 2000)
+    assert image.width * image.height <= preview.MAX_DISPLAY_PIXELS
+    assert image.height > image.width  # همچنان صفحهٔ بلند است
+
+
+def test_scaled_width_keeps_native_size_when_equal(tmp_path):
+    page = tmp_path / "small.png"
+    Image.new("RGB", (400, 600), "white").save(page)
+    assert preview.scaled_width(page, 400).size == (400, 600)
+
+
+def test_display_endpoint_returns_webp_with_requested_width(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    buffer = BytesIO()
+    Image.new("RGB", (690, 2760), "white").save(buffer, format="PNG")
+    with TestClient(app) as client:
+        job = client.post("/api/jobs", files={"file": ("a.png", buffer.getvalue(), "image/png")}).json()["jobId"]
+        response = client.get(f"/api/jobs/{job}/display/source", params={"width": 800})
+        assert response.status_code == 200 and response.headers["content-type"] == "image/webp"
+        image = Image.open(BytesIO(response.content))
+        assert image.width == 800 and image.height == 3200
+        # کش: درخواست دوم همان بایت‌ها.
+        assert client.get(f"/api/jobs/{job}/display/source", params={"width": 800}).content == response.content
+        # عرض خارج از محدوده، محدود می‌شود.
+        assert Image.open(BytesIO(client.get(f"/api/jobs/{job}/display/source", params={"width": 50}).content)).width == 240
+        assert client.get(f"/api/jobs/{job}/display/render").status_code == 404
+        assert client.get(f"/api/jobs/{job}/display/bogus").status_code == 404

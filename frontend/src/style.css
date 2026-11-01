@@ -136,9 +136,12 @@
 .cmp-group button+button{border-inline-start:1px solid #00ffcc33}
 .cmp-group button.is-active{background:#0e2426;color:#00ffcc}
 .cmp-group button:hover:not(.is-active){color:#eef9f4}
-.cmp-track{position:relative;display:flex;justify-content:center;align-items:flex-start;height:clamp(300px,62vh,700px);overflow:auto;background:#050505;border:1px solid #00ffcc33;border-radius:12px;cursor:ew-resize;touch-action:none;padding:0}
+.cmp-track{position:relative;display:block;height:clamp(300px,62vh,700px);overflow-y:auto;overflow-x:hidden;background:#050505;border:1px solid #00ffcc33;border-radius:12px;cursor:ew-resize;touch-action:pan-y;padding:0;scrollbar-width:thin;scrollbar-color:#00ffcc66 #0a0f12}
+.cmp-track::-webkit-scrollbar{width:8px;height:8px}
+.cmp-track::-webkit-scrollbar-thumb{background:#00ffcc55;border-radius:8px}
+.cmp-track::-webkit-scrollbar-track{background:#0a0f12}
 .cmp-track.is-dragging{cursor:grabbing}
-.cmp-wrap{position:relative;margin:auto;flex:0 0 auto}
+.cmp-wrap{position:relative;margin:0;width:100%}
 .cmp-img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;user-select:none;-webkit-user-drag:none;display:block}
 .cmp-input{z-index:2}
 .cmp-tag{position:absolute;z-index:4;background:#000000c4;color:#eef9f4;font-size:11.5px;padding:3px 8px;border-radius:7px;pointer-events:none;white-space:nowrap}

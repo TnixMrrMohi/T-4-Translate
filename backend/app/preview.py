@@ -87,3 +87,32 @@ def thumbnail(path: Path, max_side: int = THUMB_MAX_SIDE) -> Image.Image:
         raise PreviewError("خواندن تصویر برای ساخت بندانگشتی ناموفق بود.") from exc
     image.thumbnail((max_side, max_side), Image.LANCZOS)
     return image
+
+
+# ------------------------------------------------------------------ display
+MAX_DISPLAY_PIXELS = 24_000_000
+
+
+def scaled_width(path: Path, width: int, max_pixels: int = MAX_DISPLAY_PIXELS) -> Image.Image:
+    """نسخهٔ نمایشی با عرض مشخص (برای مقایسهٔ خوانا)؛ ارتفاع متناسب و سقف پیکسل دارد.
+
+    برخلاف thumbnail که بزرگ‌ترین ضلع را محدود می‌کند، اینجا عرض مبنا است تا صفحهٔ
+    بلند وب‌تون به یک نوار باریک و تار تبدیل نشود.
+    """
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGB") if source.mode not in ("RGB", "L") else source.copy()
+    except (OSError, ValueError) as exc:
+        raise PreviewError("خواندن تصویر برای نمایش ناموفق بود.") from exc
+    width = max(1, int(width))
+    height = max(1, round(image.height * width / image.width))
+    if width * height > max_pixels:
+        # برای تصاویر بسیار بلند، عرض کم می‌شود تا حافظه و حجم کنترل شود.
+        scale = math.sqrt(max_pixels / (image.width * image.height))
+        width = max(1, round(image.width * scale))
+        height = max(1, round(image.height * scale))
+    if (width, height) == image.size:
+        return image
+    resized = image.resize((width, height), Image.LANCZOS)
+    image.close()
+    return resized
