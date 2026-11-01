@@ -23,6 +23,7 @@ function mockApi(options: {
   translation?: string;
   clean?: boolean;
   render?: boolean;
+  bubbles?: unknown;
 } = {}) {
   const calls: {url: string; method: string}[] = [];
   let ocrDone = false;
@@ -53,6 +54,9 @@ function mockApi(options: {
       const ready = Boolean(options.source) && (!options.sourceAfterOcr || ocrDone);
       return json({jobId: JOB_ID, source: ready, ocr: ready, translations: Boolean(options.translation),
                    stale: null, clean: Boolean(options.clean), render: Boolean(options.render)});
+    }
+    if (url.endsWith('/bubbles')) {
+      return options.bubbles ? json(options.bubbles) : json({detail: 'نیست'}, 404);
     }
     if (url.includes('/translation-source')) {
       const ready = options.source && (!options.sourceAfterOcr || ocrDone);
@@ -356,5 +360,71 @@ describe('کپی متن و پرامپت در مرحلهٔ ترجمه', () => {
     await openTranslationStep();
     await userEvent.setup().click(screen.getByText('نمایش پرامپت همراه'));
     expect(await screen.findByText(/فقط ترجمه را برگردان/)).toBeInTheDocument();
+  });
+});
+
+describe('تشخیص نوع بالن‌ها در مرحلهٔ ترجمه', () => {
+  const source = {
+    revision: 'r'.repeat(64),
+    items: [{number: 1, text: 'Hello there'}, {number: 2, text: 'Second line'}],
+  };
+
+  const bubblesDoc = {
+    jobId: JOB_ID,
+    provider: 'region-growth-experimental',
+    revision: 'q'.repeat(64),
+    bubbles: [
+      {
+        id: 1, kind: 'speech', kindLabel: 'صحبت عادی', description: 'بالن ساده',
+        confidence: 0.68, reason: 'بیضی', bbox: [10, 20, 100, 80], lines: [1, 2],
+        fonts: ['Koodak Bold', 'Roya Bold'],
+        style: {bold: true, italic: false, stroke: 'none', shadow: false},
+      },
+      {
+        id: 2, kind: 'outside', kindLabel: 'متن بیرون بالن', description: 'بدون بالن',
+        confidence: 0.35, reason: 'بدون ناحیهٔ محصور', bbox: [], lines: [3],
+        fonts: ['Beirut'], style: {bold: false, italic: false, stroke: 'white', shadow: false},
+        variants: [{id: 'outside_whisper', label: 'زمزمه', fonts: ['Dast Nevis']}],
+      },
+    ],
+  };
+
+  async function openStep() {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source,
+      bubbles: bubblesDoc,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+    return user;
+  }
+
+  it('دسته، فونت پیشنهادی و خطوط هر بالن نمایش داده می‌شود', async () => {
+    await openStep();
+    expect(await screen.findByRole('heading', {name: 'نوع بالن‌ها'})).toBeInTheDocument();
+    expect(await screen.findByText('صحبت عادی')).toBeInTheDocument();
+    expect(screen.getByText('68٪ اطمینان')).toBeInTheDocument();
+    expect(screen.getByText(/فونت پیشنهادی: Koodak Bold، Roya Bold/)).toBeInTheDocument();
+    expect(screen.getByText('خطوط: 1، 2')).toBeInTheDocument();
+    // متن بیرون بالن، حالت‌های ممکن را نشان می‌دهد.
+    expect(screen.getByText('متن بیرون بالن')).toBeInTheDocument();
+    expect(screen.getByText(/حالت‌های ممکن: زمزمه/)).toBeInTheDocument();
+    // پیش‌نمایش تشخیص با تصویر بالن‌ها بارگذاری می‌شود.
+    expect(screen.getByAltText('پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام')).toBeInTheDocument();
+  });
+
+  it('اگر تشخیص بالن شکست بخورد، بقیهٔ مرحله کار می‌کند', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source,
+    });
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+    expect(screen.queryByRole('heading', {name: 'نوع بالن‌ها'})).toBeInTheDocument();
+    expect(await screen.findByRole('button', {name: 'کپی متن'})).toBeInTheDocument();
   });
 });

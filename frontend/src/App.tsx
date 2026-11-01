@@ -16,7 +16,24 @@ const STEPS = [
   {id: 5, title: 'مقایسه'},
 ];
 
-type PreviewKind = 'source' | 'ocr' | 'clean' | 'render';
+type PreviewKind = 'source' | 'ocr' | 'clean' | 'render' | 'bubble';
+
+/** یک بالن (یا گروه متن بیرون بالن) با دستهٔ تشخیص‌داده‌شده و فونت پیشنهادی. */
+type Bubble = {
+  id: number;
+  kind: string;
+  kindLabel: string;
+  description: string;
+  confidence: number;
+  reason: string;
+  bbox: number[];
+  lines: number[];
+  fonts: string[];
+  style: {bold: boolean; italic: boolean; stroke: string; shadow: boolean};
+  variants?: {id: string; label: string; fonts: string[]}[];
+};
+
+type BubbleDoc = {jobId: string; provider: string; bubbles: Bubble[]; revision: string};
 
 /** دستور ترجمه که همراه متن شماره‌گذاری‌شده کپی می‌شود. */
 const TRANSLATION_PROMPT = [
@@ -250,6 +267,10 @@ export function App() {
   const [renderVersion, setRenderVersion] = useState(0);
   const [sourceVersion, setSourceVersion] = useState(0);
   const [ocrVersion, setOcrVersion] = useState(0);
+  const [bubbles, setBubbles] = useState<BubbleDoc | null>(null);
+  const [bubblesBusy, setBubblesBusy] = useState(false);
+  const [bubbleVersion, setBubbleVersion] = useState(0);
+  const bubblesRequested = useRef<string | null>(null);
 
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const dialogResolve = useRef<((ok: boolean) => void) | null>(null);
@@ -290,6 +311,7 @@ export function App() {
     setJob(null); setSource(null); setTranslation(''); setWarnings('');
     setSourceVersion(0); setOcrVersion(0); setCleanVersion(0); setRenderVersion(0);
     setHasSaved(false); setCopied(null); setStep(1);
+    setBubbles(null); bubblesRequested.current = null;
     localStorage.removeItem(key);
     uploadStarted.current = false;
   }
@@ -598,6 +620,37 @@ export function App() {
     } finally {setBusy(false); currentRequest.current = null;}
   }
 
+  /** تشخیص نوع بالن‌ها برای مرحلهٔ ۲؛ نتیجه در بک‌اند کش می‌شود. */
+  async function loadBubbles(jobId: string) {
+    if (bubblesRequested.current === jobId) return;
+    bubblesRequested.current = jobId;
+    setBubblesBusy(true);
+    try {
+      let response = await fetch(`/api/jobs/${jobId}/bubbles`);
+      if (response.status === 404) {
+        response = await fetch(`/api/jobs/${jobId}/bubbles`, {method: 'POST'});
+      }
+      const data = await response.json();
+      if (!response.ok) throw Error(typeof data.detail === 'string' ? data.detail : 'تشخیص بالن ناموفق بود.');
+      if (Array.isArray(data.bubbles)) {
+        setBubbles(data as BubbleDoc);
+        setBubbleVersion(Date.now());
+      }
+    } catch (error) {
+      // تشخیص بالن اختیاری است؛ اگر نشد، بقیهٔ مرحله باید کار کند.
+      bubblesRequested.current = null;
+      setMessage(error instanceof Error ? `تشخیص نوع بالن انجام نشد: ${error.message}` : 'تشخیص نوع بالن انجام نشد.');
+    } finally {
+      setBubblesBusy(false);
+    }
+  }
+
+  // با ورود به مرحلهٔ ۲، نوع بالن‌ها یک بار تشخیص داده می‌شود.
+  useEffect(() => {
+    if (step !== 2 || !job || !source) return;
+    void loadBubbles(job.jobId);
+  }, [step, job, source]);
+
   /** OCR و رفتن به مرحلهٔ مقصد؛ در مرحلهٔ ۱ با دکمهٔ ادامه خودکار اجرا می‌شود. */
   async function runOcr(nextStep: number | null = null) {
     if (!job || busy) return;
@@ -773,6 +826,49 @@ export function App() {
                       downloadName={`t4-${job!.jobId}-ocr.png`}
                       caption={<span>کادر و شمارهٔ خطوط تشخیص‌داده‌شده (همان شماره‌های متن زیر)</span>}
                     />
+                  )}
+                  <h3 className="wizard-subtitle">نوع بالن‌ها</h3>
+                  <p className="wizard-help">
+                    هر خط تشخیص‌داده‌شده به بالن خودش نسبت داده می‌شود و شکل آن بالن، دسته و فونت پیشنهادی
+                    (بر اساس «لیست فونت‌های مخصوص تایپ») را تعیین می‌کند. تشخیص هندسی است و ممکن است
+                    برای بالن‌های دست‌کشیده اشتباه کند.
+                  </p>
+                  {bubblesBusy && <p className="wizard-help" role="status">در حال تشخیص نوع بالن‌ها…</p>}
+                  {bubbles && bubbles.bubbles.length > 0 && (
+                    <>
+                      <ImagePreview
+                        jobId={job!.jobId}
+                        kind="bubble"
+                        version={bubbleVersion}
+                        aspect={job!.height / job!.width}
+                        alt="پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام"
+                        downloadName={`t4-${job!.jobId}-bubbles.png`}
+                        caption={<span>کادر هر بالن با نام دسته و درصد اطمینان</span>}
+                      />
+                      <ul className="bubble-list">
+                        {bubbles.bubbles.map(bubble => (
+                          <li key={bubble.id} className="bubble-item">
+                            <div className="bubble-head">
+                              <span className="bubble-kind">{bubble.kindLabel}</span>
+                              <span className="bubble-conf">{Math.round(bubble.confidence * 100)}٪ اطمینان</span>
+                            </div>
+                            <div className="bubble-lines">
+                              خطوط: {bubble.lines.length > 0 ? bubble.lines.join('، ') : '—'}
+                            </div>
+                            {bubble.fonts.length > 0 && (
+                              <div className="bubble-fonts">
+                                فونت پیشنهادی: {bubble.fonts.slice(0, 4).join('، ')}
+                              </div>
+                            )}
+                            {bubble.variants && bubble.variants.length > 0 && (
+                              <div className="bubble-variants">
+                                حالت‌های ممکن: {bubble.variants.map(variant => variant.label).join('، ')}
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
                   )}
                   <h3 className="wizard-subtitle">متن شماره‌گذاری‌شده</h3>
                   <p className="wizard-help">

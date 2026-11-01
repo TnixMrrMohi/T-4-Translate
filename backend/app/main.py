@@ -19,7 +19,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
-from app import cleaning, ocr, preview, rendering
+from app import bubbles, cleaning, ocr, preview, rendering
 from app.translations import parse_translation
 
 app = FastAPI(title="T-4 Translate", version="0.1.0")
@@ -474,6 +474,7 @@ THUMB_SOURCES = {
     "ocr": "ocr-preview.png",
     "clean": "clean.png",
     "render": "render.png",
+    "bubble": "bubble-preview.png",
 }
 
 
@@ -571,6 +572,69 @@ async def get_display(job_id: str, kind: str, width: int = 1000):
     # اعتبار فایل با size/mtime مبدأ بررسی می‌شود؛ کش کوتاه مرورگر از ساخت مکرر جلوگیری می‌کند.
     return FileResponse(image_path, media_type="image/webp",
                         headers={"Cache-Control": "private, max-age=60"})
+
+
+BUBBLE_PREVIEW_SIDE = 1800
+
+
+@app.post("/api/jobs/{job_id}/bubbles")
+async def detect_bubbles(job_id: str) -> dict:
+    """بالن‌های صفحه را پیدا و دسته‌بندی می‌کند؛ برای هر خط OCR یک بالن یا «بیرون بالن»."""
+    workspace = workspace_for(job_id)
+    try:
+        lines = json.loads((workspace / "ocr.json").read_text(encoding="utf-8"))["lines"]
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        raise HTTPException(409, "برای تشخیص بالن ابتدا OCR را اجرا کنید.") from None
+    async with _ocr_lock:
+        try:
+            document = await run_native_safely(bubbles.analyze, workspace / "source.img", lines)
+        except bubbles.BubbleError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except Exception:
+            raise HTTPException(500, "تشخیص بالن ناموفق بود.") from None
+        try:
+            image = await run_native_safely(bubbles.overlay, workspace / "source.img", document,
+                                            BUBBLE_PREVIEW_SIDE)
+            image.save(workspace / "bubble-preview.png.tmp", format="PNG")
+            image.close()
+            os.replace(workspace / "bubble-preview.png.tmp", workspace / "bubble-preview.png")
+        except Exception:
+            pass  # پیش‌نمایش اختیاری است؛ خودِ نتیجهٔ تشخیص مهم است
+    document["jobId"] = job_id
+    tmp = workspace / "bubbles.json.tmp"
+    tmp.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, workspace / "bubbles.json")
+    return document
+
+
+@app.get("/api/jobs/{job_id}/bubbles")
+def read_bubbles(job_id: str) -> dict:
+    workspace = workspace_for(job_id)
+    try:
+        result = json.loads((workspace / "bubbles.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        raise HTTPException(404, "نتیجهٔ تشخیص بالن موجود نیست.") from None
+    result["jobId"] = job_id
+    return result
+
+
+@app.get("/api/jobs/{job_id}/bubble")
+def bubble_full(job_id: str):
+    workspace = workspace_for(job_id)
+    path = workspace / "bubble-preview.png"
+    if not path.is_file():
+        raise HTTPException(404, "پیش‌نمایش بالن موجود نیست.")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/bubble-types")
+def bubble_types() -> dict:
+    """فهرست دسته‌های بالن و فونت پیشنهادی هرکدام (برگرفته از راهنمای فونت مانهوا)."""
+    return {"types": [{"id": key, **{field: value for field, value in meta.items() if field != "variants"},
+                       **({"variants": [{"id": variant, **info}
+                                        for variant, info in meta["variants"].items()]}
+                          if "variants" in meta else {})}
+                      for key, meta in bubbles.BUBBLE_TYPES.items()]}
 
 
 # Only enabled by the packaged desktop launcher; development uses Vite separately.
