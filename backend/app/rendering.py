@@ -24,18 +24,29 @@ LINE_HEIGHT_RATIO = 1.45
 PADDING_RATIO = 0.08
 
 
-def font_path() -> Path:
-    """فونت وزیرمتن؛ مسیر قابل تغییر با T4_FONT_PATH است."""
+def font_candidates() -> list[Path]:
+    """مسیرهای احتمالی فونت؛ اولویت با T4_FONT_PATH و بعد فایل‌های همراه بسته."""
     import os
+    import sys
 
+    candidates = []
     override = os.environ.get("T4_FONT_PATH")
-    candidates = [Path(override)] if override else []
+    if override:
+        candidates.append(Path(override))
     here = Path(__file__).resolve().parent
-    candidates += [
-        here / "assets" / "Vazirmatn-Regular.ttf",
-        here.parent.parent / "frontend" / "public" / "fonts" / "Vazirmatn-Regular.ttf",
-    ]
-    for candidate in candidates:
+    candidates.append(here / "assets" / "Vazirmatn-Regular.ttf")  # اگر با پکیج نصب شود
+    bundle = getattr(sys, "_MEIPASS", None)  # نسخهٔ بسته‌بندی‌شدهٔ دسکتاپ
+    web_dirs = [Path(bundle) / "web"] if bundle else []
+    if os.environ.get("T4_WEB_DIR"):
+        web_dirs.append(Path(os.environ["T4_WEB_DIR"]))
+    candidates += [directory / "fonts" / "Vazirmatn-Regular.ttf" for directory in web_dirs]
+    # محیط توسعه: فونت‌ها در فرانت‌اند نگهداری می‌شوند.
+    candidates.append(here.parent.parent / "frontend" / "public" / "fonts" / "Vazirmatn-Regular.ttf")
+    return candidates
+
+
+def font_path() -> Path:
+    for candidate in font_candidates():
         if candidate.is_file():
             return candidate
     raise RenderError("فونت فارسی برای نمایش روی تصویر پیدا نشد.")

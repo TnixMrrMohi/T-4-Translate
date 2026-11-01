@@ -88,3 +88,26 @@ def test_invalid_quad_raises():
 def test_tiny_quad_raises():
     with pytest.raises(rendering.RenderError):
         rendering.render_translations(_page(), [_line(_box(10, 10, 12, 12))], {"1": PERSIAN})
+
+
+def test_font_lookup_prefers_env_override(tmp_path, monkeypatch):
+    custom = tmp_path / "custom.ttf"
+    custom.write_bytes(rendering.font_path().read_bytes())
+    monkeypatch.setenv("T4_FONT_PATH", str(custom))
+    assert rendering.font_path() == custom
+
+
+def test_font_lookup_supports_packaged_web_dir(tmp_path, monkeypatch):
+    fonts = tmp_path / "web" / "fonts"
+    fonts.mkdir(parents=True)
+    (fonts / "Vazirmatn-Regular.ttf").write_bytes(rendering.font_path().read_bytes())
+    monkeypatch.delenv("T4_FONT_PATH", raising=False)
+    monkeypatch.setenv("T4_WEB_DIR", str(tmp_path / "web"))
+    assert rendering.font_path() == fonts / "Vazirmatn-Regular.ttf"
+
+
+def test_missing_font_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_FONT_PATH", str(tmp_path / "nope.ttf"))
+    monkeypatch.setattr(rendering, "font_candidates", lambda: [tmp_path / "nope.ttf"])
+    with pytest.raises(rendering.RenderError):
+        rendering.font_path()
