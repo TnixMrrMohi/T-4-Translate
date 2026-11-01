@@ -103,3 +103,15 @@
   .step-item .step-title{font-size:12px}
   .app-header .status{display:none}
 }
+
+/* --- مقایسهٔ ورودی و خروجی (مرحلهٔ ۶) --- */
+.compare{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px}
+.compare-side{min-width:0}
+.compare-side h3{margin:0 0 6px;font-size:14px;color:#9bf3cc;font-weight:bold}
+.compare .preview-card{max-width:100%;margin-top:0}
+.compare .preview-thumb{height:320px}
+.compare .preview-thumb img{object-position:top center}
+@media(max-width:720px){
+  .compare{grid-template-columns:1fr}
+  .compare .preview-thumb{height:240px}
+}

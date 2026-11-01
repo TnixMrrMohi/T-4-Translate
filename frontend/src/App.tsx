@@ -11,7 +11,9 @@ const STEPS = [
   {id: 1, title: 'انتخاب تصویر'},
   {id: 2, title: 'تشخیص متن'},
   {id: 3, title: 'ترجمهٔ فارسی'},
-  {id: 4, title: 'درج روی تصویر'},
+  {id: 4, title: 'پاک‌سازی'},
+  {id: 5, title: 'درج ترجمه'},
+  {id: 6, title: 'مقایسه'},
 ];
 
 type PreviewKind = 'source' | 'ocr' | 'clean' | 'render';
@@ -253,7 +255,11 @@ export function App() {
   }
 
   // بالاترین مرحله‌ای که کاربر می‌تواند باز کند؛ بر اساس خروجی‌های موجود.
-  const maxStep = !job ? 1 : !source ? 2 : (hasSaved || renderVersion > 0) ? 4 : 3;
+  const maxStep = !job ? 1
+    : !source ? 2
+      : !hasSaved ? 3
+        : cleanVersion === 0 ? 4
+          : renderVersion === 0 ? 5 : 6;
 
   function goToStep(target: number) {
     if (busy || loadingData) return;
@@ -398,8 +404,11 @@ export function App() {
         if (artifacts?.render) setRenderVersion(Date.now());
         if (artifacts?.clean) setCleanVersion(Date.now());
       }
-      // کاربر را به مرحلهٔ بعدیِ نیمه‌کاره می‌بریم، نه همیشه به اول.
-      const next = !savedSource ? 2 : (savedTranslation ? 4 : 3);
+      // کاربر را به دورترین مرحله‌ای می‌بریم که داده‌اش آماده است.
+      const next = !savedSource ? 2
+        : !savedTranslation ? 3
+          : !artifacts?.clean ? 4
+            : !artifacts?.render ? 5 : 6;
       setStep(next);
     }).catch(e => {if (e.name !== 'AbortError') fail('بازیابی متن‌ها ممکن نشد.');})
       .finally(() => {if (!controller.signal.aborted) setLoadingData(false);});
@@ -423,7 +432,7 @@ export function App() {
       ].filter(Boolean);
       setWarnings(parts.join(' | ')); setCleanVersion(0); setRenderVersion(0);
       setHasSaved(true);
-      setMessage('ترجمه ذخیره شد؛ حالا روی تصویر اعمال می‌شود…');
+      setMessage('ترجمه ذخیره شد. مرحلهٔ بعد: پاک‌سازی متن اصلی.');
       setStep(4);
       await cleanImage();
     } catch (error) {fail(error instanceof Error ? error.message : 'ذخیرهٔ ترجمه ناموفق بود.');}
@@ -437,6 +446,7 @@ export function App() {
     if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'درج ترجمه روی تصویر ناموفق بود.');
     setRenderVersion(Date.now());
     setMessage(result.message ?? 'ترجمهٔ فارسی روی تصویر قرار گرفت.');
+    setStep(5);
   }
 
   async function renderImage() {
@@ -455,10 +465,9 @@ export function App() {
       const result = await response.json();
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی ناموفق بود.');
       setCleanVersion(Date.now());
-      setMessage(result.message);
-      // پس از پاک‌سازی، ترجمه بی‌درنگ روی تصویر درج می‌شود.
-      try { await requestRender(); setStep(4); }
-      catch (error) {fail(`${result.message} درج ترجمه انجام نشد: ${error instanceof Error ? error.message : 'خطای نامشخص'}`);}
+      setRenderVersion(0);  // خروجی قبلی با پاک‌سازی جدید معتبر نیست
+      setMessage('پاک‌سازی انجام شد. مرحلهٔ بعد: درج ترجمهٔ فارسی.');
+      setStep(4);
     } catch (error) {fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');}
     finally {setBusy(false);}
   }
@@ -593,8 +602,18 @@ export function App() {
               {job && sourceVersion > 0 && (
                 <>
                   <p className="wizard-note">تصویر فعلی: <span dir="ltr">{job.width} × {job.height} · {job.format}</span></p>
+                  <ImagePreview
+                    jobId={job.jobId}
+                    kind="source"
+                    version={sourceVersion}
+                    aspect={job.height / job.width}
+                    alt="نمایش تصویر اصلی"
+                    downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
+                    caption={<span>تصویر اصلی — برای بزرگ‌نمایی کلیک کنید</span>}
+                  />
                   <div className="wizard-nav">
                     <button type="button" className="ocr" onClick={() => goToStep(2)}>ادامه به تشخیص متن</button>
+                    <button type="button" className="ghost" onClick={resetApp}>حذف انتخاب و شروع دوباره</button>
                   </div>
                 </>
               )}
@@ -652,15 +671,6 @@ export function App() {
                       {source ? 'اجرای دوبارهٔ OCR' : 'اجرای OCR آزمایشی'}
                     </button>
                   </div>
-                  <ImagePreview
-                    jobId={job.jobId}
-                    kind="source"
-                    version={sourceVersion}
-                    aspect={job.height / job.width}
-                    alt="پیش‌نمایش عکس اصلی"
-                    downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
-                    caption={<span>تصویر اصلی (برای بزرگ‌نمایی کلیک کنید)</span>}
-                  />
                   {ocrVersion > 0 && (
                     <ImagePreview
                       jobId={job.jobId}
@@ -717,7 +727,7 @@ export function App() {
                         <button type="button" className="ghost" onClick={() => goToStep(2)}>مرحلهٔ قبل</button>
                         <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void runOcr()}>اجرای دوبارهٔ OCR</button>
                         <button type="button" className="ocr" disabled={busy || loadingData || !translation.trim()} onClick={() => void saveTranslation()}>
-                          ذخیرهٔ ترجمه و درج روی تصویر
+                          ذخیرهٔ ترجمه و ادامه
                         </button>
                       </div>
                     </>
@@ -734,15 +744,64 @@ export function App() {
             </>
           )}
 
-          {/* ------------------------------------------------ مرحله ۴: نتیجه */}
+          {/* ------------------------------------------------ مرحله ۴: پاک‌سازی */}
           {step === 4 && (
             <>
-              <h2 className="wizard-title">مرحله ۴: نتیجه روی تصویر</h2>
+              <h2 className="wizard-title">مرحله ۴: پاک‌سازی متن اصلی</h2>
+              {!job ? (
+                <p className="wizard-help">کاری باز نیست.</p>
+              ) : !hasSaved ? (
+                <p className="wizard-help">اول ترجمه را در مرحلهٔ ۳ ذخیره کنید.</p>
+              ) : (
+                <>
+                  <p className="wizard-help">
+                    ناحیهٔ خطوط ترجمه‌شده پاک می‌شود تا متن فارسی جای آن بنشیند. پاک‌سازی با آخرین ترجمهٔ <b>ذخیره‌شده</b> انجام می‌شود، نه تغییرات ذخیره‌نشده.
+                  </p>
+                  <div className="wizard-nav start">
+                    <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void cleanImage()}>
+                      {cleanVersion > 0 ? 'اجرای دوبارهٔ پاک‌سازی' : 'اجرای پاک‌سازی'}
+                    </button>
+                  </div>
+
+                  {cleanVersion > 0 ? (
+                    <ImagePreview
+                      jobId={job.jobId}
+                      kind="clean"
+                      version={cleanVersion}
+                      aspect={job.height / job.width}
+                      alt="تصویر پاک‌سازی‌شده، بدون متن اصلی"
+                      downloadName={`t4-${job.jobId}-clean.png`}
+                      caption={<span>تصویر پاک‌سازی‌شده (بدون متن اصلی)</span>}
+                    />
+                  ) : (
+                    <p className="wizard-note">{busy ? 'در حال پاک‌سازی…' : 'هنوز پاک‌سازی اجرا نشده است.'}</p>
+                  )}
+
+                  <div className="wizard-nav">
+                    <button type="button" className="ghost" onClick={() => goToStep(3)}>مرحلهٔ قبل (ترجمه)</button>
+                    <button type="button" className="ocr" disabled={cleanVersion === 0 || busy || loadingData} onClick={() => goToStep(5)}>
+                      ادامه به درج ترجمه
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
+          {/* ------------------------------------------------ مرحله ۵: درج ترجمه */}
+          {step === 5 && (
+            <>
+              <h2 className="wizard-title">مرحله ۵: درج ترجمه روی تصویر</h2>
               {!job ? (
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : (
                 <>
-                  <p className="wizard-help">ترجمهٔ فارسی با فونت وزیرمتن روی تصویر قرار گرفته است. پیش از استفادهٔ نهایی، خروجی را با بزرگ‌نمایی بررسی کنید.</p>
+                  <p className="wizard-help">متن فارسی با فونت وزیرمتن داخل کادر هر خط روی تصویر پاک‌سازی‌شده نوشته می‌شود.</p>
+                  <div className="wizard-nav start">
+                    <button type="button" className="ocr" disabled={busy || loadingData || cleanVersion === 0} onClick={() => void renderImage()}>
+                      {renderVersion > 0 ? 'درج دوبارهٔ ترجمه' : 'درج ترجمه روی تصویر'}
+                    </button>
+                  </div>
 
                   {renderVersion > 0 ? (
                     <ImagePreview
@@ -750,36 +809,69 @@ export function App() {
                       kind="render"
                       version={renderVersion}
                       aspect={job.height / job.width}
-                      alt="پیش‌نمایش صفحه با ترجمهٔ فارسی"
+                      alt="خروجی فارسی روی تصویر"
                       downloadName={`t4-${job.jobId}-fa.png`}
-                      caption={<span>خروجی نهایی (آزمایشی) — برای بزرگ‌نمایی و دانلود کلیک کنید</span>}
+                      caption={<span>خروجی فارسی (آزمایشی)</span>}
                     />
                   ) : (
-                    <p className="wizard-note">
-                      {busy ? 'دارای در حال ساخت خروجی…' : 'خروجی هنوز ساخته نشده است؛ دکمهٔ «پاک‌سازی و درج ترجمه» را بزنید.'}
-                    </p>
-                  )}
-
-                  {cleanVersion > 0 && (
-                    <ImagePreview
-                      jobId={job.jobId}
-                      kind="clean"
-                      version={cleanVersion}
-                      aspect={job.height / job.width}
-                      alt="تصویر پاک‌سازی‌شدهٔ آزمایشی، بدون متن فارسی"
-                      downloadName={`t4-${job.jobId}-clean.png`}
-                      caption={<span>پاک‌سازی پیش از درج ترجمه</span>}
-                    />
+                    <p className="wizard-note">{busy ? 'در حال درج ترجمه…' : 'هنوز ترجمه روی تصویر درج نشده است.'}</p>
                   )}
 
                   <div className="wizard-nav">
-                    <button type="button" className="ghost" onClick={() => goToStep(3)}>بازگشت به ترجمه</button>
-                    <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void cleanImage()}>
-                      پاک‌سازی و درج ترجمه
+                    <button type="button" className="ghost" onClick={() => goToStep(4)}>مرحلهٔ قبل (پاک‌سازی)</button>
+                    <button type="button" className="ocr" disabled={renderVersion === 0 || busy || loadingData} onClick={() => goToStep(6)}>
+                      ادامه به مقایسه
                     </button>
-                    <button type="button" className="ocr" disabled={busy || loadingData || cleanVersion === 0} onClick={() => void renderImage()}>
-                      درج دوبارهٔ ترجمه
-                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
+          {/* ------------------------------------------------ مرحله ۶: مقایسهٔ ورودی و خروجی */}
+          {step === 6 && (
+            <>
+              <h2 className="wizard-title">مرحله ۶: مقایسهٔ ورودی و خروجی</h2>
+              {!job ? (
+                <p className="wizard-help">کاری باز نیست.</p>
+              ) : (
+                <>
+                  <p className="wizard-help">نسخهٔ ورودی (اصلی) و نسخهٔ خروجی (فارسی) کنار هم؛ روی هر تصویر بزنید تا در مودال بزرگ شود.</p>
+
+                  <div className="compare">
+                    <div className="compare-side">
+                      <h3>نسخهٔ ورودی</h3>
+                      <ImagePreview
+                        jobId={job.jobId}
+                        kind="source"
+                        version={sourceVersion}
+                        aspect={job.height / job.width}
+                        alt="نسخهٔ ورودی (تصویر اصلی)"
+                        downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
+                        caption={<span>اصلی</span>}
+                      />
+                    </div>
+                    <div className="compare-side">
+                      <h3>نسخهٔ خروجی</h3>
+                      {renderVersion > 0 ? (
+                        <ImagePreview
+                          jobId={job.jobId}
+                          kind="render"
+                          version={renderVersion}
+                          aspect={job.height / job.width}
+                          alt="نسخهٔ خروجی (ترجمهٔ فارسی)"
+                          downloadName={`t4-${job.jobId}-fa.png`}
+                          caption={<span>ترجمه‌شده</span>}
+                        />
+                      ) : (
+                        <p className="wizard-note">خروجی هنوز ساخته نشده است.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="wizard-nav">
+                    <button type="button" className="ghost" onClick={() => goToStep(5)}>مرحلهٔ قبل (درج)</button>
+                    <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void renderImage()}>درج دوبارهٔ ترجمه</button>
                     <button type="button" className="ghost" onClick={resetApp}>کار جدید</button>
                   </div>
                 </>

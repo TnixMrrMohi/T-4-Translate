@@ -20,6 +20,9 @@ function mockApi(options: {
   ocrLines?: unknown[];
   /** تا پیش از اجرای OCR، متنی وجود ندارد (شبیه‌سازی آپلود تازه). */
   sourceAfterOcr?: boolean;
+  translation?: string;
+  clean?: boolean;
+  render?: boolean;
 } = {}) {
   const calls: {url: string; method: string}[] = [];
   let ocrDone = false;
@@ -42,14 +45,18 @@ function mockApi(options: {
     }
     if (url.endsWith('/artifacts')) {
       const ready = Boolean(options.source) && (!options.sourceAfterOcr || ocrDone);
-      return json({jobId: JOB_ID, source: ready, ocr: ready, translations: false,
-                   stale: null, clean: false, render: false});
+      return json({jobId: JOB_ID, source: ready, ocr: ready, translations: Boolean(options.translation),
+                   stale: null, clean: Boolean(options.clean), render: Boolean(options.render)});
     }
     if (url.includes('/translation-source')) {
       const ready = options.source && (!options.sourceAfterOcr || ocrDone);
       return ready ? json(options.source) : json({detail: 'نیست'}, 404);
     }
-    if (url.includes('/translations')) return json({detail: 'نیست'}, 404);
+    if (url.includes('/translations')) {
+      return options.translation
+        ? json({sourceRevision: 'r'.repeat(64), text: options.translation, stale: false})
+        : json({detail: 'نیست'}, 404);
+    }
     if (/\/api\/jobs\/[a-f0-9]{32}$/.test(url)) return options.job ? json(options.job) : json({detail: 'نیست'}, 404);
     if (url.includes('/api/jobs')) {
       const items = typeof options.jobs === 'function' ? options.jobs() : options.jobs ?? [];
@@ -175,7 +182,9 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     expect(screen.queryByRole('heading', {name: /مرحله ۳/})).not.toBeInTheDocument();
     expect(screen.getByRole('button', {name: /تشخیص متن/})).toBeDisabled();
     expect(screen.getByRole('button', {name: /ترجمهٔ فارسی/})).toBeDisabled();
-    expect(screen.getByRole('button', {name: /درج روی تصویر/})).toBeDisabled();
+    expect(screen.getByRole('button', {name: /پاک‌سازی/})).toBeDisabled();
+    expect(screen.getByRole('button', {name: /درج ترجمه/})).toBeDisabled();
+    expect(screen.getByRole('button', {name: /مقایسه/})).toBeDisabled();
   });
 
   it('پس از آپلود، محتوای مرحلهٔ ۱ جای خود را به مرحلهٔ ۲ می‌دهد', async () => {
@@ -215,24 +224,34 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     expect(await screen.findByRole('heading', {name: 'مرحله ۲: تشخیص متن (OCR)'})).toBeInTheDocument();
   });
 
-  it('کار ذخیره‌شده با ترجمه، در مرحلهٔ ۴ باز می‌شود', async () => {
+  it('کار ذخیره‌شده با ترجمه، در مرحلهٔ ۴ (پاک‌سازی) باز می‌شود', async () => {
     localStorage.setItem('t4-last-job', JOB_ID);
     const {calls} = mockApi({
       job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
       source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
-    });
-    // پاسخ translations را برای این تست خاص بازنویسی می‌کنیم.
-    const base = globalThis.fetch as unknown as (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : String(input);
-      if (url.includes('/translations') && (init?.method ?? 'GET') === 'GET') {
-        return Promise.resolve(json({sourceRevision: 'r'.repeat(64), text: '[1] سلام', stale: false}));
-      }
-      return base(input, init);
+      translation: '[1] سلام',
     });
     render(<App />);
 
-    expect(await screen.findByRole('heading', {name: 'مرحله ۴: نتیجه روی تصویر'})).toBeInTheDocument();
+    expect(await screen.findByRole('heading', {name: 'مرحله ۴: پاک‌سازی متن اصلی'})).toBeInTheDocument();
     expect(calls.some(call => call.url.includes('/artifacts'))).toBe(true);
+  });
+
+  it('کار کامل‌شده در مرحلهٔ ۶ با مقایسهٔ ورودی و خروجی باز می‌شود', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+      clean: true,
+      render: true,
+    });
+    render(<App />);
+
+    expect(await screen.findByRole('heading', {name: 'مرحله ۶: مقایسهٔ ورودی و خروجی'})).toBeInTheDocument();
+    expect(screen.getByRole('heading', {name: 'نسخهٔ ورودی'})).toBeInTheDocument();
+    expect(screen.getByRole('heading', {name: 'نسخهٔ خروجی'})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: /بزرگ‌نمایی: نسخهٔ ورودی/})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: /بزرگ‌نمایی: نسخهٔ خروجی/})).toBeInTheDocument();
   });
 });
