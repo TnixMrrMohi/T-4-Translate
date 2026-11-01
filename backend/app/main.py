@@ -145,6 +145,27 @@ def list_jobs(limit: int = 20) -> dict:
     return {"items": items[:limit]}
 
 
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: str) -> dict:
+    """حذف کامل کار (تصویر، OCR، ترجمه و پیش‌نمایش‌ها) از روی دیسک."""
+    async with _ocr_lock:  # حذف نباید وسط پاک‌سازی/رندر پیش‌نمایش انجام شود
+        workspace = workspace_for(job_id)
+        root = jobs_root().resolve()
+        try:
+            resolved = workspace.resolve()
+        except OSError:
+            raise HTTPException(404, "کار پیدا نشد.") from None
+        if resolved.parent != root:
+            raise HTTPException(400, "مسیر کار معتبر نیست.")
+        try:
+            shutil.rmtree(resolved)
+        except FileNotFoundError:
+            raise HTTPException(404, "کار پیدا نشد.") from None
+        except OSError:
+            raise HTTPException(500, "حذف کار ناموفق بود؛ ممکن است فایل در حال استفاده باشد.") from None
+        return {"jobId": job_id, "deleted": True}
+
+
 async def run_native_safely(func, *args):
     # Cancellation must not release the inference lock while a worker is still active.
     task = asyncio.create_task(asyncio.to_thread(func, *args))

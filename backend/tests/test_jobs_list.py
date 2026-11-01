@@ -73,3 +73,47 @@ def test_legacy_job_without_created_at_uses_mtime(tmp_path, monkeypatch):
         os.utime(state_path, (1_700_000_000, 1_700_000_000))
         item = client.get("/api/jobs").json()["items"][0]
         assert item["createdAt"].startswith("2023-11-14")
+
+
+# ------------------------------------------------------------------ حذف کار
+def test_delete_job_removes_files_and_list_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    with TestClient(app) as client:
+        job = _upload(client)
+        workspace = Path(tmp_path) / "jobs" / job["jobId"]
+        assert workspace.is_dir()
+        response = client.delete(f"/api/jobs/{job['jobId']}")
+        assert response.status_code == 200 and response.json() == {"jobId": job["jobId"], "deleted": True}
+        assert not workspace.exists()
+        assert client.get(f"/api/jobs/{job['jobId']}").status_code == 404
+        assert client.get("/api/jobs").json()["items"] == []
+
+
+def test_delete_job_twice_is_404(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    with TestClient(app) as client:
+        job = _upload(client)
+        assert client.delete(f"/api/jobs/{job['jobId']}").status_code == 200
+        assert client.delete(f"/api/jobs/{job['jobId']}").status_code == 404
+        assert client.delete("/api/jobs/" + "a" * 32).status_code == 404
+
+
+def test_delete_rejects_invalid_ids(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    outside = Path(tmp_path) / "jobs" / ".." / "keep.txt"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text("keep", encoding="utf-8")
+    with TestClient(app) as client:
+        for bad in ["..", "abc", "z" * 32, "0123456789abcdef0123456789abcde"]:
+            assert client.delete(f"/api/jobs/{bad}").status_code == 404
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_delete_current_job_is_removed_from_list_but_others_stay(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    with TestClient(app) as client:
+        first = _upload(client, "white")
+        second = _upload(client, "black")
+        client.delete(f"/api/jobs/{second['jobId']}")
+        items = client.get("/api/jobs").json()["items"]
+        assert [item["jobId"] for item in items] == [first["jobId"]]
