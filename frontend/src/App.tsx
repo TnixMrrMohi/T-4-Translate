@@ -6,6 +6,14 @@ type Job = {jobId: string; width: number; height: number; format: string; status
 type JobSummary = Job & {createdAt: string; sizeBytes?: number};
 const key = 't4-last-job';
 
+/** مراحل کار؛ در هر لحظه فقط محتوای یک مرحله نمایش داده می‌شود. */
+const STEPS = [
+  {id: 1, title: 'انتخاب تصویر'},
+  {id: 2, title: 'تشخیص متن'},
+  {id: 3, title: 'ترجمهٔ فارسی'},
+  {id: 4, title: 'درج روی تصویر'},
+];
+
 type PreviewKind = 'source' | 'ocr' | 'clean' | 'render';
 
 type PreviewProps = {
@@ -185,6 +193,9 @@ export function App() {
   const [status, setStatus] = useState('در حال بررسی ارتباط با سرویس…');
   const [job, setJob] = useState<Job | null>(null);
   const [jobs, setJobs] = useState<JobSummary[]>([]);
+  // جادوگر مرحله‌به‌مرحله: فقط محتوای مرحلهٔ جاری نمایش داده می‌شود.
+  const [step, setStep] = useState(1);
+  const [hasSaved, setHasSaved] = useState(false);  // ترجمه‌ای برای این کار ذخیره شده است
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [source, setSource] = useState<Source | null>(null);
@@ -236,8 +247,17 @@ export function App() {
   function clearCurrentJob() {
     setJob(null); setSource(null); setTranslation(''); setWarnings('');
     setSourceVersion(0); setOcrVersion(0); setCleanVersion(0); setRenderVersion(0);
+    setHasSaved(false); setStep(1);
     localStorage.removeItem(key);
     uploadStarted.current = false;
+  }
+
+  // بالاترین مرحله‌ای که کاربر می‌تواند باز کند؛ بر اساس خروجی‌های موجود.
+  const maxStep = !job ? 1 : !source ? 2 : (hasSaved || renderVersion > 0) ? 4 : 3;
+
+  function goToStep(target: number) {
+    if (busy || loadingData) return;
+    if (target >= 1 && target <= maxStep) setStep(target);
   }
 
   const resetApp = () => {
@@ -272,6 +292,7 @@ export function App() {
     localStorage.setItem(key, item.jobId);
     setJob({jobId: item.jobId, width: item.width, height: item.height, format: item.format, status: item.status});
     setSourceVersion(Date.now());
+    setStep(2);
     setMessage('کار قبلی از حافظهٔ همین سیستم باز شد.');
   }
 
@@ -357,19 +378,29 @@ export function App() {
     Promise.all([
       fetch(`/api/jobs/${job.jobId}/translation-source`, {signal: controller.signal}),
       fetch(`/api/jobs/${job.jobId}/translations`, {signal: controller.signal}),
-    ]).then(async ([sourceResponse, translationResponse]) => {
+      fetch(`/api/jobs/${job.jobId}/artifacts`, {signal: controller.signal}),
+    ]).then(async ([sourceResponse, translationResponse, artifactResponse]) => {
       if (!sourceResponse.ok && sourceResponse.status !== 404) throw Error();
       if (!translationResponse.ok && translationResponse.status !== 404) throw Error();
       const savedSource: Source | null = sourceResponse.ok ? await sourceResponse.json() : null;
       const savedTranslation = translationResponse.ok ? await translationResponse.json() : null;
+      const artifacts = artifactResponse.ok ? await artifactResponse.json() : null;
       setSource(savedSource);
       if (savedTranslation) {
         setTranslation(savedTranslation.text);
+        setHasSaved(true);
         if (savedTranslation.stale) setWarnings('متن OCR تغییر کرده است؛ ترجمهٔ قبلی را پیش از ذخیره بررسی کنید.');
+      } else {
+        setHasSaved(false);
       }
       if (savedSource) {
         setOcrVersion(Date.now());
+        if (artifacts?.render) setRenderVersion(Date.now());
+        if (artifacts?.clean) setCleanVersion(Date.now());
       }
+      // کاربر را به مرحلهٔ بعدیِ نیمه‌کاره می‌بریم، نه همیشه به اول.
+      const next = !savedSource ? 2 : (savedTranslation ? 4 : 3);
+      setStep(next);
     }).catch(e => {if (e.name !== 'AbortError') fail('بازیابی متن‌ها ممکن نشد.');})
       .finally(() => {if (!controller.signal.aborted) setLoadingData(false);});
     return () => controller.abort();
@@ -391,7 +422,9 @@ export function App() {
         result.unknown.length ? `شمارهٔ ناشناخته: ${result.unknown.join('، ')}` : '',
       ].filter(Boolean);
       setWarnings(parts.join(' | ')); setCleanVersion(0); setRenderVersion(0);
-      setMessage('ترجمه ذخیره شد؛ هنوز روی تصویر اعمال نشده است.');
+      setHasSaved(true);
+      setMessage('ترجمه ذخیره شد؛ حالا روی تصویر اعمال می‌شود…');
+      setStep(4);
       await cleanImage();
     } catch (error) {fail(error instanceof Error ? error.message : 'ذخیرهٔ ترجمه ناموفق بود.');}
     finally {setBusy(false);}
@@ -424,7 +457,7 @@ export function App() {
       setCleanVersion(Date.now());
       setMessage(result.message);
       // پس از پاک‌سازی، ترجمه بی‌درنگ روی تصویر درج می‌شود.
-      try { await requestRender(); }
+      try { await requestRender(); setStep(4); }
       catch (error) {fail(`${result.message} درج ترجمه انجام نشد: ${error instanceof Error ? error.message : 'خطای نامشخص'}`);}
     } catch (error) {fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');}
     finally {setBusy(false);}
@@ -453,7 +486,9 @@ export function App() {
       const result: Job = await response.json();
       localStorage.setItem(key, result.jobId); setJob(result); setSource(null); setTranslation(''); setWarnings(''); setCleanVersion(0); setRenderVersion(0); setSourceVersion(0); setOcrVersion(0);
       setSourceVersion(Date.now());
-      setMessage('تصویر انتخاب شد. پردازش و ترجمه آماده‌اند.');
+      setHasSaved(false);
+      setStep(2);
+      setMessage('تصویر ذخیره شد. مرحلهٔ بعد: تشخیص متن.');
       void loadJobs();
     } catch (error) {
       if (error instanceof Error && error.name !== 'AbortError') fail(error.message);
@@ -482,169 +517,279 @@ export function App() {
       if (source && source.revision !== updated.revision && translation) setWarnings('متن OCR تغییر کرده است؛ ترجمهٔ قبلی را پیش از ذخیره بررسی کنید.');
       setSource(updated); setCleanVersion(0); setRenderVersion(0);
       setOcrVersion(Date.now());
-      setMessage('OCR آزمایشی انجام شد؛ متن را از نظر خطا بررسی کنید.');
+      setStep(3);
+      setMessage('متن تشخیص داده شد. مرحلهٔ بعد: ترجمه.');
     } catch (error) {fail(error instanceof Error ? error.message : 'OCR ناموفق بود.');}
     finally {setBusy(false);}
   }
 
   return (
     <main className="page">
-      <header style={{position: 'relative', padding: '16px 24px', borderBottom: '1px solid #ffffff20', display: 'flex', justifyContent: 'center', alignItems: 'center'}}>
-        <button className="ocr" disabled={busy} onClick={resetApp} style={{position: 'absolute', left: '24px', top: '24px', padding: '6px 10px', fontSize: '12px', zIndex: 10}}>ریست</button>
-        <span className="brand" dir="ltr" style={{fontSize: '18px', letterSpacing: '.1em', color: '#ffffff'}}>T-4 TRANSLATE</span>
-        <span className="status" role="status" style={{position: 'absolute', right: '24px', fontSize: '13px', color: '#eef9f4'}}>{status}</span>
+      <header className="app-header">
+        <button className="ocr reset" disabled={busy} onClick={resetApp}>ریست</button>
+        <span className="brand" dir="ltr">T-4 TRANSLATE</span>
+        <span className="status" role="status">{status}</span>
       </header>
-      
-      <section style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '24px', maxWidth: '800px', margin: '40px auto', padding: '0 24px', textAlign: 'center'}}>
-        <h2 style={{fontSize: '32px', margin: '0 0 8px 0', color: '#ffffff'}}>مرحله ۱: انتخاب تصویر</h2>
-        <p style={{margin: '0 0 20px 0', color: '#eef9f4', lineHeight: '1.5'}}>تصویر مورد نظر خود را انتخاب کنید تا پردازش آغاز شود.</p>
-        
-        <div 
-          ref={dropZoneRef}
-          className={`select ${busy ? 'busy' : ''}`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => {if (!busy && !loadingData) document.getElementById('file-input')?.click()}}
-          style={{position: 'relative', width: '100%', maxWidth: '100%', minHeight: '160px', maxHeight: '250px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', border: '2px dashed #9bf3cc', borderRadius: '12px', background: '#0b171d', color: '#9bf3cc', cursor: 'pointer', transition: 'all .2s', overflow: 'hidden'}}
-        >
-          {job && sourceVersion ? (
-            <img src={`/api/jobs/${job.jobId}/thumb/source?v=${sourceVersion}`} alt="بندانگشتی تصویر انتخاب‌شده" style={{maxWidth: '100%', maxHeight: '160px', borderRadius: '8px', objectFit: 'contain', marginBottom: '12px'}} />
-          ) : (
+
+      <div className="wizard">
+        <ol className="wizard-steps" aria-label="مراحل کار">
+          {STEPS.map(item => {
+            const stepState = item.id === step ? 'current'
+              : item.id <= maxStep ? (item.id < step ? 'done' : 'available') : 'locked';
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  className={`step-item is-${stepState}`}
+                  onClick={() => goToStep(item.id)}
+                  disabled={stepState === 'locked' || busy || loadingData}
+                  aria-current={stepState === 'current' ? 'step' : undefined}
+                  title={stepState === 'locked' ? 'برای باز شدن این مرحله، مرحلهٔ قبل را کامل کنید' : item.title}
+                >
+                  <span className="step-index">{stepState === 'done' ? '✓' : item.id}</span>
+                  <span className="step-title">{item.title}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+
+        <p className="wizard-status" role="status">{message}</p>
+
+        <section className="wizard-card" aria-live="polite">
+          {loadingData && <p className="wizard-note">در حال بارگذاری اطلاعات کار…</p>}
+
+          {/* ------------------------------------------------ مرحله ۱: انتخاب تصویر */}
+          {step === 1 && (
             <>
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9bf3cc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{marginBottom: '12px'}}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-              <span style={{fontSize: '14px'}}>{busy ? 'در حال پردازش…' : 'انتخاب فایل'}</span>
-            </>
-          )}
-          <input 
-            id="file-input"
-            type="file" 
-            disabled={busy || loadingData} 
-            accept="image/png,image/jpeg,image/webp,image/bmp" 
-            onChange={e => {void upload(e.target.files?.[0]); e.target.value = '';}} 
-            style={{position: 'absolute', width: '100%', height: '100%', top: 0, left: 0, opacity: 0, cursor: 'pointer'}}
-          />
-        </div>
-        <p role="status" style={{margin: '0', color: '#eef9f4', fontSize: '14px'}}>{message}</p>
-        
-        {job && sourceVersion > 0 && (
-          <ImagePreview
-            jobId={job.jobId}
-            kind="source"
-            version={sourceVersion}
-            aspect={job.height / job.width}
-            alt="پیش‌نمایش عکس اصلی"
-            downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
-            caption={<span style={{color: '#9bf3cc', fontWeight: 'bold'}}>مرحله ۱: پیش‌نمایش عکس اصلی</span>}
-          />
-        )}
+              <h2 className="wizard-title">مرحله ۱: انتخاب تصویر</h2>
+              <p className="wizard-help">تصویر مانگا یا وب‌تون را انتخاب یا اینجا رها کنید. در مرحلهٔ بعد متن‌ها تشخیص داده می‌شوند.</p>
 
-        {jobs.length > 0 && (
-          <section aria-label="کارهای قبلی" style={{marginTop: '24px', width: '100%', maxWidth: '800px', textAlign: 'right'}}>
-            <h3 style={{margin: '0 0 8px 0', color: '#eef9f4', fontSize: '16px'}}>کارهای قبلی روی این سیستم</h3>
-            <ul style={{listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '6px'}}>
-              {jobs.map(item => (
-                <li key={item.jobId} style={{display: 'flex', alignItems: 'center', gap: '10px', justifyContent: 'space-between', background: '#0b171d', border: `1px solid ${item.jobId === job?.jobId ? '#00ffcc' : '#ffffff20'}`, borderRadius: '10px', padding: '8px 12px'}}>
-                  <span style={{color: '#eef9f4', fontSize: '13px'}}>
-                    {new Intl.DateTimeFormat('fa-IR', {dateStyle: 'short', timeStyle: 'short'}).format(new Date(item.createdAt))}
-                    {' · '}
-                    <span dir="ltr">{item.width}×{item.height} {item.format}</span>
-                  </span>
-                  <span style={{display: 'flex', gap: '6px', flexShrink: 0}}>
-                    <button
-                      className="ocr"
-                      disabled={busy || loadingData || item.jobId === job?.jobId}
-                      onClick={() => void openJob(item)}
-                      style={{padding: '5px 12px', fontSize: '12px'}}
-                    >
-                      {item.jobId === job?.jobId ? 'باز است' : 'بازکردن'}
-                    </button>
-                    <button
-                      className="ocr danger"
-                      disabled={busy || loadingData}
-                      onClick={() => void deleteJob(item)}
-                      aria-label={`حذف کار ${new Intl.DateTimeFormat('fa-IR', {dateStyle: 'short', timeStyle: 'short'}).format(new Date(item.createdAt))}`}
-                      title="حذف این کار و فایل‌هایش"
-                      style={{padding: '5px 10px', fontSize: '12px', background: '#3a1414', color: '#ff9b9b', border: '1px solid #ff6b6b55'}}
-                    >
-                      حذف
-                    </button>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
-        {job && (
-          <div className="job" style={{marginTop: '24px', width: '100%', borderTop: '1px solid #ffffff20', paddingTop: '18px', textAlign: 'left'}}>
-            <p style={{margin: '0 0 8px 0', color: '#eef9f4'}}><strong>آخرین تصویر ذخیره‌شده</strong>: {job.width} × {job.height} پیکسل · <span dir="ltr">{job.format}</span></p>
-            <small style={{color: '#a8b9bb'}}>شناسه: <bdi>{job.jobId}</bdi></small>
-            <p style={{margin: '12px 0'}}><button className="ocr" disabled={busy || loadingData} onClick={() => void runOcr()} style={{padding: '10px 16px', fontSize: '14px'}}>اجرای OCR آزمایشی</button></p>
-            
-            {ocrVersion > 0 && (
-              <ImagePreview
-                jobId={job.jobId}
-                kind="ocr"
-                version={ocrVersion}
-                aspect={job.height / job.width}
-                alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
-                downloadName={`t4-${job.jobId}-ocr.png`}
-                caption={<span style={{color: '#9bf3cc', fontWeight: 'bold'}}>مرحله ۲: کادر و شمارهٔ خطوط تشخیص‌داده‌شده (همان شماره‌های متن پایین)</span>}
-              />
-            )}
-
-            {source && (
-              <section className="translation" style={{marginTop: '24px', textAlign: 'left', width: '100%', maxWidth: '800px'}}>
-                <h3 style={{margin: '0 0 8px 0', color: '#eef9f4'}}>متن شماره‌گذاری‌شده</h3>
-                <p style={{margin: '0 0 12px 0', color: '#a8b9bb', fontSize: '14px'}}>متن OCR آزمایشی است؛ لطفاً خطاهای آن را در ترجمه در نظر بگیرید.</p>
-                <textarea readOnly aria-label="متن انگلیسی شماره‌گذاری‌شده" dir="ltr" value={source.items.map(item => `[${item.number}] ${item.text}`).join('\n')} rows={8} style={{width: '100%', minWidth: '450px', background: '#0b171d', color: '#eef9f4', border: '1px solid #71928a', borderRadius: '10px', padding: '12px', fontFamily: 'inherit', lineHeight: '1.8', resize: 'vertical'}}/>
-                
-                {source.items.length > 0 && (
+              <div
+                ref={dropZoneRef}
+                className={`select ${busy ? 'busy' : ''}`}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onClick={() => {if (!busy && !loadingData) document.getElementById('file-input')?.click()}}
+              >
+                {job && sourceVersion ? (
+                  <img src={`/api/jobs/${job.jobId}/thumb/source?v=${sourceVersion}`} alt="بندانگشتی تصویر انتخاب‌شده" />
+                ) : (
                   <>
-                    <h3 style={{margin: '16px 0 8px 0', color: '#eef9f4'}}>ترجمهٔ دستی</h3>
-                    <p style={{margin: '0 0 12px 0', color: '#a8b9bb', fontSize: '14px'}}>ترجمه را با همان شماره‌ها وارد کنید؛ موارد جاافتاده حفظ می‌شوند.</p>
-                    <textarea aria-label="ترجمهٔ فارسی شماره‌گذاری‌شده" dir="rtl" value={translation} onChange={e => setTranslation(e.target.value)} disabled={busy || loadingData} rows={8} placeholder="[1] ترجمهٔ فارسی" style={{width: '100%', minWidth: '450px', background: '#0b171d', color: '#eef9f4', border: '1px solid #71928a', borderRadius: '10px', padding: '12px', fontFamily: 'inherit', lineHeight: '1.8', resize: 'vertical'}}/>
-                    <p style={{margin: '12px 0 0 0'}}><button className="ocr" disabled={busy || loadingData} onClick={() => void saveTranslation()} style={{padding: '10px 16px', fontSize: '14px'}}>ذخیرهٔ ترجمه</button></p>
-                    <p role="status" style={{margin: '8px 0 0 0', color: '#a8b9bb', fontSize: '14px'}}>{warnings}</p>
-                    <p style={{margin: '12px 0 0 0', color: '#a8b9bb', fontSize: '14px'}}>پاک‌سازی از آخرین ترجمهٔ ذخیره‌شده استفاده می‌کند، نه تغییرات ذخیره‌نشده.</p>
-                    <button className="ocr" disabled={busy || loadingData} onClick={() => void cleanImage()} style={{padding: '10px 16px', fontSize: '14px', marginTop: '8px'}}>پاک‌سازی و درج ترجمه</button>
-                    <button className="ocr" disabled={busy || loadingData || cleanVersion === 0} onClick={() => void renderImage()} style={{padding: '10px 16px', fontSize: '14px', marginTop: '8px', marginRight: '8px'}}>درج دوبارهٔ ترجمه</button>
-                    
-                    {renderVersion > 0 && (
-                      <ImagePreview
-                        jobId={job!.jobId}
-                        kind="render"
-                        version={renderVersion}
-                        aspect={job!.height / job!.width}
-                        alt="پیش‌نمایش صفحه با ترجمهٔ فارسی"
-                        downloadName={`t4-${job!.jobId}-fa.png`}
-                        caption={<span>پیش‌نمایش آزمایشی با فونت وزیرمتن؛ پیش از استفادهٔ نهایی خروجی را بررسی کنید.</span>}
-                      />
-                    )}
-
-                    {cleanVersion > 0 && (
-                      <ImagePreview
-                        jobId={job!.jobId}
-                        kind="clean"
-                        version={cleanVersion}
-                        aspect={job!.height / job!.width}
-                        alt="تصویر پاک‌سازی‌شدهٔ آزمایشی، بدون متن فارسی"
-                        downloadName={`t4-${job!.jobId}-clean.png`}
-                        caption={<span>نتیجهٔ پاک‌سازی، پیش از درج ترجمه.</span>}
-                      />
-                    )}
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9bf3cc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    <span>{busy ? 'در حال پردازش…' : 'انتخاب فایل یا رهاکردن تصویر'}</span>
                   </>
                 )}
-                {!source.items.length && <p style={{margin: '0', color: '#a8b9bb', fontSize: '14px'}}>متنی شناسایی نشد.</p>}
-              </section>
-            )}
-          </div>
-        )}
-      </section>
+                <input
+                  id="file-input"
+                  type="file"
+                  disabled={busy || loadingData}
+                  accept="image/png,image/jpeg,image/webp,image/bmp"
+                  onChange={e => {void upload(e.target.files?.[0]); e.target.value = '';}}
+                />
+              </div>
+
+              {job && sourceVersion > 0 && (
+                <>
+                  <p className="wizard-note">تصویر فعلی: <span dir="ltr">{job.width} × {job.height} · {job.format}</span></p>
+                  <div className="wizard-nav">
+                    <button type="button" className="ocr" onClick={() => goToStep(2)}>ادامه به تشخیص متن</button>
+                  </div>
+                </>
+              )}
+
+              {jobs.length > 0 && (
+                <section className="jobs" aria-label="کارهای قبلی">
+                  <h3>کارهای قبلی روی این سیستم</h3>
+                  <ul>
+                    {jobs.map(item => (
+                      <li key={item.jobId} className={item.jobId === job?.jobId ? 'is-open' : undefined}>
+                        <span className="jobs-meta">
+                          {new Intl.DateTimeFormat('fa-IR', {dateStyle: 'short', timeStyle: 'short'}).format(new Date(item.createdAt))}
+                          {' · '}
+                          <span dir="ltr">{item.width}×{item.height} {item.format}</span>
+                        </span>
+                        <span className="jobs-actions">
+                          <button
+                            type="button"
+                            className="ocr"
+                            disabled={busy || loadingData || item.jobId === job?.jobId}
+                            onClick={() => void openJob(item)}
+                          >
+                            {item.jobId === job?.jobId ? 'باز است' : 'بازکردن'}
+                          </button>
+                          <button
+                            type="button"
+                            className="ocr danger"
+                            disabled={busy || loadingData}
+                            onClick={() => void deleteJob(item)}
+                            aria-label={`حذف کار ${new Intl.DateTimeFormat('fa-IR', {dateStyle: 'short', timeStyle: 'short'}).format(new Date(item.createdAt))}`}
+                            title="حذف این کار و فایل‌هایش"
+                          >
+                            حذف
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </>
+          )}
+
+          {/* ------------------------------------------------ مرحله ۲: تشخیص متن */}
+          {step === 2 && (
+            <>
+              <h2 className="wizard-title">مرحله ۲: تشخیص متن (OCR)</h2>
+              {!job ? (
+                <p className="wizard-help">اول در مرحلهٔ ۱ یک تصویر انتخاب کنید.</p>
+              ) : (
+                <>
+                  <p className="wizard-help">متن‌های تصویر با موتور آزمایشی OCR شناسایی می‌شوند. کادر و شمارهٔ هر خط را در پیش‌نمایش بررسی کنید.</p>
+                  <div className="wizard-nav start">
+                    <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void runOcr()}>
+                      {source ? 'اجرای دوبارهٔ OCR' : 'اجرای OCR آزمایشی'}
+                    </button>
+                  </div>
+                  <ImagePreview
+                    jobId={job.jobId}
+                    kind="source"
+                    version={sourceVersion}
+                    aspect={job.height / job.width}
+                    alt="پیش‌نمایش عکس اصلی"
+                    downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
+                    caption={<span>تصویر اصلی (برای بزرگ‌نمایی کلیک کنید)</span>}
+                  />
+                  {ocrVersion > 0 && (
+                    <ImagePreview
+                      jobId={job.jobId}
+                      kind="ocr"
+                      version={ocrVersion}
+                      aspect={job.height / job.width}
+                      alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
+                      downloadName={`t4-${job.jobId}-ocr.png`}
+                      caption={<span>کادر و شمارهٔ خطوط تشخیص‌داده‌شده (همان شماره‌های مرحلهٔ ترجمه)</span>}
+                    />
+                  )}
+                  <div className="wizard-nav">
+                    <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
+                    <button type="button" className="ocr" disabled={!source || busy || loadingData} onClick={() => goToStep(3)}>ادامه به ترجمه</button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
+          {/* ------------------------------------------------ مرحله ۳: ترجمه */}
+          {step === 3 && (
+            <>
+              <h2 className="wizard-title">مرحله ۳: ترجمهٔ فارسی</h2>
+              {!source ? (
+                <p className="wizard-help">برای این کار هنوز متنی تشخیص داده نشده است؛ ابتدا OCR را اجرا کنید.</p>
+              ) : (
+                <>
+                  <h3 className="wizard-subtitle">متن شماره‌گذاری‌شده</h3>
+                  <p className="wizard-help">متن OCR آزمایشی است؛ خطاهای آن را در ترجمه در نظر بگیرید.</p>
+                  <textarea
+                    readOnly
+                    aria-label="متن انگلیسی شماره‌گذاری‌شده"
+                    dir="ltr"
+                    rows={8}
+                    value={source.items.map(item => `[${item.number}] ${item.text}`).join('\n')}
+                  />
+
+                  {source.items.length > 0 ? (
+                    <>
+                      <h3 className="wizard-subtitle">ترجمهٔ دستی</h3>
+                      <p className="wizard-help">ترجمه را با همان شماره‌ها وارد کنید؛ موارد جاافتاده حفظ می‌شوند.</p>
+                      <textarea
+                        aria-label="ترجمهٔ فارسی شماره‌گذاری‌شده"
+                        dir="rtl"
+                        rows={8}
+                        placeholder="[1] ترجمهٔ فارسی"
+                        value={translation}
+                        onChange={e => setTranslation(e.target.value)}
+                        disabled={busy || loadingData}
+                      />
+                      <p className="wizard-note">{warnings}</p>
+                      <div className="wizard-nav">
+                        <button type="button" className="ghost" onClick={() => goToStep(2)}>مرحلهٔ قبل</button>
+                        <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void runOcr()}>اجرای دوبارهٔ OCR</button>
+                        <button type="button" className="ocr" disabled={busy || loadingData || !translation.trim()} onClick={() => void saveTranslation()}>
+                          ذخیرهٔ ترجمه و درج روی تصویر
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="wizard-note">متنی شناسایی نشد.</p>
+                      <div className="wizard-nav">
+                        <button type="button" className="ghost" onClick={() => goToStep(2)}>مرحلهٔ قبل</button>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </>
+          )}
+
+          {/* ------------------------------------------------ مرحله ۴: نتیجه */}
+          {step === 4 && (
+            <>
+              <h2 className="wizard-title">مرحله ۴: نتیجه روی تصویر</h2>
+              {!job ? (
+                <p className="wizard-help">کاری باز نیست.</p>
+              ) : (
+                <>
+                  <p className="wizard-help">ترجمهٔ فارسی با فونت وزیرمتن روی تصویر قرار گرفته است. پیش از استفادهٔ نهایی، خروجی را با بزرگ‌نمایی بررسی کنید.</p>
+
+                  {renderVersion > 0 ? (
+                    <ImagePreview
+                      jobId={job.jobId}
+                      kind="render"
+                      version={renderVersion}
+                      aspect={job.height / job.width}
+                      alt="پیش‌نمایش صفحه با ترجمهٔ فارسی"
+                      downloadName={`t4-${job.jobId}-fa.png`}
+                      caption={<span>خروجی نهایی (آزمایشی) — برای بزرگ‌نمایی و دانلود کلیک کنید</span>}
+                    />
+                  ) : (
+                    <p className="wizard-note">
+                      {busy ? 'دارای در حال ساخت خروجی…' : 'خروجی هنوز ساخته نشده است؛ دکمهٔ «پاک‌سازی و درج ترجمه» را بزنید.'}
+                    </p>
+                  )}
+
+                  {cleanVersion > 0 && (
+                    <ImagePreview
+                      jobId={job.jobId}
+                      kind="clean"
+                      version={cleanVersion}
+                      aspect={job.height / job.width}
+                      alt="تصویر پاک‌سازی‌شدهٔ آزمایشی، بدون متن فارسی"
+                      downloadName={`t4-${job.jobId}-clean.png`}
+                      caption={<span>پاک‌سازی پیش از درج ترجمه</span>}
+                    />
+                  )}
+
+                  <div className="wizard-nav">
+                    <button type="button" className="ghost" onClick={() => goToStep(3)}>بازگشت به ترجمه</button>
+                    <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void cleanImage()}>
+                      پاک‌سازی و درج ترجمه
+                    </button>
+                    <button type="button" className="ocr" disabled={busy || loadingData || cleanVersion === 0} onClick={() => void renderImage()}>
+                      درج دوبارهٔ ترجمه
+                    </button>
+                    <button type="button" className="ghost" onClick={resetApp}>کار جدید</button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </section>
+      </div>
 
       {dialog && <Dialog request={dialog} onClose={closeDialog} />}
     </main>
   );
 }
-
