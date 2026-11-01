@@ -342,7 +342,7 @@ function App() {
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           onClick={() => {if (!busy && !loadingData) document.getElementById('file-input')?.click()}}
-          style={{position: 'relative', width: '100%', maxWidth: '500px', minHeight: '160px', maxHeight: '250px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', border: '2px dashed #9bf3cc', borderRadius: '12px', background: '#0b171d', color: '#9bf3cc', cursor: 'pointer', transition: 'all .2s', overflow: 'hidden'}}
+          style={{position: 'relative', width: '100%', maxWidth: '100%', minHeight: '160px', maxHeight: '250px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', border: '2px dashed #9bf3cc', borderRadius: '12px', background: '#0b171d', color: '#9bf3cc', cursor: 'pointer', transition: 'all .2s', overflow: 'hidden'}}
         >
           {job && sourceVersion ? (
             <img src={`/api/jobs/${job.jobId}/thumb/source?v=${sourceVersion}`} alt="بندانگشتی تصویر انتخاب‌شده" style={{maxWidth: '100%', maxHeight: '160px', borderRadius: '8px', objectFit: 'contain', marginBottom: '12px'}} />
