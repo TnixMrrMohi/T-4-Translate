@@ -9,11 +9,10 @@ const key = 't4-last-job';
 /** مراحل کار؛ در هر لحظه فقط محتوای یک مرحله نمایش داده می‌شود. */
 const STEPS = [
   {id: 1, title: 'انتخاب تصویر'},
-  {id: 2, title: 'تشخیص متن'},
-  {id: 3, title: 'ترجمهٔ فارسی'},
-  {id: 4, title: 'پاک‌سازی'},
-  {id: 5, title: 'درج ترجمه'},
-  {id: 6, title: 'مقایسه'},
+  {id: 2, title: 'ترجمهٔ فارسی'},
+  {id: 3, title: 'پاک‌سازی'},
+  {id: 4, title: 'درج ترجمه'},
+  {id: 5, title: 'مقایسه'},
 ];
 
 type PreviewKind = 'source' | 'ocr' | 'clean' | 'render';
@@ -83,10 +82,10 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   const closeRef = useRef<HTMLButtonElement>(null);
   const thumbRef = useRef<HTMLButtonElement>(null);
   const close = () => {setOpen(false); thumbRef.current?.focus();};
-  // صفحهٔ بلند (مثل ۱۵۰۰۰ پیکسل) در حالت «تناسب صفحه» ناخوانا می‌شود؛
-  // بنابراین با عرض کامل و پیمایش عمودی باز می‌شود.
+  // پیش‌نمایش همیشه کل صفحه را نشان می‌دهد (حتی صفحهٔ ۱۵۰۰۰ پیکسلی که باریک می‌شود)
+  // و برای دیدن جزئیات، مودال با زوم و «عرض کامل» باز می‌شود.
   const tall = aspect > 2.5;
-  const openModal = () => {setOpen(true); setFit(!tall); setZoom(1);};
+  const openModal = () => {setOpen(true); setFit(true); setZoom(1);};
 
   const thumbUrl = `/api/jobs/${jobId}/thumb/${kind}?v=${version}`;
   const fullUrl = `/api/jobs/${jobId}/${kind === 'source' ? 'source.img' : kind === 'ocr' ? 'ocr-preview' : kind}?v=${version}`;
@@ -112,18 +111,13 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
         <button
           type="button"
           ref={thumbRef}
-          className="preview-thumb"
+          className={`preview-thumb${tall ? ' is-tall' : ''}`}
           onClick={openModal}
           aria-label={`بزرگ‌نمایی: ${alt}`}
           title="برای بزرگ‌نمایی کلیک کنید"
         >
-          <img
-            src={thumbUrl}
-            alt={alt}
-            loading="lazy"
-            style={{objectFit: tall ? 'cover' : 'contain', objectPosition: 'top center'}}
-          />
-          <span className="zoom-hint">بزرگ‌نمایی</span>
+          <img src={thumbUrl} alt={alt} loading="lazy" />
+          <span className="zoom-hint">{tall ? 'صفحهٔ بلند — بزرگ‌نمایی' : 'بزرگ‌نمایی'}</span>
         </button>
         <figcaption>{caption}</figcaption>
       </figure>
@@ -148,7 +142,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
               <button type="button" ref={closeRef} onClick={close}>بستن ✕</button>
             </span>
           </div>
-          {tall && fit && <p style={{color: '#f2c14e', fontSize: '13px', margin: '0 0 8px'}}>این صفحه بلند است؛ برای خواندن متن روی «+» بزنید یا از دکمهٔ «عرض کامل» استفاده کنید.</p>}
+          {tall && <p style={{color: '#f2c14e', fontSize: '13px', margin: '0 0 8px'}}>این صفحه بلند است؛ کل صفحه نمایش داده می‌شود. برای خواندن متن روی «+» بزنید یا «عرض کامل» را انتخاب کنید.</p>}
           <div className={`modal-stage${fit ? ' fit' : ''}`}>
             <img
               src={fullUrl}
@@ -301,10 +295,10 @@ export function App() {
 
   // بالاترین مرحله‌ای که کاربر می‌تواند باز کند؛ بر اساس خروجی‌های موجود.
   const maxStep = !job ? 1
-    : !source ? 2
-      : !hasSaved ? 3
-        : cleanVersion === 0 ? 4
-          : renderVersion === 0 ? 5 : 6;
+    : !source ? 1
+      : !hasSaved ? 2
+        : cleanVersion === 0 ? 3
+          : renderVersion === 0 ? 4 : 5;
 
   function goToStep(target: number) {
     if (busy || loadingData) return;
@@ -363,7 +357,7 @@ export function App() {
     localStorage.setItem(key, item.jobId);
     setJob({jobId: item.jobId, width: item.width, height: item.height, format: item.format, status: item.status});
     setSourceVersion(Date.now());
-    setStep(2);
+    setStep(1);
     setMessage('کار قبلی از حافظهٔ همین سیستم باز شد.');
   }
 
@@ -474,10 +468,10 @@ export function App() {
         if (artifacts?.clean) setCleanVersion(Date.now());
       }
       // کاربر را به دورترین مرحله‌ای می‌بریم که داده‌اش آماده است.
-      const next = !savedSource ? 2
-        : !savedTranslation ? 3
-          : !artifacts?.clean ? 4
-            : !artifacts?.render ? 5 : 6;
+      const next = !savedSource ? 1
+        : !savedTranslation ? 2
+          : !artifacts?.clean ? 3
+            : !artifacts?.render ? 3 : 5;
       setStep(next);
     }).catch(e => {if (e.name !== 'AbortError') fail('بازیابی متن‌ها ممکن نشد.');})
       .finally(() => {if (!controller.signal.aborted) setLoadingData(false);});
@@ -502,7 +496,7 @@ export function App() {
       setWarnings(parts.join(' | ')); setCleanVersion(0); setRenderVersion(0);
       setHasSaved(true);
       setMessage('ترجمه ذخیره شد. مرحلهٔ بعد: پاک‌سازی متن اصلی.');
-      setStep(4);
+      setStep(3);
       await cleanImage();
     } catch (error) {fail(error instanceof Error ? error.message : 'ذخیرهٔ ترجمه ناموفق بود.');}
     finally {setBusy(false);}
@@ -515,7 +509,37 @@ export function App() {
     if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'درج ترجمه روی تصویر ناموفق بود.');
     setRenderVersion(Date.now());
     setMessage(result.message ?? 'ترجمهٔ فارسی روی تصویر قرار گرفت.');
-    setStep(5);
+    setStep(4);
+  }
+
+  /** ادامه از مرحلهٔ پاک‌سازی: پاک‌سازی (اگر لازم است) و سپس درج ترجمه. */
+  async function continueFromClean() {
+    if (!job || busy || loadingData) return;
+    if (cleanVersion === 0) {
+      setBusy(true); setMessage('در حال پاک‌سازی آزمایشی…'); setRenderVersion(0);
+      try {
+        const response = await fetch(`/api/jobs/${job.jobId}/clean`, {method: 'POST'});
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی ناموفق بود.');
+        setCleanVersion(Date.now());
+      } catch (error) {
+        fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
+    }
+    await renderImage();
+  }
+
+  /** ادامه از مرحلهٔ ۱: تشخیص خودکار متن و رفتن به ترجمه. */
+  async function continueFromImage() {
+    if (!job || busy || loadingData) return;
+    if (source) {
+      setStep(2);
+      return;
+    }
+    await runOcr(2);
   }
 
   async function renderImage() {
@@ -535,8 +559,8 @@ export function App() {
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی ناموفق بود.');
       setCleanVersion(Date.now());
       setRenderVersion(0);  // خروجی قبلی با پاک‌سازی جدید معتبر نیست
-      setMessage('پاک‌سازی انجام شد. مرحلهٔ بعد: درج ترجمهٔ فارسی.');
-      setStep(4);
+      setMessage('پاک‌سازی انجام شد. با «ادامه» ترجمه روی تصویر درج می‌شود.');
+      setStep(3);
     } catch (error) {fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');}
     finally {setBusy(false);}
   }
@@ -565,17 +589,19 @@ export function App() {
       localStorage.setItem(key, result.jobId); setJob(result); setSource(null); setTranslation(''); setWarnings(''); setCleanVersion(0); setRenderVersion(0); setSourceVersion(0); setOcrVersion(0);
       setSourceVersion(Date.now());
       setHasSaved(false);
-      setStep(2);
-      setMessage('تصویر ذخیره شد. مرحلهٔ بعد: تشخیص متن.');
+      setStep(1);
+      setMessage('تصویر ذخیره شد. با «ادامه» متن‌ها خودکار تشخیص داده می‌شوند.');
       void loadJobs();
     } catch (error) {
       if (error instanceof Error && error.name !== 'AbortError') fail(error.message);
     } finally {setBusy(false); currentRequest.current = null;}
   }
 
-  async function runOcr() {
+  /** OCR و رفتن به مرحلهٔ مقصد؛ در مرحلهٔ ۱ با دکمهٔ ادامه خودکار اجرا می‌شود. */
+  async function runOcr(nextStep: number | null = null) {
     if (!job || busy) return;
-    if (source) {
+    // اگر ترجمه‌ای در کار است، اجرای مجدد OCR می‌تواند آن را کهنه کند.
+    if (translation.trim() || (hasSaved && nextStep === null)) {
       const ok = await confirmDialog({
         title: 'اجرای مجدد OCR',
         message: 'اجرای مجدد OCR ممکن است منبع ترجمه را تغییر دهد و ترجمهٔ ذخیره‌شده را کهنه کند. ادامه می‌دهید؟',
@@ -595,7 +621,7 @@ export function App() {
       if (source && source.revision !== updated.revision && translation) setWarnings('متن OCR تغییر کرده است؛ ترجمهٔ قبلی را پیش از ذخیره بررسی کنید.');
       setSource(updated); setCleanVersion(0); setRenderVersion(0);
       setOcrVersion(Date.now());
-      setStep(3);
+      if (nextStep !== null) setStep(nextStep);
       setMessage('متن تشخیص داده شد. مرحلهٔ بعد: ترجمه.');
     } catch (error) {fail(error instanceof Error ? error.message : 'OCR ناموفق بود.');}
     finally {setBusy(false);}
@@ -681,7 +707,9 @@ export function App() {
                     caption={<span>تصویر اصلی — برای بزرگ‌نمایی کلیک کنید</span>}
                   />
                   <div className="wizard-nav">
-                    <button type="button" className="ocr" onClick={() => goToStep(2)}>ادامه به تشخیص متن</button>
+                    <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void continueFromImage()}>
+                      {source ? 'ادامه به ترجمه' : 'ادامه (تشخیص خودکار متن)'}
+                    </button>
                     <button type="button" className="ghost" onClick={resetApp}>حذف انتخاب و شروع دوباره</button>
                   </div>
                 </>
@@ -726,48 +754,25 @@ export function App() {
             </>
           )}
 
-          {/* ------------------------------------------------ مرحله ۲: تشخیص متن */}
+          {/* ------------------------------------------------ مرحله ۲: ترجمه */}
           {step === 2 && (
             <>
-              <h2 className="wizard-title">مرحله ۲: تشخیص متن (OCR)</h2>
-              {!job ? (
-                <p className="wizard-help">اول در مرحلهٔ ۱ یک تصویر انتخاب کنید.</p>
-              ) : (
-                <>
-                  <p className="wizard-help">متن‌های تصویر با موتور آزمایشی OCR شناسایی می‌شوند. کادر و شمارهٔ هر خط را در پیش‌نمایش بررسی کنید.</p>
-                  <div className="wizard-nav start">
-                    <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void runOcr()}>
-                      {source ? 'اجرای دوبارهٔ OCR' : 'اجرای OCR آزمایشی'}
-                    </button>
-                  </div>
-                  {ocrVersion > 0 && (
-                    <ImagePreview
-                      jobId={job.jobId}
-                      kind="ocr"
-                      version={ocrVersion}
-                      aspect={job.height / job.width}
-                      alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
-                      downloadName={`t4-${job.jobId}-ocr.png`}
-                      caption={<span>کادر و شمارهٔ خطوط تشخیص‌داده‌شده (همان شماره‌های مرحلهٔ ترجمه)</span>}
-                    />
-                  )}
-                  <div className="wizard-nav">
-                    <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
-                    <button type="button" className="ocr" disabled={!source || busy || loadingData} onClick={() => goToStep(3)}>ادامه به ترجمه</button>
-                  </div>
-                </>
-              )}
-            </>
-          )}
-
-          {/* ------------------------------------------------ مرحله ۳: ترجمه */}
-          {step === 3 && (
-            <>
-              <h2 className="wizard-title">مرحله ۳: ترجمهٔ فارسی</h2>
+              <h2 className="wizard-title">مرحله ۲: ترجمهٔ فارسی</h2>
               {!source ? (
                 <p className="wizard-help">برای این کار هنوز متنی تشخیص داده نشده است؛ ابتدا OCR را اجرا کنید.</p>
               ) : (
                 <>
+                  {ocrVersion > 0 && (
+                    <ImagePreview
+                      jobId={job!.jobId}
+                      kind="ocr"
+                      version={ocrVersion}
+                      aspect={job!.height / job!.width}
+                      alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
+                      downloadName={`t4-${job!.jobId}-ocr.png`}
+                      caption={<span>کادر و شمارهٔ خطوط تشخیص‌داده‌شده (همان شماره‌های متن زیر)</span>}
+                    />
+                  )}
                   <h3 className="wizard-subtitle">متن شماره‌گذاری‌شده</h3>
                   <p className="wizard-help">
                     متن OCR آزمایشی است؛ خطاهای آن را در ترجمه در نظر بگیرید. متن را کپی کنید و پاسخ شماره‌دار را پایین بچسبانید.
@@ -821,7 +826,7 @@ export function App() {
                       />
                       <p className="wizard-note">{warnings}</p>
                       <div className="wizard-nav">
-                        <button type="button" className="ghost" onClick={() => goToStep(2)}>مرحلهٔ قبل</button>
+                        <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
                         <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void runOcr()}>اجرای دوبارهٔ OCR</button>
                         <button type="button" className="ocr" disabled={busy || loadingData || !translation.trim()} onClick={() => void saveTranslation()}>
                           ذخیرهٔ ترجمه و ادامه
@@ -832,7 +837,7 @@ export function App() {
                     <>
                       <p className="wizard-note">متنی شناسایی نشد.</p>
                       <div className="wizard-nav">
-                        <button type="button" className="ghost" onClick={() => goToStep(2)}>مرحلهٔ قبل</button>
+                        <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
                       </div>
                     </>
                   )}
@@ -841,14 +846,14 @@ export function App() {
             </>
           )}
 
-          {/* ------------------------------------------------ مرحله ۴: پاک‌سازی */}
-          {step === 4 && (
+          {/* ------------------------------------------------ مرحله ۳: پاک‌سازی */}
+          {step === 3 && (
             <>
-              <h2 className="wizard-title">مرحله ۴: پاک‌سازی متن اصلی</h2>
+              <h2 className="wizard-title">مرحله ۳: پاک‌سازی متن اصلی</h2>
               {!job ? (
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : !hasSaved ? (
-                <p className="wizard-help">اول ترجمه را در مرحلهٔ ۳ ذخیره کنید.</p>
+                <p className="wizard-help">اول ترجمه را در مرحلهٔ ۲ ذخیره کنید.</p>
               ) : (
                 <>
                   <p className="wizard-help">
@@ -875,9 +880,9 @@ export function App() {
                   )}
 
                   <div className="wizard-nav">
-                    <button type="button" className="ghost" onClick={() => goToStep(3)}>مرحلهٔ قبل (ترجمه)</button>
-                    <button type="button" className="ocr" disabled={cleanVersion === 0 || busy || loadingData} onClick={() => goToStep(5)}>
-                      ادامه به درج ترجمه
+                    <button type="button" className="ghost" onClick={() => goToStep(2)}>مرحلهٔ قبل (ترجمه)</button>
+                    <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void continueFromClean()}>
+                      {cleanVersion === 0 ? 'ادامه (پاک‌سازی و درج ترجمه)' : 'ادامه و درج ترجمه'}
                     </button>
                   </div>
                 </>
@@ -885,10 +890,10 @@ export function App() {
             </>
           )}
 
-          {/* ------------------------------------------------ مرحله ۵: درج ترجمه */}
-          {step === 5 && (
+          {/* ------------------------------------------------ مرحله ۴: درج ترجمه */}
+          {step === 4 && (
             <>
-              <h2 className="wizard-title">مرحله ۵: درج ترجمه روی تصویر</h2>
+              <h2 className="wizard-title">مرحله ۴: درج ترجمه روی تصویر</h2>
               {!job ? (
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : (
@@ -915,8 +920,8 @@ export function App() {
                   )}
 
                   <div className="wizard-nav">
-                    <button type="button" className="ghost" onClick={() => goToStep(4)}>مرحلهٔ قبل (پاک‌سازی)</button>
-                    <button type="button" className="ocr" disabled={renderVersion === 0 || busy || loadingData} onClick={() => goToStep(6)}>
+                    <button type="button" className="ghost" onClick={() => goToStep(3)}>مرحلهٔ قبل (پاک‌سازی)</button>
+                    <button type="button" className="ocr" disabled={renderVersion === 0 || busy || loadingData} onClick={() => goToStep(5)}>
                       ادامه به مقایسه
                     </button>
                   </div>
@@ -925,10 +930,10 @@ export function App() {
             </>
           )}
 
-          {/* ------------------------------------------------ مرحله ۶: مقایسهٔ ورودی و خروجی */}
-          {step === 6 && (
+          {/* ------------------------------------------------ مرحله ۵: مقایسهٔ ورودی و خروجی */}
+          {step === 5 && (
             <>
-              <h2 className="wizard-title">مرحله ۶: مقایسهٔ ورودی و خروجی</h2>
+              <h2 className="wizard-title">مرحله ۵: مقایسهٔ ورودی و خروجی</h2>
               {!job ? (
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : (
@@ -967,7 +972,7 @@ export function App() {
                   </div>
 
                   <div className="wizard-nav">
-                    <button type="button" className="ghost" onClick={() => goToStep(5)}>مرحلهٔ قبل (درج)</button>
+                    <button type="button" className="ghost" onClick={() => goToStep(4)}>مرحلهٔ قبل (درج)</button>
                     <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void renderImage()}>درج دوبارهٔ ترجمه</button>
                     <button type="button" className="ghost" onClick={resetApp}>کار جدید</button>
                   </div>

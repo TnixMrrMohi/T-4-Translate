@@ -43,6 +43,12 @@ function mockApi(options: {
       ocrDone = true;
       return json({jobId: JOB_ID, provider: 'mock', lines: options.ocrLines ?? [], revision: 'r'.repeat(64)});
     }
+    if (method === 'POST' && url.endsWith('/clean')) {
+      return json({jobId: JOB_ID, message: 'پاک‌سازی آزمایشی انجام شد؛ هنوز ترجمه روی تصویر قرار نگرفته است.'});
+    }
+    if (method === 'POST' && url.endsWith('/render')) {
+      return json({jobId: JOB_ID, drawn: 2, message: 'ترجمهٔ فارسی روی پیش‌نمایش قرار گرفت؛ این خروجی هنوز آزمایشی است.'});
+    }
     if (url.endsWith('/artifacts')) {
       const ready = Boolean(options.source) && (!options.sourceAfterOcr || ocrDone);
       return json({jobId: JOB_ID, source: ready, ocr: ready, translations: Boolean(options.translation),
@@ -154,15 +160,20 @@ describe('فهرست کارها و حذف', () => {
 });
 
 describe('تأییدهای عملیات', () => {
-  it('اجرای مجدد OCR با دیالوگ کاستوم تأیید می‌شود', async () => {
+  it('اجرای مجدد OCR در مرحلهٔ ترجمه با دیالوگ کاستوم تأیید می‌شود', async () => {
     localStorage.setItem('t4-last-job', JOB_ID);
     const {calls} = mockApi({
       job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
       source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
     });
     const user = userEvent.setup();
     render(<App />);
 
+    // کار ذخیره‌شده در مرحلهٔ پاک‌سازی باز می‌شود؛ برای اجرای مجدد OCR به ترجمه برمی‌گردیم.
+    await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'});
+    await user.click(screen.getByRole('button', {name: 'مرحلهٔ قبل (ترجمه)'}));
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
     const ocrButton = await screen.findByRole('button', {name: 'اجرای دوبارهٔ OCR'});
     await user.click(ocrButton);
     const dialog = await screen.findByRole('alertdialog');
@@ -180,51 +191,54 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
 
     expect(await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'})).toBeInTheDocument();
     expect(screen.queryByRole('heading', {name: /مرحله ۳/})).not.toBeInTheDocument();
-    expect(screen.getByRole('button', {name: /تشخیص متن/})).toBeDisabled();
     expect(screen.getByRole('button', {name: /ترجمهٔ فارسی/})).toBeDisabled();
     expect(screen.getByRole('button', {name: /پاک‌سازی/})).toBeDisabled();
     expect(screen.getByRole('button', {name: /درج ترجمه/})).toBeDisabled();
     expect(screen.getByRole('button', {name: /مقایسه/})).toBeDisabled();
+    // مرحلهٔ OCR جدا وجود ندارد.
+    expect(screen.queryByRole('button', {name: /تشخیص متن/})).not.toBeInTheDocument();
   });
 
-  it('پس از آپلود، محتوای مرحلهٔ ۱ جای خود را به مرحلهٔ ۲ می‌دهد', async () => {
-    mockApi({jobs: []});
-    const user = userEvent.setup();
-    const {container} = render(<App />);
-    await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
-
-    const input = container.querySelector('#file-input') as HTMLInputElement;
-    await user.upload(input, new File(['x'], 'page.png', {type: 'image/png'}));
-
-    expect(await screen.findByRole('heading', {name: 'مرحله ۲: تشخیص متن (OCR)'})).toBeInTheDocument();
-    expect(screen.queryByRole('heading', {name: /مرحله ۱/})).not.toBeInTheDocument();
-    expect(screen.getByRole('button', {name: 'اجرای OCR آزمایشی'})).toBeEnabled();
-  });
-
-  it('پس از OCR، مرحلهٔ ۳ نمایش داده می‌شود و امکان بازگشت وجود دارد', async () => {
-    mockApi({
+  it('پس از آپلود در مرحلهٔ ۱ می‌ماند و «ادامه» خودش OCR را اجرا می‌کند', async () => {
+    const {calls} = mockApi({
       jobs: [],
-      ocrLines: [{text: 'Hello', confidence: .9, quad: [[0, 0], [10, 0], [10, 10], [0, 10]]}],
       source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
       sourceAfterOcr: true,
     });
     const user = userEvent.setup();
     const {container} = render(<App />);
     await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
+
     await user.upload(container.querySelector('#file-input') as HTMLInputElement,
       new File(['x'], 'page.png', {type: 'image/png'}));
 
-    await user.click(await screen.findByRole('button', {name: 'اجرای OCR آزمایشی'}));
+    // آپلود به‌تنهایی مرحله را عوض نمی‌کند.
+    expect(await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'})).toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: 'ادامه (تشخیص خودکار متن)'}));
 
-    expect(await screen.findByRole('heading', {name: 'مرحله ۳: ترجمهٔ فارسی'})).toBeInTheDocument();
-    expect(screen.getByLabelText('متن انگلیسی شماره‌گذاری‌شده')).toHaveValue('[1] Hello');
-    expect(screen.queryByRole('heading', {name: /مرحله ۲/})).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', {name: 'مرحلهٔ قبل'}));
-    expect(await screen.findByRole('heading', {name: 'مرحله ۲: تشخیص متن (OCR)'})).toBeInTheDocument();
+    expect(await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'})).toBeInTheDocument();
+    expect(calls.filter(call => call.method === 'POST' && call.url.endsWith('/ocr'))).toHaveLength(1);
   });
 
-  it('کار ذخیره‌شده با ترجمه، در مرحلهٔ ۴ (پاک‌سازی) باز می‌شود', async () => {
+  it('«ادامه» در مرحلهٔ پاک‌سازی، پاک‌سازی و درج را خودکار انجام می‌دهد', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const {calls} = mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'})).toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: 'ادامه (پاک‌سازی و درج ترجمه)'}));
+
+    expect(await screen.findByRole('heading', {name: 'مرحله ۴: درج ترجمه روی تصویر'})).toBeInTheDocument();
+    expect(calls.filter(call => call.url.endsWith('/clean'))).toHaveLength(1);
+    expect(calls.filter(call => call.url.endsWith('/render'))).toHaveLength(1);
+  });
+
+  it('کار ذخیره‌شده با ترجمه، در مرحلهٔ ۳ (پاک‌سازی) باز می‌شود', async () => {
     localStorage.setItem('t4-last-job', JOB_ID);
     const {calls} = mockApi({
       job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
@@ -233,11 +247,11 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     });
     render(<App />);
 
-    expect(await screen.findByRole('heading', {name: 'مرحله ۴: پاک‌سازی متن اصلی'})).toBeInTheDocument();
+    expect(await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'})).toBeInTheDocument();
     expect(calls.some(call => call.url.includes('/artifacts'))).toBe(true);
   });
 
-  it('کار کامل‌شده در مرحلهٔ ۶ با مقایسهٔ ورودی و خروجی باز می‌شود', async () => {
+  it('کار کامل‌شده در مرحلهٔ ۵ با مقایسهٔ ورودی و خروجی باز می‌شود', async () => {
     localStorage.setItem('t4-last-job', JOB_ID);
     mockApi({
       job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
@@ -248,7 +262,7 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     });
     render(<App />);
 
-    expect(await screen.findByRole('heading', {name: 'مرحله ۶: مقایسهٔ ورودی و خروجی'})).toBeInTheDocument();
+    expect(await screen.findByRole('heading', {name: 'مرحله ۵: مقایسهٔ ورودی و خروجی'})).toBeInTheDocument();
     expect(screen.getByRole('heading', {name: 'نسخهٔ ورودی'})).toBeInTheDocument();
     expect(screen.getByRole('heading', {name: 'نسخهٔ خروجی'})).toBeInTheDocument();
     expect(screen.getByRole('button', {name: /بزرگ‌نمایی: نسخهٔ ورودی/})).toBeInTheDocument();
@@ -270,7 +284,7 @@ describe('کپی متن و پرامپت در مرحلهٔ ترجمه', () => {
     });
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('heading', {name: 'مرحله ۳: ترجمهٔ فارسی'});
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
     return user;
   }
 
