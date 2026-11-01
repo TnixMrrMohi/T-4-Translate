@@ -255,3 +255,50 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     expect(screen.getByRole('button', {name: /بزرگ‌نمایی: نسخهٔ خروجی/})).toBeInTheDocument();
   });
 });
+
+describe('کپی متن و پرامپت در مرحلهٔ ترجمه', () => {
+  const source = {
+    revision: 'r'.repeat(64),
+    items: [{number: 1, text: 'Hello there'}, {number: 2, text: 'Second line'}],
+  };
+
+  async function openTranslationStep() {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۳: ترجمهٔ فارسی'});
+    return user;
+  }
+
+  it('«کپی متن» فقط متن شماره‌گذاری‌شده را کپی می‌کند', async () => {
+    const user = await openTranslationStep();
+    await user.click(screen.getByRole('button', {name: 'کپی متن'}));
+
+    await waitFor(async () => {
+      expect(await navigator.clipboard.readText()).toBe('[1] Hello there\n[2] Second line');
+    });
+    expect(await screen.findByRole('button', {name: 'کپی شد ✓'})).toBeInTheDocument();
+  });
+
+  it('«کپی با پرامپت» دستور ترجمه و شماره‌ها را با هم کپی می‌کند', async () => {
+    const user = await openTranslationStep();
+    await user.click(screen.getByRole('button', {name: 'کپی با پرامپت'}));
+
+    await waitFor(async () => {
+      const copied = await navigator.clipboard.readText();
+      expect(copied).toContain('ترجمه کن');
+      expect(copied).toContain('شماره‌ها را دقیقاً حفظ کن');
+      expect(copied.trimEnd().endsWith('[1] Hello there\n[2] Second line')).toBe(true);
+    });
+  });
+
+  it('پرامپت همراه در بخش بازشو قابل مشاهده است', async () => {
+    await openTranslationStep();
+    await userEvent.setup().click(screen.getByText('نمایش پرامپت همراه'));
+    expect(await screen.findByText(/فقط ترجمه را برگردان/)).toBeInTheDocument();
+  });
+});

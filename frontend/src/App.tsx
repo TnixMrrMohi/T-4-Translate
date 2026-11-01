@@ -18,6 +18,49 @@ const STEPS = [
 
 type PreviewKind = 'source' | 'ocr' | 'clean' | 'render';
 
+/** دستور ترجمه که همراه متن شماره‌گذاری‌شده کپی می‌شود. */
+const TRANSLATION_PROMPT = [
+  'متن زیر از یک صفحهٔ مانگا/وب‌تون استخراج شده و هر خط با [شماره] مشخص شده است.',
+  'آن را به فارسی روان و طبیعی ترجمه کن.',
+  '',
+  'قواعد:',
+  '- شماره‌ها را دقیقاً حفظ کن و هر شماره در ابتدای خط خودش بماند؛ هیچ خطی را حذف، ادغام یا جابه‌جا نکن.',
+  '- فقط ترجمه را برگردان؛ مقدمه، توضیح یا جمع‌بندی اضافه نکن.',
+  '- لحن گفتگو و اصطلاحات را در همهٔ خطوط یکدست نگه دار.',
+  '- اگر خطی ناخوانا بود، همان متن انگلیسی را با شمارهٔ خودش نگه دار.',
+  '',
+  'متن:',
+].join('\n');
+
+const TOAST_MS = 2500;
+
+/** کپی در کلیپ‌بورد با روش جایگزین برای محیط‌های بدون Clipboard API. */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // پایین‌تر با textarea امتحان می‌کنیم.
+  }
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.top = '0';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(area);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 type PreviewProps = {
   jobId: string;
   kind: PreviewKind;
@@ -198,6 +241,8 @@ export function App() {
   // جادوگر مرحله‌به‌مرحله: فقط محتوای مرحلهٔ جاری نمایش داده می‌شود.
   const [step, setStep] = useState(1);
   const [hasSaved, setHasSaved] = useState(false);  // ترجمه‌ای برای این کار ذخیره شده است
+  const [copied, setCopied] = useState<'text' | 'prompt' | null>(null);
+  const copiedTimer = useRef<number | null>(null);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [source, setSource] = useState<Source | null>(null);
@@ -249,7 +294,7 @@ export function App() {
   function clearCurrentJob() {
     setJob(null); setSource(null); setTranslation(''); setWarnings('');
     setSourceVersion(0); setOcrVersion(0); setCleanVersion(0); setRenderVersion(0);
-    setHasSaved(false); setStep(1);
+    setHasSaved(false); setCopied(null); setStep(1);
     localStorage.removeItem(key);
     uploadStarted.current = false;
   }
@@ -271,6 +316,26 @@ export function App() {
     setMessage('برنامه ریست شد. عکس جدید را انتخاب کنید.');
     void loadJobs();
   };
+
+  const numberedSource = source
+    ? source.items.map(item => `[${item.number}] ${item.text}`).join('\n')
+    : '';
+
+  async function copySource(withPrompt: boolean) {
+    if (!numberedSource) return;
+    const payload = withPrompt ? `${TRANSLATION_PROMPT}\n${numberedSource}` : numberedSource;
+    const ok = await copyToClipboard(payload);
+    if (!ok) {
+      fail('کپی در حافظه ممکن نشد؛ متن را دستی انتخاب و کپی کنید.');
+      return;
+    }
+    setCopied(withPrompt ? 'prompt' : 'text');
+    setMessage(withPrompt
+      ? 'متن همراه پرامپت ترجمه کپی شد؛ آن را در مدل زبانی بچسبانید و پاسخ شماره‌دار را برگردانید.'
+      : 'متن شماره‌گذاری‌شده کپی شد.');
+    if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+    copiedTimer.current = window.setTimeout(() => setCopied(null), TOAST_MS);
+  }
 
   async function loadJobs(signal?: AbortSignal) {
     try {
@@ -373,7 +438,11 @@ export function App() {
       }).catch(e => {if (e.name !== 'AbortError') fail('بازیابی آخرین تصویر ممکن نشد.');});
     }
     void loadJobs(controller.signal);
-    return () => {controller.abort(); currentRequest.current?.abort();};
+    return () => {
+      controller.abort();
+      currentRequest.current?.abort();
+      if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -700,13 +769,41 @@ export function App() {
               ) : (
                 <>
                   <h3 className="wizard-subtitle">متن شماره‌گذاری‌شده</h3>
-                  <p className="wizard-help">متن OCR آزمایشی است؛ خطاهای آن را در ترجمه در نظر بگیرید.</p>
+                  <p className="wizard-help">
+                    متن OCR آزمایشی است؛ خطاهای آن را در ترجمه در نظر بگیرید. متن را کپی کنید و پاسخ شماره‌دار را پایین بچسبانید.
+                  </p>
+                  <div className="copy-row">
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={busy || loadingData || source.items.length === 0}
+                      onClick={() => void copySource(false)}
+                    >
+                      {copied === 'text' ? 'کپی شد ✓' : 'کپی متن'}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={busy || loadingData || source.items.length === 0}
+                      onClick={() => void copySource(true)}
+                      title="متن همراه دستور ترجمه برای مدل‌های زبانی"
+                    >
+                      {copied === 'prompt' ? 'کپی شد ✓' : 'کپی با پرامپت'}
+                    </button>
+                    <span className="copy-hint" role="status" aria-live="polite">
+                      {source.items.length} خط
+                    </span>
+                  </div>
+                  <details className="prompt-preview">
+                    <summary>نمایش پرامپت همراه</summary>
+                    <pre dir="rtl">{TRANSLATION_PROMPT}</pre>
+                  </details>
                   <textarea
                     readOnly
                     aria-label="متن انگلیسی شماره‌گذاری‌شده"
                     dir="ltr"
                     rows={8}
-                    value={source.items.map(item => `[${item.number}] ${item.text}`).join('\n')}
+                    value={numberedSource}
                   />
 
                   {source.items.length > 0 ? (

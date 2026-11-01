@@ -115,3 +115,13 @@
   .compare{grid-template-columns:1fr}
   .compare .preview-thumb{height:240px}
 }
+
+/* --- کپی متن و پرامپت در مرحلهٔ ترجمه --- */
+.copy-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:-4px 0 10px}
+.copy-row button{font:inherit;font-size:13px;font-weight:bold;padding:7px 14px;border-radius:9px;background:transparent;color:#9bf3cc;border:1px solid #00ffcc55;cursor:pointer}
+.copy-row button:hover:not(:disabled){background:#0e2426;border-color:#00ffcc}
+.copy-row button:disabled{opacity:.5;cursor:not-allowed}
+.copy-hint{color:#7d9294;font-size:12px}
+.prompt-preview{margin:0 0 12px}
+.prompt-preview summary{cursor:pointer;color:#9fb5b2;font-size:13px}
+.prompt-preview pre{margin:8px 0 0;white-space:pre-wrap;background:#0b171d;border:1px dashed #ffffff26;border-radius:10px;padding:12px;color:#cfe1de;font-size:12.5px;line-height:1.9}
