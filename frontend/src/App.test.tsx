@@ -271,7 +271,7 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     expect(screen.getByRole('button', {name: 'پردهٔ مقایسه'})).toHaveClass('is-active');
   });
 
-  it('پردهٔ مقایسه با صفحه‌کلید و بزرگ‌نمایی کار می‌کند', async () => {
+  it('پردهٔ مقایسه با صفحه‌کلید کار می‌کند و کنترل‌های اضافی حذف شده‌اند', async () => {
     localStorage.setItem('t4-last-job', JOB_ID);
     mockApi({
       job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
@@ -291,15 +291,13 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     expect(handle).toHaveAttribute('aria-valuenow', '100');
     await user.keyboard('{Home}');
     expect(handle).toHaveAttribute('aria-valuenow', '0');
+    expect(handle).toHaveAttribute('aria-orientation', 'horizontal');
 
-    // تقسیم افقی برای وب‌تون بلند پیشنهاد می‌شود، ولی هر دو حالت انتخابی است.
-    await user.click(screen.getByRole('button', {name: 'تقسیم عمودی'}));
-    expect(screen.getByRole('slider')).toHaveAttribute('aria-orientation', 'vertical');
-
-    // بزرگ‌نمایی از تصویر کامل استفاده می‌کند.
-    await user.click(screen.getByRole('button', {name: '۲×'}));
-    expect(screen.getByRole('img', {name: /ورودی \(تصویر اصلی\)/}).getAttribute('src'))
-      .toContain(`/api/jobs/${JOB_ID}/source.img`);
+    // تقسیم افقی، درجات بزرگ‌نمایی و انتخاب لایهٔ خروجی حذف شده‌اند.
+    expect(screen.queryByRole('button', {name: 'تقسیم افقی'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: 'تقسیم عمودی'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: /×/})).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
 
     // بازگشت به حالت کنار هم.
     await user.click(screen.getByRole('button', {name: 'کنار هم'}));

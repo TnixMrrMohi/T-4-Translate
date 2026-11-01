@@ -136,22 +136,15 @@
 .cmp-group button+button{border-inline-start:1px solid #00ffcc33}
 .cmp-group button.is-active{background:#0e2426;color:#00ffcc}
 .cmp-group button:hover:not(.is-active){color:#eef9f4}
-.cmp-select{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:#9fb5b2}
-.cmp-select select{font:inherit;font-size:12.5px;background:#0b171d;color:#eef9f4;border:1px solid #00ffcc40;border-radius:8px;padding:5px 8px}
 .cmp-track{position:relative;display:flex;justify-content:center;align-items:flex-start;height:clamp(300px,62vh,700px);overflow:auto;background:#050505;border:1px solid #00ffcc33;border-radius:12px;cursor:ew-resize;touch-action:none;padding:0}
 .cmp-track.is-dragging{cursor:grabbing}
 .cmp-wrap{position:relative;margin:auto;flex:0 0 auto}
-.cmp-wrap.is-horizontal{height:100%}
 .cmp-img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;user-select:none;-webkit-user-drag:none;display:block}
 .cmp-input{z-index:2}
 .cmp-tag{position:absolute;z-index:4;background:#000000c4;color:#eef9f4;font-size:11.5px;padding:3px 8px;border-radius:7px;pointer-events:none;white-space:nowrap}
-.cmp-tag.is-input.is-vertical{top:8px;left:8px}
-.cmp-tag.is-output.is-vertical{top:8px;right:8px}
-.cmp-tag.is-input.is-horizontal{top:8px;right:8px}
-.cmp-tag.is-output.is-horizontal{bottom:8px;right:8px}
-.cmp-handle{position:absolute;z-index:5;background:#00ffcc;box-shadow:0 0 0 1px #001a16;display:flex;align-items:center;justify-content:center;outline:none}
-.cmp-handle.is-vertical{top:0;bottom:0;width:3px;margin-left:-1.5px;cursor:ew-resize}
-.cmp-handle.is-horizontal{left:0;right:0;height:3px;margin-top:-1.5px;cursor:ns-resize}
+.cmp-tag.is-input{top:8px;left:8px}
+.cmp-tag.is-output{top:8px;right:8px}
+.cmp-handle{position:absolute;z-index:5;background:#00ffcc;box-shadow:0 0 0 1px #001a16;display:flex;align-items:center;justify-content:center;outline:none;top:0;bottom:0;width:3px;margin-left:-1.5px;cursor:ew-resize}
 .cmp-handle:focus-visible{box-shadow:0 0 0 3px #00ffcc80}
 .cmp-grip{position:absolute;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:#00ffcc;color:#04120f;font-size:15px;font-weight:bold;box-shadow:0 2px 12px #000000b3}
 .cmp-side-img{display:block;width:100%;border:1px solid #00ffcc40;border-radius:10px;background:#050505}
