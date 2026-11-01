@@ -18,7 +18,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
-from app import cleaning, ocr, rendering
+from app import cleaning, ocr, preview, rendering
 from app.translations import parse_translation
 
 app = FastAPI(title="T-4 Translate", version="0.1.0")
@@ -146,6 +146,18 @@ def get_ocr(job_id: str) -> dict:
 def ocr_revision(lines: list) -> str:
     raw = json.dumps(lines, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+MEDIA_TYPES = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "BMP": "image/bmp"}
+
+
+def source_media_type(workspace: Path) -> str:
+    """نوع واقعی فایل ذخیره‌شده؛ فرمت از state.json خوانده می‌شود."""
+    try:
+        state = json.loads((workspace / "state.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return "application/octet-stream"
+    return MEDIA_TYPES.get(state.get("format"), "application/octet-stream")
 
 
 def workspace_for(job_id: str) -> Path:
@@ -326,20 +338,44 @@ def get_source_img(job_id: str):
     path = workspace / "source.img"
     if not path.is_file():
         raise HTTPException(404, "تصویر اصلی موجود نیست.")
-    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    return FileResponse(path, media_type=source_media_type(workspace), headers={"Cache-Control": "no-store"})
+
+
+def _write_overlay(workspace: Path, lines: list) -> None:
+    """رندر پیش‌نمایش در نخ کارگر و ذخیرهٔ اتمی همراه با نسخهٔ OCR."""
+    image = preview.overlay(workspace / "source.img", lines)
+    tmp = workspace / "ocr-preview.png.tmp"
+    try:
+        image.save(tmp, format="PNG")
+        os.replace(tmp, workspace / "ocr-preview.png")
+    finally:
+        image.close()
+        if tmp.exists():
+            tmp.unlink()
+    (workspace / "ocr-preview-rev.txt.tmp").write_text(ocr_revision(lines), encoding="utf-8")
+    os.replace(workspace / "ocr-preview-rev.txt.tmp", workspace / "ocr-preview-rev.txt")
 
 
 @app.get("/api/jobs/{job_id}/ocr-preview")
-def get_ocr_preview(job_id: str):
-    # در حال حاضر برای پیش‌نمایش مرحله ۲، ما از همان منبع تصویر اصلی استفاده می‌کنیم
-    # اما در آینده می‌توانیم تصویر با کادرهای دتکت‌شده را برگردانیم.
-    # برای اینکه پیش‌نمایش در فرانت‌اند کار کند، مسیر منبع را برمی‌گردانیم یا یک تصویر آزمایشی.
-    # در اینجا مسیر منبع را برمی‌گردانیم تا پیش‌نمایش نمایش داده شود.
+async def get_ocr_preview(job_id: str):
+    """تصویر منبع همراه کادر و شمارهٔ خطوط تشخیص‌داده‌شده."""
     workspace = workspace_for(job_id)
-    path = workspace / "source.img"
-    if not path.is_file():
-        raise HTTPException(404, "تصویر اصلی موجود نیست.")
-    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    result = get_ocr(job_id)  # بدون OCR، ۴۰۴ برمی‌گردد.
+    revision = ocr_revision(result["lines"])
+    path = workspace / "ocr-preview.png"
+    async with _ocr_lock:
+        try:
+            current = (workspace / "ocr-preview-rev.txt").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            current = ""
+        if current != revision or not path.is_file():
+            try:
+                await run_native_safely(_write_overlay, workspace, result["lines"])
+            except preview.PreviewError as exc:
+                raise HTTPException(400, str(exc)) from None
+            except Exception:
+                raise HTTPException(500, "ساخت پیش‌نمایش OCR ناموفق بود.") from None
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 # Only enabled by the packaged desktop launcher; development uses Vite separately.

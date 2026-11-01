@@ -247,8 +247,8 @@ function App() {
             
             {ocrPreviewUrl && (
               <figure className="preview-stage" style={{margin: '12px 0', maxWidth: '500px', width: '100%'}}>
-                <img className="result-image" src={ocrPreviewUrl} alt="پیش‌نمایش متن‌های دتکت‌شده" />
-                <figcaption style={{color: '#9bf3cc', fontWeight: 'bold', textAlign: 'center', marginTop: '8px'}}>مرحله ۲: پیش‌نمایش متن‌های دتکت‌شده</figcaption>
+                <img className="result-image" src={ocrPreviewUrl} alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده" />
+                <figcaption style={{color: '#9bf3cc', fontWeight: 'bold', textAlign: 'center', marginTop: '8px'}}>مرحله ۲: کادر و شمارهٔ خطوط تشخیص‌داده‌شده (همان شماره‌های متن پایین)</figcaption>
               </figure>
             )}
 
