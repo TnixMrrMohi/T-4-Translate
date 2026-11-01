@@ -2,7 +2,16 @@ import React, {useEffect, useRef, useState} from 'react';
 import {CompareSlider} from './CompareSlider';
 import './style.css';
 
-type Source = {revision: string; items: {number: number; text: string}[]};
+/** هر آیتم منبع، یک بالن است (نه یک خط) و لحن تشخیص‌داده‌شدهٔ خودش را دارد. */
+type SourceItem = {
+  number: number;
+  text: string;
+  tone?: string;
+  kind?: string;
+  kindLabel?: string;
+  lines?: number[];
+};
+type Source = {revision: string; items: SourceItem[]; blockCount?: number};
 type Job = {jobId: string; width: number; height: number; format: string; status: string};
 type JobSummary = Job & {createdAt: string; sizeBytes?: number};
 const key = 't4-last-job';
@@ -37,14 +46,18 @@ type BubbleDoc = {jobId: string; provider: string; bubbles: Bubble[]; revision: 
 
 /** دستور ترجمه که همراه متن شماره‌گذاری‌شده کپی می‌شود. */
 const TRANSLATION_PROMPT = [
-  'متن زیر از یک صفحهٔ مانگا/وب‌تون استخراج شده و هر خط با [شماره] مشخص شده است.',
+  'متن زیر از یک صفحهٔ مانگا/وب‌تون استخراج شده است. هر [شماره] یک بالن (یا یک متن بیرون بالن) است و',
+  'متن همهٔ خطوط همان بالن با هم آمده است؛ نه هر خط یک ترجمهٔ جدا.',
   'آن را به فارسی روان و طبیعی ترجمه کن.',
   '',
   'قواعد:',
-  '- شماره‌ها را دقیقاً حفظ کن و هر شماره در ابتدای خط خودش بماند؛ هیچ خطی را حذف، ادغام یا جابه‌جا نکن.',
+  '- شماره‌ها را دقیقاً حفظ کن؛ هر شماره در ابتدای خط خودش بماند و برای هر شماره فقط یک ترجمه بنویس.',
+  '- کنار هر شماره، لحن همان بالن داخل پرانتز آمده است (مثلاً «فریاد و عصبانیت»، «فکر کردن، بی‌صدا»، «زمزمه»، «ناز و عشوه»).',
+  '  ترجمه را با همان لحن بنویس: انتخاب واژه، شدت جمله و نشانه‌گذاری (!، …، ؟) باید با آن لحن بخواند.',
+  '- پرانتز لحن را در پاسخ تکرار نکن؛ فقط [شماره] و ترجمهٔ فارسی.',
+  '- اگر چند بالن پشت سر هم مکالمه‌اند، لحن هرکدام جدا رعایت شود و دیالوگ بین آن‌ها طبیعی بماند.',
   '- فقط ترجمه را برگردان؛ مقدمه، توضیح یا جمع‌بندی اضافه نکن.',
-  '- لحن گفتگو و اصطلاحات را در همهٔ خطوط یکدست نگه دار.',
-  '- اگر خطی ناخوانا بود، همان متن انگلیسی را با شمارهٔ خودش نگه دار.',
+  '- اگر قطعه‌ای ناخوانا بود، همان متن انگلیسی را با شمارهٔ خودش نگه دار.',
   '',
   'متن:',
 ].join('\n');
@@ -335,7 +348,7 @@ export function App() {
   };
 
   const numberedSource = source
-    ? source.items.map(item => `[${item.number}] ${item.text}`).join('\n')
+    ? source.items.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n')
     : '';
 
   async function copySource(withPrompt: boolean) {
@@ -870,9 +883,10 @@ export function App() {
                       </ul>
                     </>
                   )}
-                  <h3 className="wizard-subtitle">متن شماره‌گذاری‌شده</h3>
+                  <h3 className="wizard-subtitle">متن شماره‌گذاری‌شده (هر شماره یک بالن)</h3>
                   <p className="wizard-help">
-                    متن OCR آزمایشی است؛ خطاهای آن را در ترجمه در نظر بگیرید. متن را کپی کنید و پاسخ شماره‌دار را پایین بچسبانید.
+                    متن OCR آزمایشی است؛ خطاهای آن را در ترجمه در نظر بگیرید. خطوط هر بالن با هم یک شماره شده‌اند و
+                    لحن همان بالن کنارشان آمده است. متن را کپی کنید و پاسخ شماره‌دار را پایین بچسبانید.
                   </p>
                   <div className="copy-row">
                     <button
@@ -893,7 +907,7 @@ export function App() {
                       {copied === 'prompt' ? 'کپی شد ✓' : 'کپی با پرامپت'}
                     </button>
                     <span className="copy-hint" role="status" aria-live="polite">
-                      {source.items.length} خط
+                      {source.items.length} بالن
                     </span>
                   </div>
                   <details className="prompt-preview">
@@ -911,7 +925,9 @@ export function App() {
                   {source.items.length > 0 ? (
                     <>
                       <h3 className="wizard-subtitle">ترجمهٔ دستی</h3>
-                      <p className="wizard-help">ترجمه را با همان شماره‌ها وارد کنید؛ موارد جاافتاده حفظ می‌شوند.</p>
+                      <p className="wizard-help">
+                        ترجمه را با همان شماره‌ها وارد کنید؛ هر شماره یک بالن است و موارد جاافتاده حفظ می‌شوند.
+                      </p>
                       <textarea
                         aria-label="ترجمهٔ فارسی شماره‌گذاری‌شده"
                         dir="rtl"

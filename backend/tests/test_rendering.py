@@ -111,3 +111,21 @@ def test_missing_font_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(rendering, "font_candidates", lambda: [tmp_path / "nope.ttf"])
     with pytest.raises(rendering.RenderError):
         rendering.font_path()
+
+
+def test_render_blocks_fills_the_bubble_with_one_text():
+    """هر بالن یک متن می‌گیرد و متن در کادر همان بالن (نه کادر یک خط) کشیده می‌شود."""
+    image = Image.new("RGB", (400, 500), "white")
+    blocks = [
+        {"number": 1, "lines": [1, 2], "bbox": [80, 120, 320, 360], "kind": "speech", "tone": "گفت‌وگوی معمولی"},
+        {"number": 2, "lines": [3], "bbox": [40, 400, 200, 470], "kind": "speech", "tone": "گفت‌وگوی معمولی"},
+    ]
+    canvas, drawn = rendering.render_blocks(image, blocks, {"1": "سلام دنیا", "2": "خداحافظ"})
+    assert drawn == 2
+    assert canvas.size == image.size
+    assert canvas.crop((80, 120, 320, 360)).getbbox() is not None
+    # بلوکی که ترجمه ندارد رسم نمی‌شود.
+    _, drawn = rendering.render_blocks(image, blocks, {"1": "سلام دنیا"})
+    assert drawn == 1
+    with pytest.raises(rendering.RenderError):
+        rendering.render_blocks(image, blocks, {})

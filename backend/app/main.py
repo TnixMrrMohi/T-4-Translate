@@ -261,15 +261,53 @@ class TranslationInput(BaseModel):
     sourceRevision: str = Field(min_length=64, max_length=64)
 
 
+BUBBLE_VERSION = 1
+
+
+def bubbles_for(job_id: str, lines: list) -> dict:
+    """نتیجهٔ تشخیص بالن را از کش می‌خواند و اگر نبود/کهنه بود دوباره می‌سازد."""
+    workspace = workspace_for(job_id)
+    revision = ocr_revision(lines)
+    cached = None
+    try:
+        cached = json.loads((workspace / "bubbles.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        cached = None
+    if cached and cached.get("ocrRevision") == revision and cached.get("version") == BUBBLE_VERSION:
+        return cached
+    document = bubbles.analyze(workspace / "source.img", lines)
+    document.update({"jobId": job_id, "ocrRevision": revision, "version": BUBBLE_VERSION})
+    tmp = workspace / "bubbles.json.tmp"
+    tmp.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, workspace / "bubbles.json")
+    return document
+
+
+def translation_blocks(job_id: str, lines: list) -> list:
+    """بلوک‌های ترجمه: هر بالن یک متن، نه هر خط یک متن."""
+    return bubbles.blocks(bubbles_for(job_id, lines), lines)
+
+
+def blocks_revision(lines: list, block_list: list) -> str:
+    """نسخهٔ منبع ترجمه: هم OCR و هم گروه‌بندی خطوط در بلوک‌ها."""
+    raw = json.dumps({"ocr": ocr_revision(lines),
+                      "blocks": [[item["number"], item["lines"], item["text"]] for item in block_list]},
+                     ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 @app.get("/api/jobs/{job_id}/translation-source")
 def translation_source(job_id: str) -> dict:
     result = get_ocr(job_id)
     lines = result["lines"]
     if len(lines) > 9999:
         raise HTTPException(400, "تعداد خطوط برای ترجمهٔ شماره‌گذاری‌شده بیش از حد مجاز است.")
-    return {"revision": ocr_revision(lines), "items": [
-        {"number": index, "text": line["text"]} for index, line in enumerate(lines, 1)
-    ]}
+    block_list = translation_blocks(job_id, lines)
+    return {"revision": blocks_revision(lines, block_list), "blockCount": len(block_list),
+            "items": [{"number": item["number"], "text": item["text"], "tone": item["tone"],
+                       "kind": item["kind"], "kindLabel": item["kindLabel"],
+                       "lines": item["lines"], "bbox": item["bbox"]}
+                      for item in block_list]}
 
 
 @app.post("/api/jobs/{job_id}/translations")
@@ -281,8 +319,19 @@ async def save_translation(job_id: str, body: TranslationInput) -> dict:
         if not source["items"]:
             raise HTTPException(409, "متنی برای ترجمه وجود ندارد.")
         parsed = parse_translation(body.text, {item["number"] for item in source["items"]})
+        # هر بلوک (بالن) یک متن دارد؛ برای پاک‌سازی، همان متن به همهٔ خطوط بلوک نسبت داده می‌شود.
+        line_translations: dict[str, str] = {}
+        for item in source["items"]:
+            text = parsed.translations.get(item["number"])
+            if not text:
+                continue
+            for line_number in item["lines"]:
+                line_translations[str(line_number)] = text
         result = {"sourceRevision": source["revision"], "text": body.text,
-                  "translations": parsed.translations, "missing": parsed.missing,
+                  "translations": parsed.translations, "lineTranslations": line_translations,
+                  "blocks": [{"number": item["number"], "lines": item["lines"], "bbox": item["bbox"],
+                              "kind": item["kind"], "tone": item["tone"]} for item in source["items"]],
+                  "missing": parsed.missing,
                   "duplicates": parsed.duplicates, "unknown": parsed.unknown}
         workspace = workspace_for(job_id)
         tmp = workspace / "translations.json.tmp"
@@ -318,7 +367,9 @@ async def clean_job(job_id: str) -> dict:
             raise HTTPException(409, "ترجمه‌ای برای پاک‌سازی وجود ندارد.")
         source = get_ocr(job_id)
         try:
-            clean, mask = await run_native_safely(cleaning.clean_image, workspace / "source.img", source["lines"], translation["translations"])
+            line_translations = translation.get("lineTranslations") or translation["translations"]
+            clean, mask = await run_native_safely(cleaning.clean_image, workspace / "source.img",
+                                                  source["lines"], line_translations)
         except cleaning.CleaningError as exc:
             raise HTTPException(400, str(exc)) from None
         try:
@@ -351,11 +402,12 @@ def get_clean(job_id: str):
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
-def _render_files(clean_path: Path, lines: list, translations: dict,
+def _render_files(clean_path: Path, translation: dict,
                   image_path: Path, meta_path: Path) -> int:
-    """رندر در نخ کارگر انجام می‌شود؛ فایل‌ها اتمی جایگزین می‌شوند."""
+    """رندر در نخ کارگر انجام می‌شود؛ هر بلوک (بالن) یک متن فارسی می‌گیرد."""
+    blocks = translation.get("blocks") or []
     with Image.open(clean_path) as base:
-        rendered, drawn = rendering.render_translations(base, lines, translations)
+        rendered, drawn = rendering.render_blocks(base, blocks, translation["translations"])
     tmp = image_path.with_name(image_path.name + ".tmp")
     try:
         rendered.save(tmp, format="PNG")
@@ -394,8 +446,8 @@ async def render_job(job_id: str) -> dict:
         source = get_ocr(job_id)
         try:
             drawn = await run_native_safely(
-                _render_files, workspace / "clean.png", source["lines"],
-                translation["translations"], workspace / "render.png", workspace / "render-meta.json")
+                _render_files, workspace / "clean.png", translation,
+                workspace / "render.png", workspace / "render-meta.json")
         except rendering.RenderError as exc:
             raise HTTPException(400, str(exc)) from None
         except Exception:
@@ -587,7 +639,7 @@ async def detect_bubbles(job_id: str) -> dict:
         raise HTTPException(409, "برای تشخیص بالن ابتدا OCR را اجرا کنید.") from None
     async with _ocr_lock:
         try:
-            document = await run_native_safely(bubbles.analyze, workspace / "source.img", lines)
+            document = await run_native_safely(bubbles_for, job_id, lines)
         except bubbles.BubbleError as exc:
             raise HTTPException(400, str(exc)) from None
         except Exception:

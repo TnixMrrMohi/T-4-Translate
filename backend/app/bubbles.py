@@ -29,60 +29,70 @@ from PIL import Image, ImageDraw, ImageFont
 # رابط بتواند «پیشنهاد» را نشان دهد و در مرحلهٔ بعد با فونت‌های موجود جایگزین شود.
 BUBBLE_TYPES: dict[str, dict] = {
     "speech": {
+        "tone": "گفت‌وگوی معمولی",
         "label": "صحبت عادی",
         "description": "بالن ساده و دایره‌ای با دنباله از یک گوشه؛ گفت‌وگوی معمول شخصیت‌ها.",
         "fonts": ["Koodak Bold", "Roya Bold"],
         "style": {"bold": True, "italic": False, "stroke": "none", "shadow": False},
     },
     "solar": {
+        "tone": "تفکر درخشان و هیجانی",
         "label": "تفکر خورشیدی (درخشان)",
         "description": "بالن دندانه‌دار و درخشان برای تفکر؛ با استروک سیاه و سایه.",
         "fonts": ["Koodak Bold Italic", "Homa", "Mehr"],
         "style": {"bold": True, "italic": True, "stroke": "black", "shadow": True},
     },
     "thought_bubble": {
+        "tone": "فکر کردن، بی‌صدا",
         "label": "تفکر معمولی (حباب‌دار)",
         "description": "بالن عادی که چند حباب کوچک پیش از آن آمده است.",
         "fonts": ["B Morvarid"],
         "style": {"bold": False, "italic": False, "stroke": "none", "shadow": False},
     },
     "square": {
+        "tone": "توضیح و شرح",
         "label": "بالن مستطیلی و مربعی",
         "description": "بالن با گوشه‌های تیز برای توضیح و شرح در مانهوا.",
         "fonts": ["Elham", "B Esfehan", "Farnaz", "Yekan"],
         "style": {"bold": False, "italic": False, "stroke": "none", "shadow": False},
     },
     "hexagon": {
+        "tone": "صدای رادیو، بلندگو یا تلفن",
         "label": "بالن شش‌ضلعی",
         "description": "صدا از رادیو، تلویزیون، بلندگو یا مکالمهٔ تلفنی.",
         "fonts": ["Farnaz"],
         "style": {"bold": False, "italic": False, "stroke": "none", "shadow": False},
     },
     "shout": {
+        "tone": "فریاد و عصبانیت",
         "label": "بالن فریاد",
         "description": "گوشه‌های تیز؛ فریاد شدید با فونت افسانه و فریاد ملایم‌تر با کوروش.",
         "fonts": ["Afsaneh", "Kourush"],
         "style": {"bold": True, "italic": False, "stroke": "none", "shadow": False},
     },
     "fear": {
+        "tone": "ترس و لرزش",
         "label": "بالن ترس و لرزش",
         "description": "لبهٔ لرزان و ناهموار؛ ترس یا خجالت شخصیت.",
         "fonts": ["B Siavash", "B Moj", "Haleh", "Setareh", "Gam Azad"],
         "style": {"bold": False, "italic": False, "stroke": "none", "shadow": False},
     },
     "monster": {
+        "tone": "صدای هیولا، ترسناک",
         "label": "ترسناک یا حرف زدن هیولا",
         "description": "بالن بی‌قاعده و نامنظم برای صداهای هیولاگونه و ترسناک.",
         "fonts": ["A Kordi", "A Zangar", "Aref Graffiti"],
         "style": {"bold": True, "italic": False, "stroke": "none", "shadow": True},
     },
     "cloud": {
+        "tone": "ناز و عشوه",
         "label": "بالن ابری (ناز و عشوه)",
         "description": "بالن کنگره‌ای مانند ابر؛ لحن ناز و عشوه یا صورت سرخ‌شده.",
         "fonts": ["Mj_Ramollah", "Mj_Parand"],
         "style": {"bold": False, "italic": False, "stroke": "none", "shadow": False},
     },
     "outside": {
+        "tone": "متن توضیحی، زمزمه یا سیستم",
         "label": "متن بیرون بالن",
         "description": "توضیحی، زمزمه، متن سیستم یا متن تکنیک — بالنی ندارد و روی تصویر یا فضای سفید می‌نشیند.",
         "fonts": ["Beirut", "Farnaz", "Narm", "Liner", "Jadid", "Mehr", "Dast Nevis", "Kamran",
@@ -97,6 +107,7 @@ BUBBLE_TYPES: dict[str, dict] = {
         },
     },
     "unknown": {
+        "tone": "نامشخص",
         "label": "نامشخص",
         "description": "شکل ناحیه به یک دستهٔ مشخص نزدیک نشد؛ کاربر انتخاب می‌کند.",
         "fonts": [],
@@ -568,3 +579,107 @@ def overlay(path: Path, document: dict, max_side: int = 1800) -> Image.Image:
                        fill=(10, 14, 18))
         draw.text((x + pad - box[0], top + pad - box[1]), text, fill=color, font=font)
     return image
+
+
+# ---------------------------------------------------------------- بلوک‌ها
+OUTSIDE_GROUP_GAP = 1.8  # فاصلهٔ عمودی مجاز (برابر ارتفاع خط) برای یک بلوک بیرون بالن
+
+
+def _line_box(line) -> tuple[float, float, float, float] | None:
+    """کادر یک خط OCR به شکل (بالا، پایین، چپ، راست) یا None اگر معتبر نباشد."""
+    quad = line.get("quad") if isinstance(line, dict) else None
+    try:
+        points = [[float(point[0]), float(point[1])] for point in quad]
+    except (TypeError, ValueError):
+        return None
+    if len(points) != 4 or not all(math.isfinite(value) for point in points for value in point):
+        return None
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return min(ys), max(ys), min(xs), max(xs)
+
+
+def _cluster(numbers: list[int], by_number: dict) -> list[list[int]]:
+    """خطوط بیرون بالن را به بلوک‌های نزدیک به هم می‌شکند (هر افکت جدا)."""
+    ordered = sorted(numbers, key=lambda number: (_line_box(by_number[number]) or (0, 0, 0, 0))[0])
+    clusters: list[list[int]] = []
+    for number in ordered:
+        box = _line_box(by_number[number])
+        if box is None or not clusters:
+            clusters.append([number])
+            continue
+        previous_box = _line_box(by_number[clusters[-1][-1]])
+        if previous_box is None:
+            clusters.append([number])
+            continue
+        line_height = max(1.0, previous_box[1] - previous_box[0])
+        if box[0] - previous_box[1] <= line_height * OUTSIDE_GROUP_GAP:
+            clusters[-1].append(number)
+        else:
+            clusters.append([number])
+    return clusters
+
+
+def _block(numbers: list[int], by_number: dict, kind: str, bbox: list) -> dict:
+    meta = BUBBLE_TYPES.get(kind, BUBBLE_TYPES["unknown"])
+    ordered = sorted(numbers, key=lambda number: (
+        (_line_box(by_number[number]) or (0, 0, 0, 0))[0],
+        (_line_box(by_number[number]) or (0, 0, 0, 0))[2]))
+    boxes = [box for box in (_line_box(by_number[number]) for number in ordered) if box]
+    box = list(bbox) if len(bbox) == 4 else []
+    if boxes:
+        union = [min(b[2] for b in boxes), min(b[0] for b in boxes),
+                 max(b[3] for b in boxes), max(b[1] for b in boxes)]
+        union = [round(value) for value in union]
+        box = union if not box else [min(box[0], union[0]), min(box[1], union[1]),
+                                     max(box[2], union[2]), max(box[3], union[3])]
+    text = " ".join(str(by_number[number].get("text", "")).strip() for number in ordered).strip()
+    return {
+        "lines": ordered,
+        "text": text,
+        "kind": kind,
+        "kindLabel": meta["label"],
+        "tone": meta.get("tone", ""),
+        "fonts": meta["fonts"],
+        "bbox": box,
+    }
+
+
+def blocks(document: dict, lines: list) -> list[dict]:
+    """هر بالن را یک بلوک متنی می‌کند؛ متن خطوط همان بالن با هم می‌آید.
+
+    ترجمه و رندر بر پایهٔ همین بلوک‌ها انجام می‌شود تا هر بالن یک متن فارسی بگیرد،
+    نه یک ترجمه برای هر خط. اگر تشخیص بالن انجام نشده باشد یا خطی در هیچ بالنی
+    نباشد، همان خط یک بلوک مستقل می‌شود.
+    """
+    by_number = {}
+    for index, line in enumerate(lines, 1):
+        if isinstance(line, dict):
+            by_number[index] = line
+    result: list[dict] = []
+    seen: set[int] = set()
+    for bubble in (document or {}).get("bubbles", []):
+        numbers = [number for number in bubble.get("lines", []) if number in by_number]
+        numbers = [number for number in numbers if number not in seen]
+        if not numbers:
+            continue
+        seen.update(numbers)
+        if bubble.get("kind") == "outside":
+            for cluster in _cluster(numbers, by_number):
+                result.append(_block(cluster, by_number, "outside", []))
+        else:
+            result.append(_block(numbers, by_number, bubble.get("kind", "unknown"), bubble.get("bbox") or []))
+    for number in sorted(set(by_number) - seen):
+        result.append(_block([number], by_number, "unknown", []))
+
+    def order(item: dict):
+        box = item["bbox"]
+        if len(box) == 4:
+            return (box[1], box[0])
+        first = _line_box(by_number[item["lines"][0]]) if item["lines"] else None
+        return (first[0], first[2]) if first else (0.0, 0.0)
+
+    result.sort(key=order)
+    for index, item in enumerate(result, 1):
+        item["number"] = index
+    return result

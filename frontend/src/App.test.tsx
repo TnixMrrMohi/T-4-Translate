@@ -428,3 +428,41 @@ describe('تشخیص نوع بالن‌ها در مرحلهٔ ترجمه', () =>
     expect(await screen.findByRole('button', {name: 'کپی متن'})).toBeInTheDocument();
   });
 });
+
+describe('لحن بالن‌ها در متن ترجمه', () => {
+  const source = {
+    revision: 'r'.repeat(64),
+    blockCount: 2,
+    items: [
+      {number: 1, text: 'GO AWAY!', tone: 'فریاد و عصبانیت', kind: 'shout',
+       kindLabel: 'بالن فریاد', lines: [1, 2]},
+      {number: 2, text: 'I will stay', tone: 'گفت‌وگوی معمولی', kind: 'speech',
+       kindLabel: 'صحبت عادی', lines: [3]},
+    ],
+  };
+
+  it('هر شماره یک بالن است و لحنش کنار متن و در پرامپت می‌آید', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+
+    expect(screen.getByLabelText('متن انگلیسی شماره‌گذاری‌شده')).toHaveValue(
+      '[1] (لحن: فریاد و عصبانیت) GO AWAY!\n[2] (لحن: گفت‌وگوی معمولی) I will stay');
+    expect(screen.getByText('2 بالن')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', {name: 'کپی با پرامپت'}));
+    await waitFor(async () => {
+      const copied = await navigator.clipboard.readText();
+      expect(copied).toContain('[1] (لحن: فریاد و عصبانیت) GO AWAY!');
+      expect(copied).toContain('[2] (لحن: گفت‌وگوی معمولی) I will stay');
+      expect(copied).toContain('هر [شماره] یک بالن');
+      expect(copied).toContain('با همان لحن بنویس');
+      expect(copied).toContain('پرانتز لحن را در پاسخ تکرار نکن');
+    });
+  });
+});

@@ -136,6 +136,69 @@ def _contrast_color(image: Image.Image, box) -> tuple[int, int, int]:
     return (17, 17, 17) if mean > 128 else (245, 245, 245)
 
 
+def _draw_box(canvas, draw, box, text: str) -> bool:
+    """متن فارسی را وسط کادر می‌کشد؛ اگر جای کافی نبود False برمی‌گرداند."""
+    left, top, right, bottom = box
+    box_width = right - left
+    box_height = bottom - top
+    padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
+    font, wrapped = _fit(text, box_width - 2 * padding, box_height - 2 * padding)
+    if not font or not wrapped:
+        return False
+    line_height = font.size * LINE_HEIGHT_RATIO
+    block_height = len(wrapped) * line_height
+    start_y = top + (box_height - block_height) / 2
+    center_x = left + box_width / 2
+    color = _contrast_color(canvas, box)
+    for index, logical_line in enumerate(wrapped):
+        draw.text(
+            (center_x, start_y + index * line_height),
+            shape_text(logical_line),
+            font=font,
+            fill=color,
+            anchor="ma",
+        )
+    return True
+
+
+def render_blocks(image: Image.Image, blocks: list, translations: dict) -> tuple[Image.Image, int]:
+    """هر بلوک (بالن) را با یک متن فارسی پر می‌کند؛ خروجی: تصویر و تعداد بلوک‌های رسم‌شده."""
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    canvas = image.copy()
+    draw = ImageDraw.Draw(canvas)
+    drawn = 0
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        text = translations.get(str(block.get("number"))) or translations.get(block.get("number")) or ""
+        text = str(text).strip()
+        bbox = block.get("bbox") or []
+        if not text or len(bbox) != 4:
+            continue
+        try:
+            left, top, right, bottom = [int(round(float(value))) for value in bbox]
+        except (TypeError, ValueError):
+            continue
+        left = max(0, min(canvas.width - 1, left))
+        top = max(0, min(canvas.height - 1, top))
+        right = max(0, min(canvas.width, right))
+        bottom = max(0, min(canvas.height, bottom))
+        if right - left < 4 or bottom - top < 4:
+            continue
+        # بالن دست‌کشیده معمولاً کمی از کادر بزرگ‌تر است؛ حاشیهٔ کوچک داخل کادر.
+        inset_x = max(2, round((right - left) * 0.04))
+        inset_y = max(2, round((bottom - top) * 0.04))
+        box = (left + inset_x, top + inset_y, right - inset_x, bottom - inset_y)
+        if box[2] - box[0] < 8 or box[3] - box[1] < 8:
+            continue
+        if _draw_box(canvas, draw, box, text):
+            drawn += 1
+    if not drawn:
+        raise RenderError("هیچ ترجمه‌ای برای نمایش روی تصویر وجود ندارد.")
+    return canvas, drawn
+
+
 def render_translations(image: Image.Image, lines: list, translations: dict) -> tuple[Image.Image, int]:
     """ترجمه‌های موجود را داخل کادر هر خط OCR می‌کشد. خروجی: تصویر و تعداد خطوط رسم‌شده."""
     if image.mode != "RGB":
@@ -149,27 +212,8 @@ def render_translations(image: Image.Image, lines: list, translations: dict) -> 
         if not text:
             continue
         box = _quad_box(line.get("quad"), canvas.width, canvas.height)
-        left, top, right, bottom = box
-        box_width = right - left
-        box_height = bottom - top
-        padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
-        font, wrapped = _fit(text, box_width - 2 * padding, box_height - 2 * padding)
-        if not font or not wrapped:
-            continue
-        line_height = font.size * LINE_HEIGHT_RATIO
-        block_height = len(wrapped) * line_height
-        start_y = top + (box_height - block_height) / 2
-        center_x = left + box_width / 2
-        color = _contrast_color(image, box)
-        for index, logical_line in enumerate(wrapped):
-            draw.text(
-                (center_x, start_y + index * line_height),
-                shape_text(logical_line),
-                font=font,
-                fill=color,
-                anchor="ma",
-            )
-        drawn += 1
+        if _draw_box(canvas, draw, box, text):
+            drawn += 1
     if not drawn:
         raise RenderError("هیچ ترجمه‌ای برای نمایش روی تصویر وجود ندارد.")
     return canvas, drawn
