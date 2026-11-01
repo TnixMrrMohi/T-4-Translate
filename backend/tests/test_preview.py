@@ -39,6 +39,15 @@ def test_overlay_downscales_large_pages(tmp_path):
     assert image.width == 2400 and image.height == 800
 
 
+def test_overlay_keeps_tall_pages_readable(tmp_path):
+    page = tmp_path / "tall.png"
+    Image.new("RGB", (1500, 15000), "white").save(page)
+    image = preview.overlay(page, [_line([[100, 100], [1400, 100], [1400, 300], [100, 300]])])
+    # به‌جای نوار ۲۴ پیکسلی، عرض قابل خواندن حفظ می‌شود و ارتفاع محدود می‌شود.
+    assert image.height == preview.MAX_PREVIEW_HEIGHT
+    assert image.width == round(1500 * preview.MAX_PREVIEW_HEIGHT / 15000)
+
+
 def test_overlay_skips_invalid_quads(tmp_path):
     page = tmp_path / "page.png"
     Image.new("RGB", (60, 40), "white").save(page)

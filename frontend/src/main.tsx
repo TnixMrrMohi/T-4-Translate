@@ -7,6 +7,110 @@ type Job = {jobId: string; width: number; height: number; format: string; status
 type JobSummary = Job & {createdAt: string; sizeBytes?: number};
 const key = 't4-last-job';
 
+type PreviewKind = 'source' | 'ocr' | 'clean' | 'render';
+
+type PreviewProps = {
+  jobId: string;
+  kind: PreviewKind;
+  version: number;      // با هر بار بازسازی پیش‌نمایش زیاد می‌شود تا کش دور زده شود
+  caption: React.ReactNode;
+  alt: string;
+  downloadName?: string;
+  /** نسبت ارتفاع به عرض صفحه؛ برای صفحات بلند (وب‌تون) حالت پیش‌فرض تغییر می‌کند. */
+  aspect?: number;
+};
+
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 4;
+
+/** بندانگشتی ثابت‌اندازه؛ تصویر کامل (حتی ۱۵۰۰۰ پیکسل) فقط در مودال نمایش داده می‌شود. */
+function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1}: PreviewProps) {
+  const [open, setOpen] = useState(false);
+  const [fit, setFit] = useState(true);
+  const [zoom, setZoom] = useState(1);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const thumbRef = useRef<HTMLButtonElement>(null);
+  const close = () => {setOpen(false); thumbRef.current?.focus();};
+  // صفحهٔ بلند (مثل ۱۵۰۰۰ پیکسل) در حالت «تناسب صفحه» ناخوانا می‌شود؛
+  // بنابراین با عرض کامل و پیمایش عمودی باز می‌شود.
+  const tall = aspect > 2.5;
+  const openModal = () => {setOpen(true); setFit(!tall); setZoom(1);};
+
+  const thumbUrl = `/api/jobs/${jobId}/thumb/${kind}?v=${version}`;
+  const fullUrl = `/api/jobs/${jobId}/${kind === 'source' ? 'source.img' : kind === 'ocr' ? 'ocr-preview' : kind}?v=${version}`;
+
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    closeRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close();
+      else if (event.key === '+' || event.key === '=') {setFit(false); setZoom(z => Math.min(MAX_ZOOM, +(z + 0.25).toFixed(2)));}
+      else if (event.key === '-') {setFit(false); setZoom(z => Math.max(MIN_ZOOM, +(z - 0.25).toFixed(2)));}
+      else if (event.key === '0') {setFit(true); setZoom(1);}
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {window.removeEventListener('keydown', onKey); document.body.style.overflow = previous;};
+  }, [open]);
+
+  return (
+    <>
+      <figure className="preview-card">
+        <button
+          type="button"
+          ref={thumbRef}
+          className="preview-thumb"
+          onClick={openModal}
+          aria-label={`بزرگ‌نمایی: ${alt}`}
+          title="برای بزرگ‌نمایی کلیک کنید"
+        >
+          <img
+            src={thumbUrl}
+            alt={alt}
+            loading="lazy"
+            style={{objectFit: tall ? 'cover' : 'contain', objectPosition: 'top center'}}
+          />
+          <span className="zoom-hint">بزرگ‌نمایی</span>
+        </button>
+        <figcaption>{caption}</figcaption>
+      </figure>
+
+      {open && (
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label={alt}
+          onClick={event => {if (event.target === event.currentTarget) close();}}
+        >
+          <div className="modal-bar">
+            <span className="grow">{alt} <span style={{color: '#7d9294', fontSize: '12px'}}>(Esc برای بستن)</span></span>
+            <span className="modal-actions">
+              <button type="button" onClick={() => {setFit(false); setZoom(z => Math.max(MIN_ZOOM, +(z - 0.25).toFixed(2)));}} disabled={!fit && zoom <= MIN_ZOOM} aria-label="کوچک‌تر">−</button>
+              <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
+              <button type="button" onClick={() => {setFit(false); setZoom(z => Math.min(MAX_ZOOM, +(z + 0.25).toFixed(2)));}} disabled={!fit && zoom >= MAX_ZOOM} aria-label="بزرگ‌تر">+</button>
+              <button type="button" onClick={() => {setFit(false); setZoom(1);}} disabled={!fit && zoom === 1}>عرض کامل</button>
+              <button type="button" onClick={() => {setFit(true); setZoom(1);}} disabled={fit}>تناسب صفحه</button>
+              <a href={fullUrl} download={downloadName ?? `${kind}.png`}>دانلود</a>
+              <button type="button" ref={closeRef} onClick={close}>بستن ✕</button>
+            </span>
+          </div>
+          {tall && fit && <p style={{color: '#f2c14e', fontSize: '13px', margin: '0 0 8px'}}>این صفحه بلند است؛ برای خواندن متن روی «+» بزنید یا از دکمهٔ «عرض کامل» استفاده کنید.</p>}
+          <div className={`modal-stage${fit ? ' fit' : ''}`}>
+            <img
+              src={fullUrl}
+              alt={alt}
+              style={fit ? undefined : {width: `${Math.round(zoom * 100)}%`, maxWidth: 'none', height: 'auto'}}
+            />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+
 function App() {
   const [status, setStatus] = useState('در حال بررسی ارتباط با سرویس…');
   const [job, setJob] = useState<Job | null>(null);
@@ -18,10 +122,11 @@ function App() {
   const [warnings, setWarnings] = useState('');
   const [loadingData, setLoadingData] = useState(false);
   
-  const [cleanUrl, setCleanUrl] = useState('');
-  const [renderUrl, setRenderUrl] = useState('');
-  const [previewUrl, setPreviewUrl] = useState('');
-  const [ocrPreviewUrl, setOcrPreviewUrl] = useState('');
+  // شمارهٔ نسخهٔ هر پیش‌نمایش؛ با هر بازسازی زیاد می‌شود تا کش بندانگشتی و تصویر دور زده شود.
+  const [cleanVersion, setCleanVersion] = useState(0);
+  const [renderVersion, setRenderVersion] = useState(0);
+  const [sourceVersion, setSourceVersion] = useState(0);
+  const [ocrVersion, setOcrVersion] = useState(0);
 
   const currentRequest = useRef<AbortController | null>(null);
   const uploadStarted = useRef(false);
@@ -29,7 +134,7 @@ function App() {
 
   const resetApp = () => {
     setJob(null); setSource(null); setTranslation(''); setWarnings('');
-    setPreviewUrl(''); setOcrPreviewUrl(''); setCleanUrl(''); setRenderUrl('');
+    setSourceVersion(0); setOcrVersion(0); setCleanVersion(0); setRenderVersion(0);
     setMessage('برنامه ریست شد. عکس جدید را انتخاب کنید.');
     localStorage.removeItem(key);
     uploadStarted.current = false;
@@ -54,7 +159,7 @@ function App() {
     uploadStarted.current = false;
     localStorage.setItem(key, item.jobId);
     setJob({jobId: item.jobId, width: item.width, height: item.height, format: item.format, status: item.status});
-    setPreviewUrl(`/api/jobs/${item.jobId}/source.img?v=${Date.now()}`);
+    setSourceVersion(Date.now());
     setMessage('کار قبلی از حافظهٔ همین سیستم باز شد.');
   }
 
@@ -87,7 +192,7 @@ function App() {
         const saved: Job = await r.json();
         if (!uploadStarted.current) {
           setJob(saved);
-          setPreviewUrl(`/api/jobs/${saved.jobId}/source.img?v=${Date.now()}`);
+          setSourceVersion(Date.now());
         }
       }).catch(e => {if (e.name !== 'AbortError') setMessage('بازیابی آخرین تصویر ممکن نشد.');});
     }
@@ -99,7 +204,7 @@ function App() {
     if (!job) return;
     const controller = new AbortController();
     setLoadingData(true);
-    setSource(null); setTranslation(''); setWarnings(''); setOcrPreviewUrl(''); setRenderUrl(''); setCleanUrl('');
+    setSource(null); setTranslation(''); setWarnings(''); setOcrVersion(0); setRenderVersion(0); setCleanVersion(0);
     Promise.all([
       fetch(`/api/jobs/${job.jobId}/translation-source`, {signal: controller.signal}),
       fetch(`/api/jobs/${job.jobId}/translations`, {signal: controller.signal}),
@@ -114,7 +219,7 @@ function App() {
         if (savedTranslation.stale) setWarnings('متن OCR تغییر کرده است؛ ترجمهٔ قبلی را پیش از ذخیره بررسی کنید.');
       }
       if (savedSource) {
-        setOcrPreviewUrl(`/api/jobs/${job.jobId}/ocr-preview?v=${Date.now()}`);
+        setOcrVersion(Date.now());
       }
     }).catch(e => {if (e.name !== 'AbortError') setMessage('بازیابی متن‌ها ممکن نشد.');})
       .finally(() => {if (!controller.signal.aborted) setLoadingData(false);});
@@ -136,7 +241,7 @@ function App() {
         result.duplicates.length ? `شمارهٔ تکراری (آخرین مورد ذخیره شد): ${result.duplicates.join('، ')}` : '',
         result.unknown.length ? `شمارهٔ ناشناخته: ${result.unknown.join('، ')}` : '',
       ].filter(Boolean);
-      setWarnings(parts.join(' | ')); setCleanUrl(''); setRenderUrl('');
+      setWarnings(parts.join(' | ')); setCleanVersion(0); setRenderVersion(0);
       setMessage('ترجمه ذخیره شد؛ هنوز روی تصویر اعمال نشده است.');
       await cleanImage();
     } catch (error) {setMessage(error instanceof Error ? error.message : 'ذخیرهٔ ترجمه ناموفق بود.');}
@@ -148,7 +253,7 @@ function App() {
     const response = await fetch(`/api/jobs/${job.jobId}/render`, {method: 'POST'});
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'درج ترجمه روی تصویر ناموفق بود.');
-    setRenderUrl(`/api/jobs/${job.jobId}/render?v=${Date.now()}`);
+    setRenderVersion(Date.now());
     setMessage(result.message ?? 'ترجمهٔ فارسی روی تصویر قرار گرفت.');
   }
 
@@ -162,13 +267,12 @@ function App() {
 
   async function cleanImage() {
     if (!job || busy || loadingData) return;
-    setBusy(true); setMessage('در حال پاک‌سازی آزمایشی…'); setCleanUrl(''); setRenderUrl('');
+    setBusy(true); setMessage('در حال پاک‌سازی آزمایشی…'); setCleanVersion(0); setRenderVersion(0);
     try {
       const response = await fetch(`/api/jobs/${job.jobId}/clean`, {method: 'POST'});
       const result = await response.json();
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی ناموفق بود.');
-      const finalUrl = `/api/jobs/${job.jobId}/clean?v=${Date.now()}`;
-      setCleanUrl(finalUrl);
+      setCleanVersion(Date.now());
       setMessage(result.message);
       // پس از پاک‌سازی، ترجمه بی‌درنگ روی تصویر درج می‌شود.
       try { await requestRender(); }
@@ -191,8 +295,8 @@ function App() {
         throw new Error(typeof result.detail === 'string' ? result.detail : response.status === 413 ? 'حجم تصویر بیش از حد مجاز است.' : 'ذخیرهٔ تصویر ناموفق بود.');
       }
       const result: Job = await response.json();
-      localStorage.setItem(key, result.jobId); setJob(result); setSource(null); setTranslation(''); setWarnings(''); setCleanUrl(''); setRenderUrl(''); setPreviewUrl(''); setOcrPreviewUrl('');
-      setPreviewUrl(`/api/jobs/${result.jobId}/source.img?v=${Date.now()}`);
+      localStorage.setItem(key, result.jobId); setJob(result); setSource(null); setTranslation(''); setWarnings(''); setCleanVersion(0); setRenderVersion(0); setSourceVersion(0); setOcrVersion(0);
+      setSourceVersion(Date.now());
       setMessage('تصویر انتخاب شد. پردازش و ترجمه آماده‌اند.');
       void loadJobs();
     } catch (error) {
@@ -212,8 +316,8 @@ function App() {
       if (!next.ok) throw Error('دریافت متن OCR ناموفق بود.');
       const updated: Source = await next.json();
       if (source && source.revision !== updated.revision && translation) setWarnings('متن OCR تغییر کرده است؛ ترجمهٔ قبلی را پیش از ذخیره بررسی کنید.');
-      setSource(updated); setCleanUrl(''); setRenderUrl('');
-      setOcrPreviewUrl(`/api/jobs/${job.jobId}/ocr-preview?v=${Date.now()}`);
+      setSource(updated); setCleanVersion(0); setRenderVersion(0);
+      setOcrVersion(Date.now());
       setMessage('OCR آزمایشی انجام شد؛ متن را از نظر خطا بررسی کنید.');
     } catch (error) {setMessage(error instanceof Error ? error.message : 'OCR ناموفق بود.');}
     finally {setBusy(false);}
@@ -240,8 +344,8 @@ function App() {
           onClick={() => {if (!busy && !loadingData) document.getElementById('file-input')?.click()}}
           style={{position: 'relative', width: '100%', maxWidth: '500px', minHeight: '160px', maxHeight: '250px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', border: '2px dashed #9bf3cc', borderRadius: '12px', background: '#0b171d', color: '#9bf3cc', cursor: 'pointer', transition: 'all .2s', overflow: 'hidden'}}
         >
-          {previewUrl ? (
-            <img src={previewUrl} alt="پیش‌نمایش" style={{maxWidth: '100%', maxHeight: '160px', borderRadius: '8px', objectFit: 'contain', marginBottom: '12px', overflow: 'auto'}} />
+          {job && sourceVersion ? (
+            <img src={`/api/jobs/${job.jobId}/thumb/source?v=${sourceVersion}`} alt="بندانگشتی تصویر انتخاب‌شده" style={{maxWidth: '100%', maxHeight: '160px', borderRadius: '8px', objectFit: 'contain', marginBottom: '12px'}} />
           ) : (
             <>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9bf3cc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{marginBottom: '12px'}}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -259,11 +363,16 @@ function App() {
         </div>
         <p role="status" style={{margin: '0', color: '#eef9f4', fontSize: '14px'}}>{message}</p>
         
-        {previewUrl && (
-          <figure className="preview-stage" style={{margin: '12px 0 0 0', maxWidth: '500px', width: '100%'}}>
-            <img className="result-image" src={previewUrl} alt="پیش‌نمایش تصویر اصلی" />
-            <figcaption style={{color: '#9bf3cc', fontWeight: 'bold', textAlign: 'center', marginTop: '8px'}}>مرحله ۱: پیش‌نمایش عکس اصلی</figcaption>
-          </figure>
+        {job && sourceVersion > 0 && (
+          <ImagePreview
+            jobId={job.jobId}
+            kind="source"
+            version={sourceVersion}
+            aspect={job.height / job.width}
+            alt="پیش‌نمایش عکس اصلی"
+            downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
+            caption={<span style={{color: '#9bf3cc', fontWeight: 'bold'}}>مرحله ۱: پیش‌نمایش عکس اصلی</span>}
+          />
         )}
 
         {jobs.length > 0 && (
@@ -297,11 +406,16 @@ function App() {
             <small style={{color: '#a8b9bb'}}>شناسه: <bdi>{job.jobId}</bdi></small>
             <p style={{margin: '12px 0'}}><button className="ocr" disabled={busy || loadingData} onClick={() => void runOcr()} style={{padding: '10px 16px', fontSize: '14px'}}>اجرای OCR آزمایشی</button></p>
             
-            {ocrPreviewUrl && (
-              <figure className="preview-stage" style={{margin: '12px 0', maxWidth: '500px', width: '100%'}}>
-                <img className="result-image" src={ocrPreviewUrl} alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده" />
-                <figcaption style={{color: '#9bf3cc', fontWeight: 'bold', textAlign: 'center', marginTop: '8px'}}>مرحله ۲: کادر و شمارهٔ خطوط تشخیص‌داده‌شده (همان شماره‌های متن پایین)</figcaption>
-              </figure>
+            {ocrVersion > 0 && (
+              <ImagePreview
+                jobId={job.jobId}
+                kind="ocr"
+                version={ocrVersion}
+                aspect={job.height / job.width}
+                alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
+                downloadName={`t4-${job.jobId}-ocr.png`}
+                caption={<span style={{color: '#9bf3cc', fontWeight: 'bold'}}>مرحله ۲: کادر و شمارهٔ خطوط تشخیص‌داده‌شده (همان شماره‌های متن پایین)</span>}
+              />
             )}
 
             {source && (
@@ -319,24 +433,30 @@ function App() {
                     <p role="status" style={{margin: '8px 0 0 0', color: '#a8b9bb', fontSize: '14px'}}>{warnings}</p>
                     <p style={{margin: '12px 0 0 0', color: '#a8b9bb', fontSize: '14px'}}>پاک‌سازی از آخرین ترجمهٔ ذخیره‌شده استفاده می‌کند، نه تغییرات ذخیره‌نشده.</p>
                     <button className="ocr" disabled={busy || loadingData} onClick={() => void cleanImage()} style={{padding: '10px 16px', fontSize: '14px', marginTop: '8px'}}>پاک‌سازی و درج ترجمه</button>
-                    <button className="ocr" disabled={busy || loadingData || !cleanUrl} onClick={() => void renderImage()} style={{padding: '10px 16px', fontSize: '14px', marginTop: '8px', marginRight: '8px'}}>درج دوبارهٔ ترجمه</button>
+                    <button className="ocr" disabled={busy || loadingData || cleanVersion === 0} onClick={() => void renderImage()} style={{padding: '10px 16px', fontSize: '14px', marginTop: '8px', marginRight: '8px'}}>درج دوبارهٔ ترجمه</button>
                     
-                    {cleanUrl && (
-                      <figure style={{margin: '24px 0 0 0', maxWidth: '500px', width: '100%'}}>
-                        <img className="result-image" src={cleanUrl} alt="تصویر پاک‌سازی‌شدهٔ آزمایشی، بدون متن فارسی" />
-                        <figcaption style={{color: '#a8b9bb', fontSize: '13px', marginTop: '10px'}}>نتیجهٔ آزمایشی؛ متن فارسی هنوز روی تصویر قرار نگرفته است.</figcaption>
-                      </figure>
+                    {renderVersion > 0 && (
+                      <ImagePreview
+                        jobId={job!.jobId}
+                        kind="render"
+                        version={renderVersion}
+                        aspect={job!.height / job!.width}
+                        alt="پیش‌نمایش صفحه با ترجمهٔ فارسی"
+                        downloadName={`t4-${job!.jobId}-fa.png`}
+                        caption={<span>پیش‌نمایش آزمایشی با فونت وزیرمتن؛ پیش از استفادهٔ نهایی خروجی را بررسی کنید.</span>}
+                      />
                     )}
 
-                    {renderUrl && (
-                      <figure style={{margin: '24px 0 0 0', maxWidth: '700px', width: '100%'}}>
-                        <img className="result-image" src={renderUrl} alt="پیش‌نمایش صفحه با ترجمهٔ فارسی" />
-                        <figcaption style={{color: '#a8b9bb', fontSize: '13px', marginTop: '10px'}}>
-                          پیش‌نمایش آزمایشی با فونت وزیرمتن؛ پیش از استفادهٔ نهایی خروجی را بررسی کنید.
-                          {' '}
-                          <a href={renderUrl} download={`t4-${job?.jobId ?? 'page'}-fa.png`} style={{color: '#00ffcc'}}>دانلود PNG</a>
-                        </figcaption>
-                      </figure>
+                    {cleanVersion > 0 && (
+                      <ImagePreview
+                        jobId={job!.jobId}
+                        kind="clean"
+                        version={cleanVersion}
+                        aspect={job!.height / job!.width}
+                        alt="تصویر پاک‌سازی‌شدهٔ آزمایشی، بدون متن فارسی"
+                        downloadName={`t4-${job!.jobId}-clean.png`}
+                        caption={<span>نتیجهٔ پاک‌سازی، پیش از درج ترجمه.</span>}
+                      />
                     )}
                   </>
                 )}

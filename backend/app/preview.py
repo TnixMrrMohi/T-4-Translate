@@ -9,7 +9,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-MAX_PREVIEW_SIDE = 2400
+MAX_PREVIEW_SIDE = 2400     # سقف عرض پیش‌نمایش
+MAX_PREVIEW_HEIGHT = 6000   # سقف ارتفاع؛ صفحهٔ بلند وب‌تون به یک نوار ناخوانا تبدیل نشود
 BOX_COLOR = (0, 200, 255)
 BADGE_COLOR = (0, 0, 0)
 BADGE_TEXT_COLOR = (255, 255, 255)
@@ -44,8 +45,7 @@ def overlay(path: Path, lines: list) -> Image.Image:
     except (OSError, ValueError) as exc:
         raise PreviewError("خواندن تصویر منبع ناموفق بود.") from exc
 
-    longest = max(image.size)
-    scale = MAX_PREVIEW_SIDE / longest if longest > MAX_PREVIEW_SIDE else 1.0
+    scale = min(1.0, MAX_PREVIEW_SIDE / image.width, MAX_PREVIEW_HEIGHT / image.height)
     if scale != 1.0:
         image = image.resize(
             (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
