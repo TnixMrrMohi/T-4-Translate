@@ -241,7 +241,7 @@ function App() {
                   <>
                     <h3 style={{margin: '16px 0 8px 0', color: '#eef9f4'}}>ترجمهٔ دستی</h3>
                     <p style={{margin: '0 0 12px 0', color: '#a8b9bb', fontSize: '14px'}}>ترجمه را با همان شماره‌ها وارد کنید؛ موارد جاافتاده حفظ می‌شوند.</p>
-                    <textarea aria-label="ترجمهٔ فارسی شماره‌گذاری‌شده" dir="rtl" value={translation} onChange={e => setTranslation(e.value)} disabled={busy || loadingData} rows={8} placeholder="[1] ترجمهٔ فارسی" style={{width: '100%', minWidth: '450px', background: '#0b171d', color: '#eef9f4', border: '1px solid #71928a', borderRadius: '10px', padding: '12px', fontFamily: 'inherit', lineHeight: '1.8', resize: 'vertical'}}/>
+                    <textarea aria-label="ترجمهٔ فارسی شماره‌گذاری‌شده" dir="rtl" value={translation} onChange={e => setTranslation(e.target.value)} disabled={busy || loadingData} rows={8} placeholder="[1] ترجمهٔ فارسی" style={{width: '100%', minWidth: '450px', background: '#0b171d', color: '#eef9f4', border: '1px solid #71928a', borderRadius: '10px', padding: '12px', fontFamily: 'inherit', lineHeight: '1.8', resize: 'vertical'}}/>
                     <p style={{margin: '12px 0 0 0'}}><button className="ocr" disabled={busy || loadingData} onClick={() => void saveTranslation()} style={{padding: '10px 16px', fontSize: '14px'}}>ذخیرهٔ ترجمه</button></p>
                     <p role="status" style={{margin: '8px 0 0 0', color: '#a8b9bb', fontSize: '14px'}}>{warnings}</p>
                     <p style={{margin: '12px 0 0 0', color: '#a8b9bb', fontSize: '14px'}}>پاک‌سازی از آخرین ترجمهٔ ذخیره‌شده استفاده می‌کند، نه تغییرات ذخیره‌نشده.</p>
