@@ -39,3 +39,19 @@
 .modal-stage.fit{overflow:hidden;align-items:center}
 .modal-stage.fit img{max-width:100%;max-height:100%;object-fit:contain;background:transparent}
 .modal-zoom{color:#9bf3cc;font-size:13px;min-width:52px;text-align:center}
+
+/* --- دیالوگ کاستوم (جای confirm/alert مرورگر) --- */
+.dialog-backdrop{position:fixed;inset:0;z-index:200;background:#000000cc;display:flex;align-items:center;justify-content:center;padding:20px}
+.dialog{width:100%;max-width:440px;background:#0b171d;border:1px solid #00ffcc55;border-radius:14px;padding:20px;box-shadow:0 20px 60px #000000b3;color:#eef9f4;text-align:right;direction:rtl}
+.dialog.is-danger{border-color:#ff6b6b88}
+.dialog h3{margin:0 0 10px;font-size:17px;color:#eef9f4}
+.dialog.is-danger h3{color:#ffb4b4}
+.dialog-message{font-size:14px;line-height:1.9;color:#cfe1de;overflow-wrap:anywhere}
+.dialog-message b{color:#eef9f4}
+.dialog-actions{display:flex;justify-content:flex-start;gap:8px;margin-top:18px}
+.dialog-actions button{font:inherit;font-size:14px;font-weight:bold;padding:9px 16px;border-radius:9px;cursor:pointer;border:1px solid transparent}
+.dialog-actions button.primary{background:#00ffcc;color:#050505}
+.dialog-actions button.danger{background:#ff6b6b;color:#1a0505}
+.dialog-actions button.ghost{background:transparent;color:#9fb5b2;border-color:#ffffff30}
+.dialog-actions button:hover{filter:brightness(1.08)}
+.dialog-actions button:focus-visible{outline:2px solid #00ffcc;outline-offset:2px}
