@@ -103,6 +103,32 @@ def get_job(job_id: str) -> dict:
         raise HTTPException(404, "کار پیدا نشد.") from None
 
 
+@app.get("/api/jobs/{job_id}/artifacts")
+def job_artifacts(job_id: str) -> dict:
+    """کدام خروجی‌های این کار روی دیسک موجود است؛ رابط با آن مرحلهٔ جاری را تعیین می‌کند."""
+    workspace = workspace_for(job_id)
+    translation: dict | None = None
+    try:
+        translation = json.loads((workspace / "translations.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    stale = None
+    if translation is not None:
+        try:
+            stale = translation.get("sourceRevision") != translation_source(job_id)["revision"]
+        except HTTPException:
+            stale = True
+    return {
+        "jobId": job_id,
+        "source": (workspace / "source.img").is_file(),
+        "ocr": (workspace / "ocr.json").is_file(),
+        "translations": translation is not None,
+        "stale": stale,
+        "clean": (workspace / "clean.png").is_file(),
+        "render": (workspace / "render.png").is_file(),
+    }
+
+
 MAX_JOB_LIST = 50
 
 

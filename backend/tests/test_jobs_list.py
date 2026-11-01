@@ -117,3 +117,24 @@ def test_delete_current_job_is_removed_from_list_but_others_stay(tmp_path, monke
         client.delete(f"/api/jobs/{second['jobId']}")
         items = client.get("/api/jobs").json()["items"]
         assert [item["jobId"] for item in items] == [first["jobId"]]
+
+
+def test_artifacts_report_progress(tmp_path, monkeypatch):
+    from app import ocr
+
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(ocr, "recognize", lambda path: [
+        {"text": "Hi", "confidence": .9, "quad": [[5, 5], [35, 5], [35, 35], [5, 35]]}])
+    with TestClient(app) as client:
+        job = _upload(client)["jobId"]
+        empty = client.get(f"/api/jobs/{job}/artifacts").json()
+        assert empty == {"jobId": job, "source": True, "ocr": False, "translations": False,
+                         "stale": None, "clean": False, "render": False}
+        client.post(f"/api/jobs/{job}/ocr")
+        after_ocr = client.get(f"/api/jobs/{job}/artifacts").json()
+        assert after_ocr["ocr"] is True and after_ocr["translations"] is False
+        revision = client.get(f"/api/jobs/{job}/translation-source").json()["revision"]
+        client.post(f"/api/jobs/{job}/translations", json={"sourceRevision": revision, "text": "[1] سلام"})
+        saved = client.get(f"/api/jobs/{job}/artifacts").json()
+        assert saved["translations"] is True and saved["stale"] is False
+        assert client.get("/api/jobs/" + "a" * 32 + "/artifacts").status_code == 404
