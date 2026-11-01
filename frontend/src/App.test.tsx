@@ -263,10 +263,48 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', {name: 'مرحله ۵: مقایسهٔ ورودی و خروجی'})).toBeInTheDocument();
+    // حالت پیش‌فرض: پردهٔ مقایسه با دستگیره.
+    const handle = screen.getByRole('slider', {name: 'دستگیرهٔ مقایسهٔ ورودی و خروجی'});
+    expect(handle).toHaveAttribute('aria-valuenow', '50');
+    expect(screen.getByRole('img', {name: /ورودی \(تصویر اصلی\)/})).toBeInTheDocument();
+    expect(screen.getByRole('img', {name: /خروجی/})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'پردهٔ مقایسه'})).toHaveClass('is-active');
+  });
+
+  it('پردهٔ مقایسه با صفحه‌کلید و بزرگ‌نمایی کار می‌کند', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+      clean: true,
+      render: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const handle = await screen.findByRole('slider', {name: 'دستگیرهٔ مقایسهٔ ورودی و خروجی'});
+    handle.focus();
+    await user.keyboard('{ArrowRight}{ArrowRight}');
+    expect(handle).toHaveAttribute('aria-valuenow', '54');
+    await user.keyboard('{End}');
+    expect(handle).toHaveAttribute('aria-valuenow', '100');
+    await user.keyboard('{Home}');
+    expect(handle).toHaveAttribute('aria-valuenow', '0');
+
+    // تقسیم افقی برای وب‌تون بلند پیشنهاد می‌شود، ولی هر دو حالت انتخابی است.
+    await user.click(screen.getByRole('button', {name: 'تقسیم عمودی'}));
+    expect(screen.getByRole('slider')).toHaveAttribute('aria-orientation', 'vertical');
+
+    // بزرگ‌نمایی از تصویر کامل استفاده می‌کند.
+    await user.click(screen.getByRole('button', {name: '۲×'}));
+    expect(screen.getByRole('img', {name: /ورودی \(تصویر اصلی\)/}).getAttribute('src'))
+      .toContain(`/api/jobs/${JOB_ID}/source.img`);
+
+    // بازگشت به حالت کنار هم.
+    await user.click(screen.getByRole('button', {name: 'کنار هم'}));
     expect(screen.getByRole('heading', {name: 'نسخهٔ ورودی'})).toBeInTheDocument();
     expect(screen.getByRole('heading', {name: 'نسخهٔ خروجی'})).toBeInTheDocument();
-    expect(screen.getByRole('button', {name: /بزرگ‌نمایی: نسخهٔ ورودی/})).toBeInTheDocument();
-    expect(screen.getByRole('button', {name: /بزرگ‌نمایی: نسخهٔ خروجی/})).toBeInTheDocument();
   });
 });
 

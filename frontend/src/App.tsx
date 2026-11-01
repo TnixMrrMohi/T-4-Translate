@@ -1,4 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
+import {CompareSlider} from './CompareSlider';
 import './style.css';
 
 type Source = {revision: string; items: {number: number; text: string}[]};
@@ -938,38 +939,19 @@ export function App() {
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : (
                 <>
-                  <p className="wizard-help">نسخهٔ ورودی (اصلی) و نسخهٔ خروجی (فارسی) کنار هم؛ روی هر تصویر بزنید تا در مودال بزرگ شود.</p>
+                  <p className="wizard-help">
+                    نسخهٔ ورودی و خروجی با «پردهٔ مقایسه» روی هم قرار می‌گیرند؛ دستگیره را بکشید تا تفاوت را ببینید.
+                  </p>
 
-                  <div className="compare">
-                    <div className="compare-side">
-                      <h3>نسخهٔ ورودی</h3>
-                      <ImagePreview
-                        jobId={job.jobId}
-                        kind="source"
-                        version={sourceVersion}
-                        aspect={job.height / job.width}
-                        alt="نسخهٔ ورودی (تصویر اصلی)"
-                        downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
-                        caption={<span>اصلی</span>}
-                      />
-                    </div>
-                    <div className="compare-side">
-                      <h3>نسخهٔ خروجی</h3>
-                      {renderVersion > 0 ? (
-                        <ImagePreview
-                          jobId={job.jobId}
-                          kind="render"
-                          version={renderVersion}
-                          aspect={job.height / job.width}
-                          alt="نسخهٔ خروجی (ترجمهٔ فارسی)"
-                          downloadName={`t4-${job.jobId}-fa.png`}
-                          caption={<span>ترجمه‌شده</span>}
-                        />
-                      ) : (
-                        <p className="wizard-note">خروجی هنوز ساخته نشده است.</p>
-                      )}
-                    </div>
-                  </div>
+                  <CompareSlider
+                    jobId={job.jobId}
+                    width={job.width}
+                    height={job.height}
+                    format={job.format}
+                    sourceVersion={sourceVersion}
+                    renderVersion={renderVersion}
+                    cleanVersion={cleanVersion}
+                  />
 
                   <div className="wizard-nav">
                     <button type="button" className="ghost" onClick={() => goToStep(4)}>مرحلهٔ قبل (درج)</button>
