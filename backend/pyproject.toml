@@ -9,7 +9,7 @@ requires-python = ">=3.11"
 dependencies = ["fastapi==0.115.12", "uvicorn==0.34.2", "python-multipart==0.0.20", "Pillow==11.2.1"]
 
 [project.optional-dependencies]
-ocr-experimental = ["rapidocr_onnxruntime==1.4.4"]
+ocr-experimental = ["rapidocr_onnxruntime==1.4.4", "numpy==1.26.4", "opencv-python==4.10.0.84"]
 test = ["pytest==8.3.5", "httpx==0.28.1"]
 
 [tool.setuptools.packages.find]
