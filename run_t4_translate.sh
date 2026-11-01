@@ -58,9 +58,9 @@ if [ ! -x "$VENV_PY" ]; then
 fi
 
 step "بررسی وابستگی‌های بک‌اند"
-if ! "$VENV_PY" -c 'import fastapi, uvicorn, PIL, multipart' >/dev/null 2>&1; then
+if ! "$VENV_PY" -c 'import fastapi, uvicorn, PIL, multipart, arabic_reshaper, bidi' >/dev/null 2>&1; then
   step "نصب وابستگی‌های بک‌اند (چند دقیقه طول می‌کشد)"
-  ( cd "$BACKEND" && "$VENV_PY" -m pip install --upgrade pip --quiet && "$VENV_PY" -m pip install -e '.[test]' )
+  ( cd "$BACKEND" && "$VENV_PY" -m pip install --upgrade pip --quiet && "$VENV_PY" -m pip install -e '.[test,render]' )
 fi
 
 if [ "$INSTALL_OCR" = "1" ]; then

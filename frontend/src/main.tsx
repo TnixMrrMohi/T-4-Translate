@@ -17,6 +17,7 @@ function App() {
   const [loadingData, setLoadingData] = useState(false);
   
   const [cleanUrl, setCleanUrl] = useState('');
+  const [renderUrl, setRenderUrl] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
   const [ocrPreviewUrl, setOcrPreviewUrl] = useState('');
 
@@ -26,7 +27,7 @@ function App() {
 
   const resetApp = () => {
     setJob(null); setSource(null); setTranslation(''); setWarnings('');
-    setPreviewUrl(''); setOcrPreviewUrl(''); setCleanUrl('');
+    setPreviewUrl(''); setOcrPreviewUrl(''); setCleanUrl(''); setRenderUrl('');
     setMessage('برنامه ریست شد. عکس جدید را انتخاب کنید.');
     localStorage.removeItem(key);
     uploadStarted.current = false;
@@ -109,16 +110,33 @@ function App() {
         result.duplicates.length ? `شمارهٔ تکراری (آخرین مورد ذخیره شد): ${result.duplicates.join('، ')}` : '',
         result.unknown.length ? `شمارهٔ ناشناخته: ${result.unknown.join('، ')}` : '',
       ].filter(Boolean);
-      setWarnings(parts.join(' | ')); setCleanUrl('');
+      setWarnings(parts.join(' | ')); setCleanUrl(''); setRenderUrl('');
       setMessage('ترجمه ذخیره شد؛ هنوز روی تصویر اعمال نشده است.');
       await cleanImage();
     } catch (error) {setMessage(error instanceof Error ? error.message : 'ذخیرهٔ ترجمه ناموفق بود.');}
     finally {setBusy(false);}
   }
 
+  async function requestRender() {
+    if (!job) return;
+    const response = await fetch(`/api/jobs/${job.jobId}/render`, {method: 'POST'});
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'درج ترجمه روی تصویر ناموفق بود.');
+    setRenderUrl(`/api/jobs/${job.jobId}/render?v=${Date.now()}`);
+    setMessage(result.message ?? 'ترجمهٔ فارسی روی تصویر قرار گرفت.');
+  }
+
+  async function renderImage() {
+    if (!job || busy || loadingData) return;
+    setBusy(true); setMessage('در حال درج ترجمهٔ فارسی روی تصویر…');
+    try { await requestRender(); }
+    catch (error) {setMessage(error instanceof Error ? error.message : 'درج ترجمه روی تصویر ناموفق بود.');}
+    finally {setBusy(false);}
+  }
+
   async function cleanImage() {
     if (!job || busy || loadingData) return;
-    setBusy(true); setMessage('در حال پاک‌سازی آزمایشی…'); setCleanUrl('');
+    setBusy(true); setMessage('در حال پاک‌سازی آزمایشی…'); setCleanUrl(''); setRenderUrl('');
     try {
       const response = await fetch(`/api/jobs/${job.jobId}/clean`, {method: 'POST'});
       const result = await response.json();
@@ -126,6 +144,9 @@ function App() {
       const finalUrl = `/api/jobs/${job.jobId}/clean?v=${Date.now()}`;
       setCleanUrl(finalUrl);
       setMessage(result.message);
+      // پس از پاک‌سازی، ترجمه بی‌درنگ روی تصویر درج می‌شود.
+      try { await requestRender(); }
+      catch (error) {setMessage(`${result.message} درج ترجمه انجام نشد: ${error instanceof Error ? error.message : 'خطای نامشخص'}`);}
     } catch (error) {setMessage(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');}
     finally {setBusy(false);}
   }
@@ -144,7 +165,7 @@ function App() {
         throw new Error(typeof result.detail === 'string' ? result.detail : response.status === 413 ? 'حجم تصویر بیش از حد مجاز است.' : 'ذخیرهٔ تصویر ناموفق بود.');
       }
       const result: Job = await response.json();
-      localStorage.setItem(key, result.jobId); setJob(result); setSource(null); setTranslation(''); setWarnings(''); setCleanUrl(''); setPreviewUrl(''); setOcrPreviewUrl('');
+      localStorage.setItem(key, result.jobId); setJob(result); setSource(null); setTranslation(''); setWarnings(''); setCleanUrl(''); setRenderUrl(''); setPreviewUrl(''); setOcrPreviewUrl('');
       setPreviewUrl(`/api/jobs/${result.jobId}/source.img?v=${Date.now()}`);
       setMessage('تصویر انتخاب شد. پردازش و ترجمه آماده‌اند.');
     } catch (error) {
@@ -164,7 +185,7 @@ function App() {
       if (!next.ok) throw Error('دریافت متن OCR ناموفق بود.');
       const updated: Source = await next.json();
       if (source && source.revision !== updated.revision && translation) setWarnings('متن OCR تغییر کرده است؛ ترجمهٔ قبلی را پیش از ذخیره بررسی کنید.');
-      setSource(updated); setCleanUrl('');
+      setSource(updated); setCleanUrl(''); setRenderUrl('');
       setOcrPreviewUrl(`/api/jobs/${job.jobId}/ocr-preview?v=${Date.now()}`);
       setMessage('OCR آزمایشی انجام شد؛ متن را از نظر خطا بررسی کنید.');
     } catch (error) {setMessage(error instanceof Error ? error.message : 'OCR ناموفق بود.');}
@@ -245,12 +266,24 @@ function App() {
                     <p style={{margin: '12px 0 0 0'}}><button className="ocr" disabled={busy || loadingData} onClick={() => void saveTranslation()} style={{padding: '10px 16px', fontSize: '14px'}}>ذخیرهٔ ترجمه</button></p>
                     <p role="status" style={{margin: '8px 0 0 0', color: '#a8b9bb', fontSize: '14px'}}>{warnings}</p>
                     <p style={{margin: '12px 0 0 0', color: '#a8b9bb', fontSize: '14px'}}>پاک‌سازی از آخرین ترجمهٔ ذخیره‌شده استفاده می‌کند، نه تغییرات ذخیره‌نشده.</p>
-                    <button className="ocr" disabled={busy || loadingData} onClick={() => void cleanImage()} style={{padding: '10px 16px', fontSize: '14px', marginTop: '8px'}}>پاک‌سازی آزمایشی</button>
+                    <button className="ocr" disabled={busy || loadingData} onClick={() => void cleanImage()} style={{padding: '10px 16px', fontSize: '14px', marginTop: '8px'}}>پاک‌سازی و درج ترجمه</button>
+                    <button className="ocr" disabled={busy || loadingData || !cleanUrl} onClick={() => void renderImage()} style={{padding: '10px 16px', fontSize: '14px', marginTop: '8px', marginRight: '8px'}}>درج دوبارهٔ ترجمه</button>
                     
                     {cleanUrl && (
                       <figure style={{margin: '24px 0 0 0', maxWidth: '500px', width: '100%'}}>
                         <img className="result-image" src={cleanUrl} alt="تصویر پاک‌سازی‌شدهٔ آزمایشی، بدون متن فارسی" />
                         <figcaption style={{color: '#a8b9bb', fontSize: '13px', marginTop: '10px'}}>نتیجهٔ آزمایشی؛ متن فارسی هنوز روی تصویر قرار نگرفته است.</figcaption>
+                      </figure>
+                    )}
+
+                    {renderUrl && (
+                      <figure style={{margin: '24px 0 0 0', maxWidth: '700px', width: '100%'}}>
+                        <img className="result-image" src={renderUrl} alt="پیش‌نمایش صفحه با ترجمهٔ فارسی" />
+                        <figcaption style={{color: '#a8b9bb', fontSize: '13px', marginTop: '10px'}}>
+                          پیش‌نمایش آزمایشی با فونت وزیرمتن؛ پیش از استفادهٔ نهایی خروجی را بررسی کنید.
+                          {' '}
+                          <a href={renderUrl} download={`t4-${job?.jobId ?? 'page'}-fa.png`} style={{color: '#00ffcc'}}>دانلود PNG</a>
+                        </figcaption>
                       </figure>
                     )}
                   </>

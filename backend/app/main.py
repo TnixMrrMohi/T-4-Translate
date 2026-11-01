@@ -18,7 +18,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
-from app import cleaning, ocr
+from app import cleaning, ocr, rendering
 from app.translations import parse_translation
 
 app = FastAPI(title="T-4 Translate", version="0.1.0")
@@ -245,6 +245,78 @@ def get_clean(job_id: str):
         raise HTTPException(404, "تصویر پاک‌شده موجود نیست.") from None
     if translation["stale"] or stamp != {"sourceRevision": translation["sourceRevision"], "translations": translation["translations"]}:
         raise HTTPException(409, "ترجمه یا OCR تغییر کرده است؛ دوباره پاک‌سازی کنید.")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+def _render_files(clean_path: Path, lines: list, translations: dict,
+                  image_path: Path, meta_path: Path) -> int:
+    """رندر در نخ کارگر انجام می‌شود؛ فایل‌ها اتمی جایگزین می‌شوند."""
+    with Image.open(clean_path) as base:
+        rendered, drawn = rendering.render_translations(base, lines, translations)
+    tmp = image_path.with_name(image_path.name + ".tmp")
+    try:
+        rendered.save(tmp, format="PNG")
+        os.replace(tmp, image_path)
+    finally:
+        rendered.close()
+        if tmp.exists():
+            tmp.unlink()
+    meta_tmp = meta_path.with_name(meta_path.name + ".tmp")
+    meta_tmp.write_text(json.dumps(drawn, ensure_ascii=False), encoding="utf-8")
+    os.replace(meta_tmp, meta_path)
+    return drawn
+
+
+def _clean_stamp_matches(workspace: Path, translation: dict) -> bool:
+    try:
+        stamp = json.loads((workspace / "clean-meta.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+    return stamp == {"sourceRevision": translation["sourceRevision"],
+                     "translations": translation["translations"]}
+
+
+@app.post("/api/jobs/{job_id}/render")
+async def render_job(job_id: str) -> dict:
+    """ترجمهٔ فارسی را روی تصویر پاک‌شده می‌نویسد (رندر آزمایشی با فونت وزیرمتن)."""
+    async with _ocr_lock:
+        workspace = workspace_for(job_id)
+        translation = read_translation(job_id)
+        if translation["stale"]:
+            raise HTTPException(409, "OCR تغییر کرده است؛ ترجمه را دوباره بررسی و ذخیره کنید.")
+        if not translation["translations"]:
+            raise HTTPException(409, "ترجمه‌ای برای نمایش روی تصویر وجود ندارد.")
+        if not (workspace / "clean.png").is_file() or not _clean_stamp_matches(workspace, translation):
+            raise HTTPException(409, "ابتدا پاک‌سازی را با همین ترجمه اجرا کنید.")
+        source = get_ocr(job_id)
+        try:
+            drawn = await run_native_safely(
+                _render_files, workspace / "clean.png", source["lines"],
+                translation["translations"], workspace / "render.png", workspace / "render-meta.json")
+        except rendering.RenderError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except Exception:
+            raise HTTPException(500, "نمایش ترجمه روی تصویر ناموفق بود.") from None
+        return {"jobId": job_id, "drawn": drawn,
+                "message": "ترجمهٔ فارسی روی پیش‌نمایش قرار گرفت؛ این خروجی هنوز آزمایشی است."}
+
+
+@app.get("/api/jobs/{job_id}/render")
+def get_render(job_id: str):
+    workspace = workspace_for(job_id)
+    path = workspace / "render.png"
+    if not path.is_file():
+        raise HTTPException(404, "پیش‌نمایش ترجمه موجود نیست.")
+    try:
+        translation = read_translation(job_id)
+    except HTTPException:
+        raise HTTPException(409, "ترجمه تغییر کرده است؛ دوباره نمایش را اجرا کنید.") from None
+    if translation["stale"] or not _clean_stamp_matches(workspace, translation):
+        raise HTTPException(409, "ترجمه یا پاک‌سازی تغییر کرده است؛ دوباره نمایش را اجرا کنید.")
+    try:
+        (workspace / "render-meta.json").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise HTTPException(404, "پیش‌نمایش ترجمه موجود نیست.") from None
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 

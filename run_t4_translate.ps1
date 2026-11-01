@@ -111,13 +111,13 @@ if (-not (Test-Path $venvPy)) {
 }
 
 Write-Step "بررسی وابستگی‌های بک‌اند"
-& $venvPy -c "import fastapi, uvicorn, PIL, multipart" 2>$null
+& $venvPy -c "import fastapi, uvicorn, PIL, multipart, arabic_reshaper, bidi" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Step "نصب وابستگی‌های بک‌اند (چند دقیقه طول می‌کشد)"
     Push-Location $backend
     try {
         & $venvPy -m pip install --upgrade pip --quiet
-        & $venvPy -m pip install -e ".[test]"
+        & $venvPy -m pip install -e ".[test,render]"
         if ($LASTEXITCODE -ne 0) { Fail "نصب وابستگی‌های بک‌اند ناموفق بود." }
     } finally {
         Pop-Location
