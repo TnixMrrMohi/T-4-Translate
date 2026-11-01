@@ -1,0 +1,52 @@
+name: Windows build and tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Python dependencies
+        run: |
+          python -m pip install -e './backend[test,ocr-experimental]'
+          python -m pip install -r desktop/requirements.txt
+      - name: Run backend tests
+        run: python -m pytest backend/tests -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - name: Build Windows desktop application
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onedir --console
+          --name T4Translate --paths backend
+          --add-data "frontend/dist;web"
+          --collect-all rapidocr_onnxruntime
+          --collect-all webview
+          --hidden-import uvicorn.logging
+          --hidden-import uvicorn.loops.auto
+          --hidden-import uvicorn.protocols.http.auto
+          --hidden-import uvicorn.protocols.websockets.auto
+          --hidden-import uvicorn.lifespan.on
+          desktop/launcher.py
+      - name: Smoke test packaged application
+        shell: pwsh
+        run: |
+          & .\dist\T4Translate\T4Translate.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: T4Translate-Windows-${{ github.sha }}
+          path: dist/T4Translate/
+          if-no-files-found: error
+          retention-days: 30
