@@ -2,6 +2,13 @@
 from functools import lru_cache
 from pathlib import Path
 
+try:
+    import cv2
+    import numpy
+except ImportError:
+    # در صورت نیاز به جایگزینی OpenCV با نسخه بدون رابط گرافیکی
+    pass
+
 
 class OcrUnavailable(Exception):
     pass

@@ -248,6 +248,28 @@ def get_clean(job_id: str):
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
+@app.get("/api/jobs/{job_id}/source.img")
+def get_source_img(job_id: str):
+    workspace = workspace_for(job_id)
+    path = workspace / "source.img"
+    if not path.is_file():
+        raise HTTPException(404, "تصویر اصلی موجود نیست.")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/jobs/{job_id}/ocr-preview")
+def get_ocr_preview(job_id: str):
+    # در حال حاضر برای پیش‌نمایش مرحله ۲، ما از همان منبع تصویر اصلی استفاده می‌کنیم
+    # اما در آینده می‌توانیم تصویر با کادرهای دتکت‌شده را برگردانیم.
+    # برای اینکه پیش‌نمایش در فرانت‌اند کار کند، مسیر منبع را برمی‌گردانیم یا یک تصویر آزمایشی.
+    # در اینجا مسیر منبع را برمی‌گردانیم تا پیش‌نمایش نمایش داده شود.
+    workspace = workspace_for(job_id)
+    path = workspace / "source.img"
+    if not path.is_file():
+        raise HTTPException(404, "تصویر اصلی موجود نیست.")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 # Only enabled by the packaged desktop launcher; development uses Vite separately.
 if os.environ.get("T4_DESKTOP") == "1":
     app.add_middleware(DesktopOriginGuard)
