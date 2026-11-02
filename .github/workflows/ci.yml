@@ -36,7 +36,14 @@ jobs:
         shell: pwsh
         run: |
           python -m pytest backend/tests -q 2>&1 | Tee-Object -FilePath backend-tests.log
-          exit $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) {
+            # خطاها به‌صورت annotation در GitHub ثبت می‌شوند تا بدون دانلود لاگ هم دیده شوند.
+            Get-Content backend-tests.log |
+              Select-String -Pattern '^(FAILED|ERROR)|^E ' |
+              Select-Object -First 40 |
+              ForEach-Object { Write-Host "::error::$($_.Line)" }
+            exit 1
+          }
 
       - name: Upload backend test log
         if: always()
