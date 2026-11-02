@@ -338,7 +338,7 @@ def _seed_point(bright, bbox, padding: int = 8):
     return int(xs[index] + x0), int(ys[index] + y0)
 
 
-def _has_companions(bright, bubble: dict, height: int, width: int) -> bool:
+def _has_companions(gray, bright, bubble: dict, height: int, width: int, forbidden: list) -> bool:
     """آیا ناحیه‌های روشن کوچک و محصوری کنار این بالن هست (حباب‌های تفکر)؟"""
     import cv2
     import numpy as np
@@ -348,6 +348,7 @@ def _has_companions(bright, bubble: dict, height: int, width: int) -> bool:
     pad = max(24, int(0.5 * max(bw, bh)))
     x0, y0 = max(0, bx - pad), max(0, by - pad)
     x1, y1 = min(width, bx + bw + pad), min(height, by + bh + pad)
+    light = gray[y0:y1, x0:x1]
     window = bright[y0:y1, x0:x1].copy()
     window[0, :] = window[-1, :] = window[:, 0] = window[:, -1] = 1
     mask = np.zeros((window.shape[0] + 2, window.shape[1] + 2), np.uint8)
@@ -365,9 +366,17 @@ def _has_companions(bright, bubble: dict, height: int, width: int) -> bool:
             continue
         if max(w, h) > 0.3 * min(bw, bh) or max(w, h) < 6:
             continue
+        box = (x + x0, y + y0, x + x0 + w, y + y0 + h)
+        if any(not (box[2] <= area_box[0] or box[0] >= area_box[2]
+                    or box[3] <= area_box[1] or box[1] >= area_box[3]) for area_box in forbidden):
+            continue  # داخل متن یا بالن دیگر است، نه حباب تفکر
         if min(w, h) / max(w, h) < 0.6:
             continue  # حباب تفکر تقریباً گرد است
         if region_area / float(w * h) < 0.45:
+            continue
+        # حباب تفکر روشن است؛ حروف تیرهٔ داخل بالن‌های همسایه «حباب» نیستند.
+        region = labels == index
+        if int(region.sum()) and light[region].mean() < 110:
             continue
         # خودِ بالن (یا بخشی از آن) نباید حباب همراه شمرده شود.
         overlaps = not (x + x0 >= bx + bw or x + x0 + w <= bx or y + y0 >= by + bh or y + y0 + h <= by)
@@ -376,6 +385,77 @@ def _has_companions(bright, bubble: dict, height: int, width: int) -> bool:
         companions += 1
     # بالن تفکر معمولاً ۲ تا ۳ حباب کوچک دارد؛ یکی احتمالاً لکه یا نور است.
     return companions >= 2
+
+
+def _split_bubbles(mask, line_boxes: dict):
+    """بالن‌های چسبیده را از هم جدا می‌کند.
+
+    اگر دو بالن هم را لمس کنند، ناحیهٔ روشن یکپارچه می‌شود و متن هر دو در یک بلوک
+    می‌افتد. اینجا از تبدیل فاصله استفاده می‌شود: هر لوب یک قلهٔ فاصله دارد، پس با
+    بریدن قله‌ها و رشد دادنشان، ناحیه به لوب‌های جدا شکسته می‌شود. فقط وقتی جدا
+    می‌کنیم که دست‌کم دو لوب هرکدام حداقل یک خط OCR داشته باشند؛ وگرنه یک بالن است.
+    """
+    import cv2
+    import numpy as np
+
+    numbers = [number for number, box in line_boxes.items() if box is not None]
+    if len(numbers) < 2 or not mask.any():
+        return [(mask, numbers)]
+
+    distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    peak = float(distance.max())
+    if peak <= 1.0:
+        return [(mask, numbers)]
+
+    labels = None
+    for ratio in (0.72, 0.62, 0.52, 0.44, 0.36):
+        seeds = (distance >= peak * ratio).astype(np.uint8)
+        count, seed_labels, stats, _ = cv2.connectedComponentsWithStats(seeds, connectivity=8)
+        kept = [index for index in range(1, count)
+                if stats[index][4] >= mask.sum() * 0.02]
+        if len(kept) < 2:
+            continue
+        labels = np.zeros(mask.shape, np.int32)
+        for new_index, old_index in enumerate(kept, 1):
+            labels[seed_labels == old_index] = new_index
+        # رشد دانه‌ها تا پر شدن ناحیه؛ مرزها با نزدیک‌ترین دانه پر می‌شوند.
+        refined = labels.copy()
+        cv2.watershed(np.dstack([distance] * 3).astype(np.uint8), refined)
+        grown = np.where(mask > 0, refined, 0)
+        if len({value for value in np.unique(grown) if value > 0}) >= 2:
+            labels = grown
+            break
+        labels = None
+    if labels is None:
+        return [(mask, numbers)]
+
+    counts = {value: int((labels == value).sum()) for value in np.unique(labels) if value > 0}
+    parts = []
+    assigned: dict[int, list[int]] = {}
+    for value, area in counts.items():
+        if area < mask.sum() * 0.12:
+            continue
+        part = (labels == value).astype(np.uint8)
+        part_numbers = []
+        for number in numbers:
+            top, bottom, left, right = line_boxes[number]
+            window = part[int(max(0, top)):int(bottom) + 1, int(max(0, left)):int(right) + 1]
+            if window.size and window.sum() >= 0.3 * window.size:
+                part_numbers.append(number)
+        if not part_numbers:
+            continue
+        parts.append((part, part_numbers))
+        assigned[value] = part_numbers
+    # هر خط باید فقط در یک لوب باشد؛ در هم‌پوشانی، لوبی که خط بیشتر در آن است برنده است.
+    seen: dict[int, int] = {}
+    for value, part_numbers in assigned.items():
+        for number in part_numbers:
+            seen[number] = seen.get(number, 0) + 1
+    if any(count > 1 for count in seen.values()):
+        return [(mask, numbers)]
+    if len(parts) < 2:
+        return [(mask, numbers)]
+    return parts
 
 
 def analyze(path: Path, lines: list) -> dict:
@@ -471,28 +551,35 @@ def analyze(path: Path, lines: list) -> dict:
         for origin, mask in masks:
             union[origin[1] - y0:origin[1] - y0 + mask.shape[0],
                   origin[0] - x0:origin[0] - x0 + mask.shape[1]] |= mask
-        try:
-            features = _contour_features(union, total)
-        except BubbleError:
-            continue
-        features["bbox"] = [features["bbox"][0] + x0, features["bbox"][1] + y0,
-                            features["bbox"][2], features["bbox"][3]]
-        kind, confidence, reason = _classify(features)
-        bubbles.append({
-            "id": len(bubbles) + 1,
-            "kind": kind,
-            "confidence": round(confidence, 2),
-            "reason": reason,
-            "bbox": features["bbox"],
-            "lines": sorted(found[member]["line"] for member in members),
-            "features": {key: value for key, value in features.items() if key != "contour"},
-        })
+        line_boxes = {found[member]["line"]: _line_box(lines[found[member]["line"] - 1])
+                      for member in members}
+        for part_mask, part_lines in _split_bubbles(union, line_boxes):
+            try:
+                features = _contour_features(part_mask, total)
+            except BubbleError:
+                continue
+            features["bbox"] = [features["bbox"][0] + x0, features["bbox"][1] + y0,
+                                features["bbox"][2], features["bbox"][3]]
+            kind, confidence, reason = _classify(features)
+            bubbles.append({
+                "id": len(bubbles) + 1,
+                "kind": kind,
+                "confidence": round(confidence, 2),
+                "reason": reason,
+                "bbox": features["bbox"],
+                "lines": sorted(part_lines),
+                "features": {key: value for key, value in features.items() if key != "contour"},
+            })
 
     # حباب‌های کوچک بی‌متن نزدیک یک بالن = نشانهٔ تفکر حباب‌دار.
+    line_boxes_all = [box for box in (_line_box(line) for line in lines if isinstance(line, dict)) if box]
+    line_bounds = [(left - 2, top - 2, right + 2, bottom + 2) for top, bottom, left, right in line_boxes_all]
     for bubble in bubbles:
         if bubble["kind"] not in {"speech", "unknown"}:
             continue
-        if _has_companions(bright, bubble, height, width):
+        others = [item["bbox"] for item in bubbles if item is not bubble and item.get("bbox")]
+        forbidden = line_bounds + [(bx, by, bx + bw, by + bh) for bx, by, bw, bh in others]
+        if _has_companions(gray, bright, bubble, height, width, forbidden):
             bubble["features"]["hasCompanion"] = True
             bubble["kind"] = "thought_bubble"
             bubble["confidence"] = max(bubble["confidence"], 0.72)

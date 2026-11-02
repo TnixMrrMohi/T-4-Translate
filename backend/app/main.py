@@ -261,7 +261,7 @@ class TranslationInput(BaseModel):
     sourceRevision: str = Field(min_length=64, max_length=64)
 
 
-BUBBLE_VERSION = 1
+BUBBLE_VERSION = 2
 
 
 def bubbles_for(job_id: str, lines: list) -> dict:

@@ -162,3 +162,38 @@ def test_invalid_quad_goes_outside(tmp_path):
 def test_missing_file_raises(tmp_path):
     with pytest.raises(bubbles.BubbleError):
         bubbles.analyze(tmp_path / "nope.png", [])
+
+
+def _merged_page(path):
+    """دو بالن که هم را لمس کرده‌اند (مثل «I'VE SLOWED…» و «WE MAY CONVERSE…»)."""
+    def shapes(draw, size):
+        draw.ellipse([60, 80, 330, 330], outline=0, width=4)
+        draw.ellipse([240, 260, 560, 560], outline=0, width=4)
+    return _page(path, shapes, size=(600, 700))
+
+
+def test_touching_bubbles_are_split_into_two(tmp_path):
+    page = _merged_page(tmp_path / "merged.png")
+    lines = (_text_lines(190, 165, count=1, width=120)
+             + _text_lines(190, 200, count=1, width=140)
+             + _text_lines(390, 380, count=1, width=120)
+             + _text_lines(390, 420, count=1, width=130))
+    result = bubbles.analyze(page, lines)
+    bubbles_found = [bubble for bubble in result["bubbles"] if bubble["kind"] != "outside"]
+    assert len(bubbles_found) == 2, result["bubbles"]
+    assert sorted(bubble["lines"] for bubble in bubbles_found) == [[1, 2], [3, 4]]
+    # هر بالن یک بلوک جدا با متن خودش می‌شود.
+    blocks = bubbles.blocks(result, lines)
+    assert len(blocks) == 2
+    assert [block["lines"] for block in blocks] == [[1, 2], [3, 4]]
+
+
+def test_single_bubble_with_two_lines_is_not_split(tmp_path):
+    def shapes(draw, size):
+        draw.ellipse([150, 250, 450, 550], outline=0, width=4)
+    page = _page(tmp_path / "one.png", shapes)
+    lines = _text_lines(300, 380, count=2)
+    result = bubbles.analyze(page, lines)
+    bubbles_found = [bubble for bubble in result["bubbles"] if bubble["kind"] != "outside"]
+    assert len(bubbles_found) == 1
+    assert bubbles_found[0]["lines"] == [1, 2]
