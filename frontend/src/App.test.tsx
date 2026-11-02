@@ -711,7 +711,7 @@ describe('فهرست «کارهای قبلی»', () => {
     expect(within(region).getByRole('button', {name: 'بازکردن'})).toBeInTheDocument();
   });
 
-  it('با «حذف انتخاب و شروع دوباره» کار در «کارهای قبلی» می‌آید', async () => {
+  it('با آیکون سطل زباله کار در «کارهای قبلی» می‌آید', async () => {
     let uploaded = false;
     const {calls} = mockApi({
       jobs: () => (uploaded ? [A] : []),
@@ -726,7 +726,7 @@ describe('فهرست «کارهای قبلی»', () => {
     await jobsLoaded(calls, 2);
     expect(screen.queryByRole('region', {name: 'کارهای قبلی'})).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', {name: 'حذف انتخاب و شروع دوباره'}));
+    await user.click(screen.getByRole('button', {name: 'حذف تصویر انتخاب‌شده و شروع دوباره'}));
     const region = await screen.findByRole('region', {name: 'کارهای قبلی'});
     expect(within(region).getByText('1500×15000 PNG')).toBeInTheDocument();
   });
@@ -811,5 +811,49 @@ describe('چیدمان دو ستونی', () => {
     await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
     const {sidebar} = layout();
     expect(within(sidebar).getByText(/پس از انتخاب تصویر، پیش‌نمایش همین‌جا/)).toBeInTheDocument();
+  });
+});
+
+describe('آیکون سطل زباله در مرحلهٔ ۱', () => {
+  const JOB = {jobId: JOB_ID, width: 690, height: 5880, format: 'PNG', status: 'uploaded'};
+
+  it('دکمهٔ متنی قبلی حذف شده و آیکون در نوار بالای ناحیهٔ ورود عکس است', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({job: JOB});
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
+
+    expect(screen.queryByRole('button', {name: 'حذف انتخاب و شروع دوباره'})).not.toBeInTheDocument();
+
+    const trash = screen.getByRole('button', {name: 'حذف تصویر انتخاب‌شده و شروع دوباره'});
+    expect(trash).toHaveClass('icon-button');
+    const bar = trash.closest('.upload-bar') as HTMLElement;
+    expect(bar).toBeInTheDocument();
+    // نوار سطل زباله بالاتر از ناحیهٔ انتخاب تصویر در DOM است.
+    const dropZone = document.querySelector('.select') as HTMLElement;
+    expect(bar.compareDocumentPosition(dropZone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('پیش از انتخاب تصویر، آیکون سطل زباله غیرفعال است', async () => {
+    mockApi({jobs: []});
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
+    expect(screen.getByRole('button', {name: 'حذف تصویر انتخاب‌شده و شروع دوباره'})).toBeDisabled();
+  });
+
+  it('کلیک روی آیکون، تصویر انتخاب‌شده را پاک می‌کند', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({job: JOB, jobs: [jobItem]});  // jobItem تاریخ معتبر دارد
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
+    await waitFor(() => expect(screen.getByText(/690 × 5880/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', {name: 'حذف تصویر انتخاب‌شده و شروع دوباره'}));
+    await waitFor(() => expect(screen.queryByText(/690 × 5880/)).not.toBeInTheDocument());
+    expect(screen.getByRole('button', {name: 'حذف تصویر انتخاب‌شده و شروع دوباره'})).toBeDisabled();
+    expect(localStorage.getItem('t4-last-job')).toBeNull();
+    // کار پاک‌شده در «کارهای قبلی» می‌آید (فایل‌ها حذف نمی‌شوند).
+    expect(await screen.findByRole('region', {name: 'کارهای قبلی'})).toBeInTheDocument();
   });
 });

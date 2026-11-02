@@ -923,6 +923,28 @@ export function App() {
               <h2 className="wizard-title">مرحله ۱: انتخاب تصویر</h2>
               <p className="wizard-help">تصویر مانگا یا وب‌تون را انتخاب یا اینجا رها کنید. در مرحلهٔ بعد متن‌ها تشخیص داده می‌شوند.</p>
 
+              {/* نوار بالای ناحیهٔ ورود عکس: برچسب سمت راست، آیکون سطل زباله سمت چپ */}
+              <div className="upload-bar">
+                <span className="upload-bar-label">تصویر ورودی</span>
+                <button
+                  type="button"
+                  className="icon-button trash"
+                  onClick={resetApp}
+                  disabled={busy || loadingData || !job}
+                  aria-label="حذف تصویر انتخاب‌شده و شروع دوباره"
+                  title={job ? 'حذف تصویر انتخاب‌شده و شروع دوباره' : 'تصویری انتخاب نشده است'}
+                >
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 6h18" />
+                    <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                    <path d="M10 11v6" />
+                    <path d="M14 11v6" />
+                  </svg>
+                </button>
+              </div>
+
               <div
                 ref={dropZoneRef}
                 className={`select ${busy ? 'busy' : ''}`}
@@ -958,7 +980,6 @@ export function App() {
                     <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void continueFromImage()}>
                       {source ? 'ادامه به ترجمه' : 'ادامه (تشخیص خودکار متن)'}
                     </button>
-                    <button type="button" className="ghost" onClick={resetApp}>حذف انتخاب و شروع دوباره</button>
                   </div>
                 </>
               )}
