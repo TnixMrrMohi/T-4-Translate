@@ -1,4 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
+import {createPortal} from 'react-dom';
 import {CompareSlider} from './CompareSlider';
 import {TextLayoutEditor} from './TextLayoutEditor';
 import {UpdatePanel} from './UpdatePanel';
@@ -293,7 +294,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
         <figcaption>{caption}</figcaption>
       </figure>
 
-      {open && (
+      {open && createPortal((
         <div
           className="modal-backdrop"
           role="dialog"
@@ -344,7 +345,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
     </>
   );
 }

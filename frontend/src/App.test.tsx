@@ -719,6 +719,21 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
       .getByRole('img')).toHaveStyle({width: '100%'});
   });
 
+  it('مودال بیرون از ستون چسبان باز می‌شود تا بندانگشتی روی آن نیفتد', async () => {
+    const user = await openPreview();
+    const dialog = screen.getByRole('dialog');
+    // ریشهٔ مشکل: ستون راست position:sticky است و بستر خودش را می‌سازد؛ مودالی که
+    // داخلش رندر شود با z-index بالا هم زیر کارت مرحله می‌ماند و بندانگشتی رویش می‌افتد.
+    expect(dialog.closest('.sidebar')).toBeNull();
+    expect(dialog.parentElement).toBe(document.body);
+    expect(dialog).toHaveClass('modal-backdrop');
+
+    await user.click(within(dialog).getByRole('button', {name: 'بستن ✕'}));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // بستن مودال چیزی را در ستون راست جا نمی‌گذارد.
+    expect(document.body.querySelectorAll('.modal-backdrop')).toHaveLength(0);
+  });
+
   it('با صفحه‌کلید (Enter) هم عرض تصویر عوض می‌شود', async () => {
     const user = await openPreview();
     const imageButton = screen.getByRole('button', {name: 'تصویر: نمایش به عرض صفحه'});
