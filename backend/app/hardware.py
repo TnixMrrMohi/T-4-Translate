@@ -74,6 +74,17 @@ def total_ram_mb() -> int | None:
     except (ValueError, OSError, AttributeError):
         return None
 
+# شتاب‌دهنده‌های واقعی؛ `AzureExecutionProvider` فقط یک لایهٔ شبکه است، نه GPU.
+ACCELERATORS = {
+    "CUDAExecutionProvider",
+    "TensorrtExecutionProvider",
+    "ROCMExecutionProvider",
+    "DmlExecutionProvider",
+    "OpenVINOExecutionProvider",
+    "CoreMLExecutionProvider",
+    "MIGraphXExecutionProvider",
+}
+
 
 @lru_cache(maxsize=1)
 def gpu() -> dict:
@@ -89,7 +100,7 @@ def gpu() -> dict:
         lines = [line.strip() for line in value.splitlines() if line.strip()]
         if len(lines) >= 2:
             return {"name": lines[1], "memory": "", "vendor": "unknown"}
-    return {"name": "", "memory": "", "vendor": ""}
+    return {"name": "", "memory": "", "vendor": "none"}
 
 
 def onnx_providers() -> list[str]:
@@ -112,10 +123,26 @@ def libraries() -> dict:
                           ("bidi", "bidi")):
         try:
             imported = __import__(module)
-            found[label] = str(getattr(imported, "__version__", "?"))
+            version = getattr(imported, "__version__", None)
+            if not version or version == "?":
+                version = _distribution_version(module)
+            found[label] = str(version or "")
         except Exception:  # noqa: BLE001
             found[label] = ""
     return found
+
+
+def _distribution_version(module: str) -> str:
+    """نسخه از متادیتای بسته، وقتی خودِ ماژول `__version__` ندارد."""
+    from importlib import metadata
+
+    for name in (module, module.replace("_", "-"), module.replace("_onnxruntime", ""),
+                 f"python-{module}"):
+        try:
+            return metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue
+    return ""
 
 
 def disk() -> dict:
@@ -141,7 +168,7 @@ def report() -> dict:
         "ramMb": total_ram_mb(),
         "gpu": gpu(),
         "providers": providers,
-        "accelerated": any(provider != "CPUExecutionProvider" for provider in providers),
+        "accelerated": any(provider in ACCELERATORS for provider in providers),
         "libraries": libraries(),
         "disk": disk(),
     }

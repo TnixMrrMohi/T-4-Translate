@@ -171,6 +171,10 @@ def test_models_api_lists_catalog_and_reports_hardware(store):
 
         prepared = client.post("/api/models/demo")
         assert prepared.status_code == 200
+        for _ in range(200):
+            if client.get("/api/models").json()["models"][0]["installed"]:
+                break
+            time.sleep(0.05)
         assert client.get("/api/models").json()["models"][0]["installed"] is True
 
         removed = client.delete("/api/models/demo")
