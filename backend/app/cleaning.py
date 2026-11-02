@@ -26,7 +26,7 @@ RING_MARGIN = 6        # پهنای حلقهٔ نمونه‌برداری رنگ 
 UNIFORM_STD = 4.0      # انحراف معیار رنگِ دور یک تکه؛ کمتر از این یعنی زمینهٔ یکدست
 TEXTURE_STD = 30.0     # تا این حد، ناهم‌رنگیِ دور تکه گرادیان/بافت است نه حاشیهٔ بالن
 INK_DISTANCE = 32.0    # فاصلهٔ رنگی از پس‌زمینه که پیکسل را «جوهر» می‌کند
-SOFT_DISTANCE = 12.0   # پیکسل‌های کاملاً هم‌رنگ پس‌زمینه (برای نمونه‌برداری رنگ)
+SOFT_DISTANCE = 4.0    # پیکسل‌هایی که «کاملاً هم‌رنگ پس‌زمینه»اند (بی‌هالهٔ حروف)
 MASK_GROW = 2          # بزرگ‌کردن ماسک هر حرف برای گرفتن لبهٔ نرم/ضدپیکسل
 
 
@@ -49,8 +49,51 @@ def _frame_ring(cv2, np, image, box, margin: int = RING_MARGIN):
     return image[ry0:ry1, rx0:rx1][region]
 
 
-def _background(np, cv2, image, box):
-    """رنگ پس‌زمینهٔ کادر؛ اگر حلقهٔ دور کادر ناهمگون بود حلقهٔ نزدیک‌تر امتحان می‌شود."""
+def _dominant_color(np, values):
+    """رنگ غالبِ یک ناحیه.
+
+    در کادر متن، حروف اقلیت‌اند و پس‌زمینه (کاغذ/رنگ بالن) اکثریت؛ پس رنگ غالب
+    همان پس‌زمینه است. این روش به کادرهای بزرگ‌شده‌ای که از بالن بیرون می‌زنند
+    هم مقاوم است (برخلاف نمونه‌گیری از حلقهٔ دور کادر که ممکن است روی کاغذ
+    سفیدِ بیرونِ بالن بیفتد و همهٔ رنگ داخل بالن را «جوهر» ببیند).
+    """
+    if values is None or not len(values):
+        return None
+    values = values.astype(np.int32)
+    quant = values // 16
+    keys = quant[:, 0] * 1024 + quant[:, 1] * 32 + quant[:, 2]
+    counts = np.bincount(keys)
+    if not counts.size:
+        return None
+    mode = int(counts.argmax())
+    chosen = values[keys == mode]
+    if len(chosen) < 4:
+        return None
+    median = np.median(chosen, axis=0)
+    close = np.linalg.norm(values.astype(np.float32) - median, axis=1) <= 24.0
+    if int(close.sum()) >= 4:
+        median = np.median(values[close], axis=0)
+    return median.astype(np.float32)
+
+
+def _background(np, cv2, image, box, quad_mask=None):
+    """رنگ پس‌زمینهٔ متن.
+
+    دو حدس زده می‌شود: رنگ غالبِ *داخل* کادر متن (پس‌زمینهٔ خودِ متن) و میانهٔ
+    حلقهٔ دور کادر. بعد حدسی انتخاب می‌شود که «جوهر» کمتری در کادرِ بزرگ‌شده
+    ببیند؛ حروف همیشه اقلیت پیکسل‌های کادرند، پس پس‌زمینهٔ درست کمترین جوهر را
+    می‌دهد. این‌طور هم کادرهایی که از بالن بیرون می‌زنند و هم متن‌های پرپشتی که
+    کادر OCR را پر کرده‌اند درست مدیریت می‌شوند.
+    """
+    x0, y0, x1, y1 = box
+    patch = image[max(0, y0):max(0, y1), max(0, x0):max(0, x1)].astype(np.float32)
+    if not patch.size:
+        return None
+    guesses = []
+    if quad_mask is not None:
+        quad_best = _dominant_color(np, image[quad_mask != 0])
+        if quad_best is not None:
+            guesses.append(quad_best)
     best = None
     for margin in (RING_MARGIN, 3):
         values = _frame_ring(cv2, np, image, box, margin)
@@ -61,9 +104,13 @@ def _background(np, cv2, image, box):
             best = (spread, values)
         if spread <= UNIFORM_STD:
             break
-    if best is None:
+    if best is not None:
+        guesses.append(np.median(best[1], axis=0).astype(np.float32))
+    if not guesses:
         return None
-    return np.median(best[1], axis=0).astype(np.float32)
+    # حدسی که کمترین نسبت «جوهر» را در کادر می‌دهد، پس‌زمینه است.
+    return min(guesses, key=lambda color: float(
+        (np.linalg.norm(patch - color, axis=2) > INK_DISTANCE).mean()))
 
 
 def _touches_frame(box, left, top, span_x, span_y, size) -> bool:
@@ -109,7 +156,7 @@ def _fill_ink(cv2, np, image, result, box, background, mask_total,
             # بیرون می‌رود (مثل خط دور بالن). دست‌نخورده می‌ماند.
             continue
         # فقط پنجرهٔ محلیِ همان حرف پردازش می‌شود؛ صفحه‌های پر از متن هم سریع می‌مانند.
-        margin = int(min(10, max(4, round(max(span_x, span_y) / 2))))
+        margin = int(min(24, max(10, round(max(span_x, span_y) / 2))))
         wx0, wy0 = max(0, x0 + left - margin), max(0, y0 + top - margin)
         wx1, wy1 = min(width, x0 + left + span_x + margin), min(height, y0 + top + span_y + margin)
         if wx1 - wx0 < 3 or wy1 - wy0 < 3:
@@ -119,18 +166,34 @@ def _fill_ink(cv2, np, image, result, box, background, mask_total,
         component[cy:cy + span_y, cx:cx + span_x] = (
             labels[top:top + span_y, left:left + span_x] == label).astype(np.uint8)
         window = image[wy0:wy1, wx0:wx1]
-        # فقط پیکسل‌هایی که کاملاً هم‌رنگ پس‌زمینه‌اند نمونهٔ رنگ/بافت می‌شوند؛
-        # لبهٔ نرم (ضدپیکسل) حروف نباید رنگ را تیره و وصله را کثیف کند.
-        near = np.linalg.norm(window.astype(np.float32) - background, axis=2) <= SOFT_DISTANCE
+        wdist = np.linalg.norm(window.astype(np.float32) - background, axis=2)
+        # نمونه‌ها از حلقهٔ دورِ حرف گرفته می‌شوند: پیکسل‌های جوهر (خود حرف‌ها و خط
+        # دور بالن) کنار گذاشته می‌شوند، ولی هالهٔ نرمِ حروف می‌ماند تا بعد با
+        # میانه و انحراف مطلقِ میانه حذف شود؛ فیلترِ سختِ «فقط هم‌رنگِ دقیق» باعث
+        # می‌شد دانهٔ کاغذ و رنگ واقعی از دست برود و وصلهٔ تخت دیده شود.
+        eligible = wdist <= INK_DISTANCE
         sample = None
-        for grow in (4, 6, 9):
-            ring = (cv2.dilate(component, kernel, iterations=grow) != 0) & (component == 0) & near
-            if int(ring.sum()) >= 12 or grow == 9:
+        for grow in (6, 10, 16):
+            ring = (cv2.dilate(component, kernel, iterations=grow) != 0) & (component == 0) & eligible
+            if int(ring.sum()) >= 12:
                 sample = ring
                 break
+        if sample is None or int(sample.sum()) < 12:
+            ring = ((cv2.dilate(component, kernel, iterations=10) != 0)
+                    & (component == 0) & (wdist <= INK_DISTANCE * 1.5))
+            if int(ring.sum()) >= 12:
+                sample = ring
         if sample is None or int(sample.sum()) < 2:
             continue
         ring_colors = window[sample].astype(np.float32)
+        # حذف متقارنِ نمونه‌های پرت (هالهٔ تیرهٔ حروف، اثر فشرده‌سازی) تا وصله
+        # نه تیره‌تر از کاغذ شود و نه دانه/بافتش از دست برود.
+        middle = np.median(ring_colors, axis=0)
+        mad = float(np.median(np.abs(ring_colors - middle).max(axis=1)))
+        limit = max(SOFT_DISTANCE, 2.5 * mad)
+        keep = np.abs(ring_colors - middle).max(axis=1) <= limit
+        if int(keep.sum()) >= 8:
+            ring_colors = ring_colors[keep]
         spread = float(np.std(ring_colors, axis=0).max())
         if spread > TEXTURE_STD and not force:
             # دو رنگِ کاملاً متفاوت دور تکه (مثلاً حاشیهٔ بالن): پاک نمی‌کنیم تا
@@ -244,7 +307,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
     result = image.copy()
     mask_total = np.zeros((height, width), dtype=np.uint8)
     for box, quad_only in zip(boxes, quads):
-        background = _background(np, cv2, image, box)
+        background = _background(np, cv2, image, box, quad_only)
         if background is None:
             continue
         _fill_ink(cv2, np, image, result, box, background, mask_total,
