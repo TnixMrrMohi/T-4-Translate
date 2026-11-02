@@ -187,8 +187,26 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   };
   const toggleLabel = widthMode ? 'تصویر: برگشت به تناسب صفحه' : 'تصویر: نمایش به عرض صفحه';
 
-  const thumbUrl = `/api/jobs/${jobId}/thumb/${kind}?v=${version}`;
+  // اگر بندانگشتی نیاید (۴۰۴/شبکه)، یک‌بار خودکار دوباره خواسته و بعد پیام روشن
+  // نشان داده می‌شود؛ آیکون «عکس شکسته» مرورگر هرگز دیده نمی‌شود.
+  const [thumbRetry, setThumbRetry] = useState(0);
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const retryTimer = useRef<number | null>(null);
+  const thumbUrl = `/api/jobs/${jobId}/thumb/${kind}?v=${version}&r=${thumbRetry}`;
   const fullUrl = `/api/jobs/${jobId}/${kind === 'source' ? 'source.img' : kind === 'ocr' ? 'ocr-preview' : kind}?v=${version}`;
+
+  const retryThumb = () => {
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+    retryTimer.current = window.setTimeout(() => {
+      retryTimer.current = null;
+      setThumbRetry(value => value + 1);
+    }, 500);
+  };
+
+  // با تغییر تصویر/نسخه، دوباره از صفر تلاش می‌شود.
+  useEffect(() => {setThumbFailed(false); setThumbRetry(0);}, [version]);
+
+  useEffect(() => () => {if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);}, []);
 
   useEffect(() => {
     if (!open) return;
@@ -221,7 +239,23 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
           aria-label={`بزرگ‌نمایی: ${alt}`}
           title="برای بزرگ‌نمایی کلیک کنید"
         >
-          <img src={thumbUrl} alt={alt} loading="lazy" />
+          {thumbFailed ? (
+            <span className="preview-missing" role="img" aria-label={`${alt} — پیش‌نمایش آماده نشد`}>
+              <span className="preview-missing-icon" aria-hidden="true">🖼</span>
+              <span>پیش‌نمایش آماده نشد؛ برای ساخت دوباره کلیک کنید</span>
+            </span>
+          ) : (
+            <img
+              src={thumbUrl}
+              alt={alt}
+              loading="lazy"
+              onLoad={() => setThumbFailed(false)}
+              onError={() => {
+                if (thumbRetry < 2) retryThumb();
+                else setThumbFailed(true);
+              }}
+            />
+          )}
           <span className="zoom-hint">{tall ? 'صفحهٔ بلند — بزرگ‌نمایی' : 'بزرگ‌نمایی'}</span>
         </button>
         <figcaption>{caption}</figcaption>
@@ -270,6 +304,10 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
                 src={fullUrl}
                 alt={alt}
                 style={fit ? undefined : {width: `${Math.round(zoom * 100)}%`, maxWidth: 'none', height: 'auto'}}
+                onLoad={() => {
+                  // نسخهٔ کامل ساخته شد؛ بندانگشتی هم دوباره خواسته می‌شود.
+                  if (thumbFailed) {setThumbFailed(false); setThumbRetry(value => value + 1);}
+                }}
               />
             </div>
           </div>

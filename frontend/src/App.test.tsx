@@ -1,5 +1,5 @@
 import {describe, expect, it, vi, beforeEach} from 'vitest';
-import {render, screen, waitFor, within} from '@testing-library/react';
+import {fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {App} from './App';
 
@@ -928,5 +928,54 @@ describe('نوار پیشرفت تشخیص خودکار متن', () => {
     expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(100);
     hold.resolve();
     await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument(), {timeout: 3000});
+  });
+});
+
+describe('پیش‌نمایش‌های مرحلهٔ ۲', () => {
+  it('اگر بندانگشتی نیاید، آیکون «عکس شکسته» نمی‌ماند و پیام روشن با امکان کلیک دیده می‌شود', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 1200, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+    });
+    const user = userEvent.setup();
+    const {container} = render(<App />);
+
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+    const thumb = container.querySelector('.preview-thumb') as HTMLElement;
+    expect(thumb).toBeTruthy();
+
+    // سه بار خطای بارگذاری: دو تلاش خودکار و سپس پیام جایگزین.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const image = container.querySelector('.preview-thumb img') as HTMLImageElement | null;
+      if (!image) break;
+      const before = image.getAttribute('src');
+      fireEvent.error(image);
+      await waitFor(() => expect(
+        container.querySelector('.preview-thumb img')?.getAttribute('src') ?? 'حذف شد',
+      ).not.toBe(before));
+    }
+
+    const missing = await screen.findByText('پیش‌نمایش آماده نشد؛ برای ساخت دوباره کلیک کنید');
+    expect(missing).toBeInTheDocument();
+    // کلیک روی همان قاب، نسخهٔ کامل را باز می‌کند.
+    await user.click(thumb);
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('نسخهٔ کامل (مودال) هم از همان آدرس ساخته می‌شود', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 1200, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+    });
+    const user = userEvent.setup();
+    const {container} = render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+
+    await user.click(container.querySelector('.preview-thumb') as HTMLElement);
+    const dialog = await screen.findByRole('dialog');
+    const image = within(dialog).getAllByRole('img')[0];
+    expect(image.getAttribute('src')).toContain('/ocr-preview');
   });
 });

@@ -524,9 +524,8 @@ def _write_overlay(workspace: Path, lines: list) -> None:
     os.replace(workspace / "ocr-preview-rev.txt.tmp", workspace / "ocr-preview-rev.txt")
 
 
-@app.get("/api/jobs/{job_id}/ocr-preview")
-async def get_ocr_preview(job_id: str):
-    """تصویر منبع همراه کادر و شمارهٔ خطوط تشخیص‌داده‌شده."""
+async def _ensure_ocr_preview(job_id: str) -> Path:
+    """پیش‌نمایش OCR را (اگر نبود یا کهنه بود) می‌سازد و مسیرش را برمی‌گرداند."""
     workspace = workspace_for(job_id)
     result = get_ocr(job_id)  # بدون OCR، ۴۰۴ برمی‌گردد.
     revision = ocr_revision(result["lines"])
@@ -543,7 +542,61 @@ async def get_ocr_preview(job_id: str):
                 raise HTTPException(400, str(exc)) from None
             except Exception:
                 raise HTTPException(500, "ساخت پیش‌نمایش OCR ناموفق بود.") from None
+    return path
+
+
+@app.get("/api/jobs/{job_id}/ocr-preview")
+async def get_ocr_preview(job_id: str):
+    """تصویر منبع همراه کادر و شمارهٔ خطوط تشخیص‌داده‌شده."""
+    path = await _ensure_ocr_preview(job_id)
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+async def _ensure_bubble_preview(job_id: str) -> Path:
+    """پیش‌نمایش بالن‌ها را از نتیجهٔ ذخیره‌شدهٔ تشخیص می‌سازد (اگر ساخته نشده باشد)."""
+    workspace = workspace_for(job_id)
+    path = workspace / "bubble-preview.png"
+    if path.is_file():
+        return path
+    try:
+        document = json.loads((workspace / "bubbles.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        raise HTTPException(404, "پیش‌نمایش بالن موجود نیست.") from None
+    async with _ocr_lock:
+        if path.is_file():  # شاید هم‌زمان کار دیگری ساخته باشد
+            return path
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            image = await run_native_safely(bubbles.overlay, workspace / "source.img", document,
+                                            BUBBLE_PREVIEW_SIDE)
+            image.save(tmp, format="PNG")
+            image.close()
+            os.replace(tmp, path)
+        except bubbles.BubbleError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except Exception:
+            raise HTTPException(500, "ساخت پیش‌نمایش بالن ناموفق بود.") from None
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+    return path
+
+
+async def _preview_source(job_id: str, kind: str) -> Path:
+    """فایل مبدأ پیش‌نمایش؛ پیش‌نمایش‌های OCR و بالن اگر آماده نباشند همان‌جا ساخته می‌شوند.
+
+    بندانگشتی‌ها پیش‌تر فقط وقتی ساخته می‌شدند که کاربر تصویر بزرگ را باز کرده باشد؛
+    نتیجه این بود که در مرحلهٔ ۲ تصویر شکسته دیده می‌شد و تنها با کلیک درست می‌شد.
+    """
+    workspace = workspace_for(job_id)
+    source = workspace / THUMB_SOURCES[kind]
+    if source.is_file():
+        return source
+    if kind == "ocr":
+        return await _ensure_ocr_preview(job_id)
+    if kind == "bubble":
+        return await _ensure_bubble_preview(job_id)
+    raise HTTPException(404, "پیش‌نمایش موجود نیست.")
 
 
 THUMB_SOURCES = {
@@ -576,10 +629,8 @@ async def get_thumb(job_id: str, kind: str):
     """بندانگشتی همهٔ پیش‌نمایش‌ها تا فهرست با تصاویر بلند (مثلاً ۱۵۰۰۰ پیکسل) به‌هم نریزد."""
     if kind not in THUMB_SOURCES:
         raise HTTPException(404, "نوع پیش‌نمایش ناشناخته است.")
+    source = await _preview_source(job_id, kind)
     workspace = workspace_for(job_id)
-    source = workspace / THUMB_SOURCES[kind]
-    if not source.is_file():
-        raise HTTPException(404, "پیش‌نمایش موجود نیست.")
     image_path = workspace / f"thumb-{kind}.png"
     meta_path = workspace / f"thumb-{kind}.json"
     stat = source.stat()
@@ -627,10 +678,8 @@ async def get_display(job_id: str, kind: str, width: int = 1000):
     if kind not in THUMB_SOURCES:
         raise HTTPException(404, "نوع پیش‌نمایش ناشناخته است.")
     width = max(DISPLAY_MIN_WIDTH, min(DISPLAY_MAX_WIDTH, width))
+    source = await _preview_source(job_id, kind)
     workspace = workspace_for(job_id)
-    source = workspace / THUMB_SOURCES[kind]
-    if not source.is_file():
-        raise HTTPException(404, "پیش‌نمایش موجود نیست.")
     image_path = workspace / f"display-{kind}-{width}.webp"
     meta_path = workspace / f"display-{kind}-{width}.json"
     stat = source.stat()
@@ -696,11 +745,8 @@ def read_bubbles(job_id: str) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/bubble")
-def bubble_full(job_id: str):
-    workspace = workspace_for(job_id)
-    path = workspace / "bubble-preview.png"
-    if not path.is_file():
-        raise HTTPException(404, "پیش‌نمایش بالن موجود نیست.")
+async def bubble_full(job_id: str):
+    path = await _ensure_bubble_preview(job_id)
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 

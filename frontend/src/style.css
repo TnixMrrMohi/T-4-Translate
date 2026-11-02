@@ -233,3 +233,7 @@
 .progress-hint{margin:0;color:#7d9294;font-size:12px;line-height:1.7}
 @keyframes progress-sheen{from{background-position:200% 0}to{background-position:-200% 0}}
 @media (prefers-reduced-motion:reduce){.progress-fill{transition:none}.progress-fill::after{animation:none}}
+
+/* وقتی بندانگشتی آماده نیست: پیام روشن جای آیکون «عکس شکسته» مرورگر */
+.preview-missing{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;width:100%;height:100%;min-height:120px;padding:14px;text-align:center;color:#7d9294;font-size:12px;line-height:1.8;background:repeating-linear-gradient(45deg,#0b171d,#0b171d 10px,#0d1c22 10px,#0d1c22 20px);border-radius:10px}
+.preview-missing-icon{font-size:22px;opacity:.6}
