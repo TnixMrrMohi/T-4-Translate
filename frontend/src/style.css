@@ -43,6 +43,14 @@
 .modal-stage.fit{overflow:hidden;align-items:center}
 .modal-stage.fit img{max-width:100%;max-height:100%;object-fit:contain;background:transparent}
 .modal-zoom{color:#9bf3cc;font-size:13px;min-width:52px;text-align:center}
+/* --- کلیک روی تصویر: تناسب صفحه ⇄ عرض کامل --- */
+.modal-hint{color:#7d9294;font-size:12.5px;margin:0 2px 8px}
+.modal-image{position:relative;display:flex;justify-content:center;align-items:flex-start;width:100%;cursor:zoom-in;border-radius:10px;outline:none}
+.modal-image:hover{box-shadow:inset 0 0 0 1px #00ffcc55}
+.modal-image:focus-visible{box-shadow:inset 0 0 0 2px #00ffcc}
+.modal-stage.fit .modal-image{height:100%;align-items:center;overflow:hidden}
+.modal-stage.width .modal-image,.modal-stage.width .modal-image img{cursor:zoom-out}
+.modal-stage.width .modal-image{align-items:flex-start}
 
 /* --- دیالوگ کاستوم (جای confirm/alert مرورگر) --- */
 .dialog-backdrop{position:fixed;inset:0;z-index:200;background:#000000cc;display:flex;align-items:center;justify-content:center;padding:20px}

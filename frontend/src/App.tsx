@@ -134,6 +134,15 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   const tall = aspect > 2.5;
   const openModal = () => {setOpen(true); setFit(true); setZoom(1);};
 
+  // «عرض کامل» یعنی تصویر به اندازهٔ عرض صفحه (۱۰۰٪ قاب) دیده شود.
+  const widthMode = !fit && zoom === 1;
+  /** کلیک روی خود تصویر: بین «تناسب صفحه» و «عرض کامل» جابه‌جا می‌کند. */
+  const toggleWidth = () => {
+    if (widthMode) {setFit(true); setZoom(1);}
+    else {setFit(false); setZoom(1);}
+  };
+  const toggleLabel = widthMode ? 'تصویر: برگشت به تناسب صفحه' : 'تصویر: نمایش به عرض صفحه';
+
   const thumbUrl = `/api/jobs/${jobId}/thumb/${kind}?v=${version}`;
   const fullUrl = `/api/jobs/${jobId}/${kind === 'source' ? 'source.img' : kind === 'ocr' ? 'ocr-preview' : kind}?v=${version}`;
 
@@ -147,6 +156,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
       else if (event.key === '+' || event.key === '=') {setFit(false); setZoom(z => Math.min(MAX_ZOOM, +(z + 0.25).toFixed(2)));}
       else if (event.key === '-') {setFit(false); setZoom(z => Math.max(MIN_ZOOM, +(z - 0.25).toFixed(2)));}
       else if (event.key === '0') {setFit(true); setZoom(1);}
+      else if (event.key === 'w' || event.key === 'W') toggleWidth();
     };
     window.addEventListener('keydown', onKey);
     return () => {window.removeEventListener('keydown', onKey); document.body.style.overflow = previous;};
@@ -183,19 +193,37 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
               <button type="button" onClick={() => {setFit(false); setZoom(z => Math.max(MIN_ZOOM, +(z - 0.25).toFixed(2)));}} disabled={!fit && zoom <= MIN_ZOOM} aria-label="کوچک‌تر">−</button>
               <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
               <button type="button" onClick={() => {setFit(false); setZoom(z => Math.min(MAX_ZOOM, +(z + 0.25).toFixed(2)));}} disabled={!fit && zoom >= MAX_ZOOM} aria-label="بزرگ‌تر">+</button>
-              <button type="button" onClick={() => {setFit(false); setZoom(1);}} disabled={!fit && zoom === 1}>عرض کامل</button>
+              <button type="button" onClick={() => {setFit(false); setZoom(1);}} disabled={widthMode}>عرض کامل</button>
               <button type="button" onClick={() => {setFit(true); setZoom(1);}} disabled={fit}>تناسب صفحه</button>
               <a href={fullUrl} download={downloadName ?? `${kind}.png`}>دانلود</a>
               <button type="button" ref={closeRef} onClick={close}>بستن ✕</button>
             </span>
           </div>
-          {tall && <p style={{color: '#f2c14e', fontSize: '13px', margin: '0 0 8px'}}>این صفحه بلند است؛ کل صفحه نمایش داده می‌شود. برای خواندن متن روی «+» بزنید یا «عرض کامل» را انتخاب کنید.</p>}
-          <div className={`modal-stage${fit ? ' fit' : ''}`}>
-            <img
-              src={fullUrl}
-              alt={alt}
-              style={fit ? undefined : {width: `${Math.round(zoom * 100)}%`, maxWidth: 'none', height: 'auto'}}
-            />
+          {tall && <p style={{color: '#f2c14e', fontSize: '13px', margin: '0 0 8px'}}>این صفحه بلند است؛ کل صفحه نمایش داده می‌شود. برای خواندن متن روی «+» بزنید یا روی تصویر کلیک کنید تا به عرض صفحه در بیاید.</p>}
+          <p className="modal-hint" aria-live="polite">
+            {widthMode
+              ? 'عرض کامل صفحه — برای برگشت به تناسب صفحه، روی تصویر کلیک کنید'
+              : 'تناسب صفحه — برای عرض کامل، روی تصویر کلیک کنید'}
+          </p>
+          <div className={`modal-stage${fit ? ' fit' : ''}${widthMode ? ' width' : ''}`}>
+            {/* کلیک روی تصویر عرض را به عرض صفحه می‌برد و کلیک دوم برمی‌گرداند. */}
+            <div
+              className="modal-image"
+              role="button"
+              tabIndex={0}
+              aria-label={toggleLabel}
+              title={widthMode ? 'کلیک: تناسب صفحه' : 'کلیک: عرض کامل صفحه'}
+              onClick={toggleWidth}
+              onKeyDown={event => {
+                if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); toggleWidth();}
+              }}
+            >
+              <img
+                src={fullUrl}
+                alt={alt}
+                style={fit ? undefined : {width: `${Math.round(zoom * 100)}%`, maxWidth: 'none', height: 'auto'}}
+              />
+            </div>
           </div>
         </div>
       )}

@@ -581,3 +581,59 @@ describe('فونت هر نوع بالن در مرحلهٔ درج ترجمه', ()
     expect(calls.filter(call => call.url.endsWith('/api/fonts') && call.method === 'POST')).toHaveLength(2);
   });
 });
+
+describe('بزرگ‌نمایی تصویر صفحه', () => {
+  const ALT = 'پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده';
+
+  async function openPreview() {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    // کار دارای متن، در مرحلهٔ ۲ با پیش‌نمایش کادرها باز می‌شود.
+    await user.click(await screen.findByRole('button', {name: `بزرگ‌نمایی: ${ALT}`}));
+    return user;
+  }
+
+  it('کلیک روی تصویر، عرض آن را به عرض صفحه می‌برد و کلیک دوم برمی‌گرداند', async () => {
+    const user = await openPreview();
+
+    const imageButton = screen.getByRole('button', {name: 'تصویر: نمایش به عرض صفحه'});
+    const image = within(imageButton).getByRole('img', {name: ALT});
+    // پیش‌فرض: تناسب صفحه (بدون عرض ثابت).
+    expect(image).not.toHaveStyle({width: '100%'});
+    expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
+
+    await user.click(imageButton);
+    expect(image).toHaveStyle({width: '100%'});
+    expect(screen.getByText(/عرض کامل صفحه —/)).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'عرض کامل'})).toBeDisabled();
+
+    await user.click(screen.getByRole('button', {name: 'تصویر: برگشت به تناسب صفحه'}));
+    expect(image).not.toHaveStyle({width: '100%'});
+    expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'عرض کامل'})).toBeEnabled();
+  });
+
+  it('کلیک روی تصویر پس از بزرگ‌نمایی، ابتدا به عرض کامل برمی‌گردد', async () => {
+    const user = await openPreview();
+    await user.click(screen.getByRole('button', {name: 'بزرگ‌تر'}));
+    expect(screen.getByText('125٪')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', {name: 'تصویر: نمایش به عرض صفحه'}));
+    expect(screen.getByText(/عرض کامل صفحه —/)).toBeInTheDocument();
+    expect(within(screen.getByRole('button', {name: 'تصویر: برگشت به تناسب صفحه'}))
+      .getByRole('img')).toHaveStyle({width: '100%'});
+  });
+
+  it('با صفحه‌کلید (Enter) هم عرض تصویر عوض می‌شود', async () => {
+    const user = await openPreview();
+    const imageButton = screen.getByRole('button', {name: 'تصویر: نمایش به عرض صفحه'});
+    imageButton.focus();
+    await user.keyboard('{Enter}');
+    expect(screen.getByText(/عرض کامل صفحه —/)).toBeInTheDocument();
+  });
+});
