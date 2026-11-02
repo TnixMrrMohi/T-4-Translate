@@ -460,6 +460,25 @@ describe('کپی متن و پرامپت در مرحلهٔ ترجمه', () => {
     });
   });
 
+  it('پرامپت صریح می‌گوید حروف و کلمات عربی به‌کار نروند', async () => {
+    const user = await openTranslationStep();
+    await user.click(screen.getByRole('button', {name: 'کپی با پرامپت'}));
+
+    await waitFor(async () => {
+      const copied = await navigator.clipboard.readText();
+      // حروف عربی به‌عنوان نمونه آمده و معادل فارسیِ آن‌ها خواسته شده است.
+      expect(copied).toContain('حروف و شکل‌های عربی');
+      for (const letter of ['ي', 'ى', 'ك', 'ة', 'ۀ', 'أ', 'إ', 'ؤ', 'ئ']) {
+        expect(copied).toContain(`«${letter}»`);
+      }
+      expect(copied).toContain('«ی»، «ک»، «ه»، «ا» و «و»');
+      // و قاعدهٔ واژه‌های عربی با چند نمونه.
+      expect(copied).toContain('واژه‌ها و ترکیب‌های عربی');
+      expect(copied).toContain('«می‌باشد» ← «است»');
+      expect(copied).toContain('«فوراً» ← «بی‌درنگ»');
+    });
+  });
+
 });
 
 describe('تشخیص نوع بالن‌ها در مرحلهٔ ترجمه', () => {
