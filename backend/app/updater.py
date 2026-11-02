@@ -693,8 +693,9 @@ def apply_script_text(plan: dict, restart_exe: str) -> str:
             break
         relative = target.replace("/", chr(92))
         sub = install + chr(92)
-        if relative.lower().startswith(sub.lower()):
-            relative = relative[len(sub):]
+        if not relative.lower().startswith(sub.lower()):
+            continue  # مسیر بیرون از پوشهٔ نصب: نه کپی، نه پشتیبان
+        relative = relative[len(sub):]
         parent = os.path.dirname(relative.replace(chr(92), "/"))
         if parent:
             backup_lines.append(f'mkdir "{backup}\\{parent.replace(chr(47), chr(92))}" 2>nul')
@@ -703,8 +704,10 @@ def apply_script_text(plan: dict, restart_exe: str) -> str:
             f'"{backup}\\{relative}" >nul')
     backup_block = "\n".join(backup_lines)
     if os.name == "nt":
+        # توضیح داخل فایل‌بچ انگلیسی است: cmd.exe آن را با code page سیستم می‌خواند
+        # و متن فارسی در این فایل ممکن است به هم بریزد.
         return f"""@echo off
-rem T-4 Translate — اعمال آپدیت پس از بسته‌شدن برنامه
+rem T-4 Translate - apply the downloaded update after the app exits
 setlocal
 timeout /t 2 /nobreak >nul
 {backup_block}
@@ -722,8 +725,11 @@ endlocal
         if not backup_posix:
             break
         target = str(item["to"])
+        relative = os.path.relpath(target, install_posix)
+        if relative.startswith(".."):
+            continue
         backup_lines_posix.append(
-            f'[ -f \'{target}\' ] && cp -p \'{target}\' \'{backup_posix}/{os.path.relpath(target, install_posix)}\'')
+            f'[ -f \'{target}\' ] && cp -p \'{target}\' \'{backup_posix}/{relative}\'')
     removal_lines = "\n".join(f'rm -f "{path}"' for path in plan["removals"])
     return f"""#!/bin/sh
 # T-4 Translate — اعمال آپدیت پس از بسته‌شدن برنامه

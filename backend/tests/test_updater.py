@@ -362,8 +362,9 @@ def test_plan_apply_backs_up_replaced_files(env, monkeypatch):
     assert "backup" in script
     for item in plan["copies"]:
         assert item["to"] in script
-    # backup باید پیش از کپی روی نسخهٔ نصب نوشته شود.
-    assert script.index("backup") < script.index("cp -R") or script.index("backup") < 0
+    # backup باید پیش از کپی روی نسخهٔ نصب نوشته شود (robocopy در ویندوز، cp در بقیه).
+    copy_marker = "robocopy" if updater.os.name == "nt" else "cp -R"
+    assert script.index("backup") < script.index(copy_marker)
 
 
 def test_windows_apply_script_uses_robocopy_and_backup(env, monkeypatch):
@@ -380,6 +381,10 @@ def test_windows_apply_script_uses_robocopy_and_backup(env, monkeypatch):
     assert "robocopy" in script
     assert "copy /y" in script
     assert "backup" in script
+    backups = [line for line in script.splitlines() if "copy /y" in line]
+    assert len(backups) == len(plan["copies"])
+    prefix = plan["backup"].replace("/", "\\")
+    assert all(prefix in line for line in backups)
     assert "start \"\"" in script
     assert "pending.json" in script
 
