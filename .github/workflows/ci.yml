@@ -1,36 +1,76 @@
 name: Windows build and tests
-on: [push, pull_request]
+
+# اجرای خودکار روی هر push و PR. علاوه بر آن، با تگ `v*` یا اجرای دستی
+# (workflow_dispatch) یک بستهٔ ZIP قابل دانلود ساخته و به GitHub Release چسبانده می‌شود.
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
 permissions:
-  contents: read
+  contents: write  # فقط برای ساخت ریلیز لازم است
+
+env:
+  # ساخت ریلیز فقط برای تگ یا اجرای دستی
+  RELEASE: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install Python dependencies
         run: |
           python -m pip install -e './backend[test,ocr-experimental]'
           python -m pip install -r desktop/requirements.txt
+
       - name: Run backend tests
-        run: python -m pytest backend/tests -q
+        shell: pwsh
+        run: |
+          python -m pytest backend/tests -q 2>&1 | Tee-Object -FilePath backend-tests.log
+          exit $LASTEXITCODE
+
+      - name: Upload backend test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-tests-log
+          path: backend-tests.log
+          if-no-files-found: ignore
+          retention-days: 14
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+
       - run: npm ci
         working-directory: frontend
+
+      - name: Run frontend tests
+        run: npm test
+        working-directory: frontend
+
       - run: npm run build
         working-directory: frontend
+
+      # فونت‌ها با برنامه بسته می‌شوند تا هر دستهٔ بالن فونت خودش را داشته باشد
+      # (frontend/public/fonts شامل وزیرمتن و بستهٔ persian-pack است).
       - name: Build Windows desktop application
         run: >-
           python -m PyInstaller --noconfirm --clean --onedir --console
           --name T4Translate --paths backend
           --add-data "frontend/dist;web"
+          --add-data "frontend/public/fonts;frontend/public/fonts"
           --collect-all rapidocr_onnxruntime
           --collect-all numpy
           --collect-all webview
@@ -40,6 +80,7 @@ jobs:
           --hidden-import uvicorn.protocols.websockets.auto
           --hidden-import uvicorn.lifespan.on
           desktop/launcher.py
+
       - name: Smoke test packaged application
         shell: pwsh
         run: |
@@ -52,9 +93,32 @@ jobs:
             Write-Host "::error title=Desktop smoke test::$escaped"
             exit $code
           }
+
       - uses: actions/upload-artifact@v4
         with:
           name: T4Translate-Windows-${{ github.sha }}
           path: dist/T4Translate/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Package download bundle
+        if: env.RELEASE == 'true'
+        shell: pwsh
+        run: |
+          $tag = if ("${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true") { "${{ github.ref_name }}" } else { "build-${{ github.run_number }}" }
+          Copy-Item packaging/README-Windows.txt 'dist/T4Translate/README-نصب.txt'
+          Compress-Archive -Path 'dist/T4Translate/*' -DestinationPath "T4Translate-$tag-windows-x64.zip"
+          Get-Item "T4Translate-$tag-windows-x64.zip" | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+
+      - name: Publish release with the built app
+        if: env.RELEASE == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = if ("${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true") { "${{ github.ref_name }}" } else { "build-${{ github.run_number }}" }
+          gh release create $tag `
+            "T4Translate-$tag-windows-x64.zip" `
+            --repo "${{ github.repository }}" `
+            --title "T-4 Translate — بستهٔ ویندوز ($tag)" `
+            --notes "بستهٔ خودکار ویندوز ۶۴بیتی. فایل ZIP را دانلود کنید، کامل از حالت فشرده خارج کنید و T4Translate.exe را اجرا کنید. تست دودِ بسته (سرور، رابط، مدل OCR، فونت‌ها و رندر فارسی) در همین اجرا موفق بوده است."

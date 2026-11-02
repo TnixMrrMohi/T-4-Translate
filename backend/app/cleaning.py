@@ -5,6 +5,9 @@ import math
 from PIL import Image
 
 
+PADDING_RATIO = 0.15  # حاشیهٔ اضافی دور کادر ترجمه‌شده، نسبت به بزرگ‌ترین ضلع کادر
+
+
 class CleaningError(Exception):
     pass
 
@@ -38,7 +41,18 @@ def clean_image(path: Path, lines: list, translations: dict) -> tuple[Image.Imag
             points = np.array([[max(0, min(width-1, round(x))), max(0, min(height-1, round(y)))] for x, y in coords], dtype=np.int32)
         except (TypeError, ValueError, IndexError, OverflowError):
             raise CleaningError('مختصات متن OCR نامعتبر است.') from None
-        target = selected if translations.get(str(number), '').strip() else protected
+        translated = bool(translations.get(str(number), '').strip())
+        target = selected if translated else protected
+        if translated:
+            # کادر OCR معمولاً حروف و دنباله‌ها را دقیق در بر نمی‌گیرد؛ کمی بزرگ‌تر می‌کنیم
+            # تا باقی‌ماندهٔ متن انگلیسی پس از پاک‌سازی نماند. کادرهای ترجمه‌نشده بزرگ نمی‌شوند.
+            span = float(max(points[:, 0].ptp(), points[:, 1].ptp()))
+            pad = int(min(20, max(2, round(span * PADDING_RATIO))))
+            center_x, center_y = points[:, 0].mean(), points[:, 1].mean()
+            points = np.array([
+                [max(0, min(width - 1, int(x) + (pad if x >= center_x else -pad))),
+                 max(0, min(height - 1, int(y) + (pad if y >= center_y else -pad)))]
+                for x, y in points], dtype=np.int32)
         cv2.fillPoly(target, [points], 255)
     # Preserve untranslated regions even if OCR quads overlap.
     selected[protected != 0] = 0

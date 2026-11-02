@@ -44,3 +44,23 @@ def test_api_clean_and_stale_translation(tmp_path, monkeypatch):
         assert result.status_code == 200 and result.headers['content-type'] == 'image/png'
         client.post(f'/api/jobs/{job}/translations', json={'sourceRevision': revision, 'text': '[1] درود'})
         assert client.get(f'/api/jobs/{job}/clean').status_code == 409
+
+
+def test_translated_quad_is_padded_but_untranslated_is_not(tmp_path):
+    # دو خط: یکی ترجمه‌شده و یکی نه. پیکسل تیره کمی بیرون از کادر هر دو قرار دارد.
+    arr = np.full((100, 160, 3), 255, dtype=np.uint8)
+    arr[22:26, 20:120] = 0           # دنبالهٔ حروف بیرون از کادر ترجمه‌شده (پایین کادر)
+    arr[72:76, 20:120] = 0           # همان حالت برای کادر ترجمه‌نشده
+    path = tmp_path / 'page.png'; Image.fromarray(arr).save(path)
+    lines = [
+        {'quad': [[10, 10], [130, 10], [130, 20], [10, 20]]},
+        {'quad': [[10, 60], [130, 60], [130, 70], [10, 70]]},
+    ]
+    clean, mask = clean_image(path, lines, {'1': 'ترجمه'})
+    result, mask_pixels = np.array(clean), np.array(mask)
+    # حاشیهٔ کادر ترجمه‌شده دنبالهٔ حروف را هم پاک می‌کند.
+    assert mask_pixels[22:26, 20:120].all()
+    assert not (result[22:26, 20:120] < 128).any()
+    # کادر ترجمه‌نشده بزرگ نمی‌شود و متنش دست‌نخورده می‌ماند.
+    assert not mask_pixels[70:85, :].any()
+    assert np.array_equal(result[72:76, 20:120], arr[72:76, 20:120])

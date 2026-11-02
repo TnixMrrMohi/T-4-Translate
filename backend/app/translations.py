@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩０１２３４５６７８９", "012345678901234567890123456789")
 _MARKER = re.compile(r"^\s*\[([0-9]{1,4})\]\s*(.*)$")
+# مدل ممکن است «(لحن: فریاد)» را از منبع تکرار کند؛ آن را از ترجمه حذف می‌کنیم.
+_TONE_PREFIX = re.compile(r"^\s*[\(\[]\s*لحن[^\)\]]*[\)\]]\s*")
 
 
 @dataclass
@@ -31,7 +33,7 @@ def parse_translation(text: str, expected: set[int]) -> ParseResult:
                 duplicates.add(current)
             # Preserve original Unicode text, including Persian digits in the translation.
             end_of_marker = line.index(']') + 1
-            translations[current] = line[end_of_marker:].strip()
+            translations[current] = _TONE_PREFIX.sub("", line[end_of_marker:].strip())
         elif current is not None and line.strip():
             translations[current] = (translations[current] + '\n' + line.strip()).strip()
     translations = {number: value for number, value in translations.items() if value.strip()}
