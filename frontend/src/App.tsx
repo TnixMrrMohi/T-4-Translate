@@ -3,6 +3,7 @@ import {createPortal} from 'react-dom';
 import {CompareSlider} from './CompareSlider';
 import {TextLayoutEditor} from './TextLayoutEditor';
 import {UpdatePanel} from './UpdatePanel';
+import SystemPanel from './SystemPanel';
 import type {LayoutDoc, TextOverrides} from './TextLayoutEditor';
 import './style.css';
 
@@ -1472,7 +1473,10 @@ export function App() {
   return (
     <main className="page">
       <header className="app-header">
-        <button className="ocr reset" disabled={busy} onClick={resetApp}>ریست</button>
+        <div className="header-tools">
+          <button className="ocr reset" disabled={busy} onClick={resetApp}>ریست</button>
+          <SystemPanel />
+        </div>
         <span className="brand" dir="ltr">T-4 TRANSLATE</span>
         <span className="status" role="status">{status}</span>
       </header>

@@ -17,9 +17,10 @@ from app.main import app
 
 @pytest.fixture(autouse=True)
 def clear_engine_cache():
-    ocr._engine.cache_clear()
+    # در برخی تست‌ها `_engine` با یک تابع ساده جانشین می‌شود و cache_clear ندارد.
+    getattr(ocr._engine, 'cache_clear', lambda: None)()
     yield
-    ocr._engine.cache_clear()
+    getattr(ocr._engine, 'cache_clear', lambda: None)()
 
 
 def test_missing_package_message_names_the_package_and_the_install_command(monkeypatch):
