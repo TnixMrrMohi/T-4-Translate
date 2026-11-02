@@ -402,10 +402,13 @@ def get_clean(job_id: str):
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
-def _render_files(clean_path: Path, translation: dict,
+def _render_files(clean_path: Path, translation: dict, blocks: list,
                   image_path: Path, meta_path: Path) -> int:
-    """رندر در نخ کارگر انجام می‌شود؛ هر بلوک (بالن) یک متن فارسی می‌گیرد."""
-    blocks = translation.get("blocks") or []
+    """رندر در نخ کارگر انجام می‌شود؛ هر بلوک (بالن) یک متن فارسی می‌گیرد.
+
+    کادر بلوک‌ها تازه از نتیجهٔ تشخیص بالن خوانده می‌شود (نه از نسخهٔ ذخیره‌شده در
+    translations.json) تا اصلاح هندسه روی کارهای قبلی هم اثر بگذارد.
+    """
     # فونت هر دستهٔ بالن از فونت‌های نصب‌شده انتخاب می‌شود؛ در نبود آن، وزیرمتن.
     font_paths = {}
     for kind, info in fonts.resolve_map().items():
@@ -450,8 +453,9 @@ async def render_job(job_id: str) -> dict:
             raise HTTPException(409, "ابتدا پاک‌سازی را با همین ترجمه اجرا کنید.")
         source = get_ocr(job_id)
         try:
+            blocks = translation_blocks(job_id, source["lines"])
             drawn = await run_native_safely(
-                _render_files, workspace / "clean.png", translation,
+                _render_files, workspace / "clean.png", translation, blocks,
                 workspace / "render.png", workspace / "render-meta.json")
         except rendering.RenderError as exc:
             raise HTTPException(400, str(exc)) from None

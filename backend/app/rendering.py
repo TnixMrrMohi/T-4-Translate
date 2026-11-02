@@ -65,6 +65,40 @@ def _font(size: int, path: str | None = None) -> ImageFont.FreeTypeFont:
             raise RenderError("بارگذاری فونت فارسی ناموفق بود.") from exc
 
 
+@lru_cache(maxsize=256)
+def _codepoints(path: str) -> frozenset[int] | None:
+    """مجموعهٔ کدپوینت‌های موجود در فونت؛ None اگر خواندن cmap ممکن نبود."""
+    try:
+        from fontTools.ttLib import TTFont
+    except ImportError:
+        return None
+    try:
+        font = TTFont(path, fontNumber=0, lazy=True)
+        cmap = font.getBestCmap() or {}
+        font.close()
+        return frozenset(cmap.keys())
+    except Exception:
+        return None
+
+
+def font_supports(path: str | None, text: str) -> bool:
+    """آیا فونت قادر به نوشتن همهٔ حروف متن است؟ (جلوگیری از مربع‌های خالی)
+
+    فونت‌های مخصوص تایپ مانهوا گاهی حروف لاتین ندارند؛ اگر ترجمه یا متن OCR
+    لاتین باشد، با همان فونت به مربع خالی تبدیل می‌شود. در این حالت فونت جانشین
+    (وزیرمتن) استفاده می‌شود.
+    """
+    if not path:
+        return True
+    codepoints = _codepoints(str(path))
+    if codepoints is None:
+        return True
+    letters = {ord(character) for character in text if not character.isspace()}
+    if not letters:
+        return True
+    return len(letters - codepoints) / len(letters) <= 0.02
+
+
 @lru_cache(maxsize=1)
 def _reshaper():
     import arabic_reshaper
@@ -165,6 +199,9 @@ def _draw_box(canvas, draw, box, text: str, path: str | None = None,
     box_height = bottom - top
     if box_width < 8 or box_height < 8:
         return False
+    # فونتِ نوع بالن اگر حروف این متن را نداشته باشد (مثلاً متن لاتین)، جانشین می‌شود.
+    if path and not font_supports(path, text):
+        path = None
     padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
     font, wrapped = _fit(text, box_width - 2 * padding, box_height - 2 * padding, path)
     if not font or not wrapped:

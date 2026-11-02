@@ -1,5 +1,6 @@
 """آزمون‌های نمایش آزمایشی ترجمهٔ فارسی روی تصویر."""
 import pytest
+from pathlib import Path
 from PIL import Image
 
 pytest.importorskip("arabic_reshaper", reason="افزونهٔ رندر نصب نشده است")
@@ -145,3 +146,17 @@ def test_spiky_bubble_keeps_text_inside_a_smaller_area():
     round_ink = round_.convert("L").point(lambda value: 255 if value < 200 else 0).getbbox()
     # متن شکل دندانه‌دار جمع‌تر و کوچک‌تر از همان متن در بالن گرد است.
     assert (spiky_ink[2] - spiky_ink[0]) < (round_ink[2] - round_ink[0])
+
+
+def test_font_without_latin_falls_back_instead_of_tofu():
+    """فونت مانهوا که حروف لاتین ندارد نباید جای متن لاتین مربع خالی بسازد."""
+    affsaneh = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "AFSANEH.ttf"
+    if not affsaneh.is_file():
+        pytest.skip("فونت افسانه در مخزن نیست")
+    assert rendering.font_supports(str(affsaneh), "خوب جنگیدی")
+    assert not rendering.font_supports(str(affsaneh), "kelgt")
+    image = Image.new("RGB", (300, 200), "white")
+    blocks = [{"number": 1, "lines": [1], "bbox": [30, 30, 270, 170], "kind": "shout", "fill": 0.8}]
+    canvas, drawn = rendering.render_blocks(image, blocks, {"1": "kelgt"}, {"shout": str(affsaneh)})
+    assert drawn == 1
+    assert canvas.crop((30, 30, 270, 170)).getbbox() is not None

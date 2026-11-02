@@ -708,18 +708,33 @@ def _cluster(numbers: list[int], by_number: dict) -> list[list[int]]:
 
 
 def _block(numbers: list[int], by_number: dict, kind: str, bbox: list, fill: float = 1.0) -> dict:
+    """یک بلوک ترجمه؛ کادر خروجی همیشه به شکل [چپ، بالا، راست، پایین] است.
+
+    کادر تشخیص بالن [x, y, w, h] است و کادر خطوط [چپ، بالا، راست، پایین]؛ اگر این
+    دو مستقیم با هم ترکیب شوند، عرض/ارتفاع متن غلط می‌شود و ترجمه جای خودش نمی‌نشیند.
+    """
     meta = BUBBLE_TYPES.get(kind, BUBBLE_TYPES["unknown"])
     ordered = sorted(numbers, key=lambda number: (
         (_line_box(by_number[number]) or (0, 0, 0, 0))[0],
         (_line_box(by_number[number]) or (0, 0, 0, 0))[2]))
     boxes = [box for box in (_line_box(by_number[number]) for number in ordered) if box]
-    box = list(bbox) if len(bbox) == 4 else []
+    box = []
+    if len(bbox) == 4 and all(isinstance(value, (int, float)) for value in bbox):
+        left, top, width, height = [float(value) for value in bbox]
+        box = [left, top, left + width, top + height]
     if boxes:
         union = [min(b[2] for b in boxes), min(b[0] for b in boxes),
                  max(b[3] for b in boxes), max(b[1] for b in boxes)]
-        union = [round(value) for value in union]
-        box = union if not box else [min(box[0], union[0]), min(box[1], union[1]),
-                                     max(box[2], union[2]), max(box[3], union[3])]
+        if not box:
+            box = union
+        else:
+            # کادر شکلِ تشخیص‌داده‌شده گاهی حاشیهٔ اضافه یا برش دارد؛ کادر متن باید
+            # در محدودهٔ خطوط خودِ متن بماند تا ترجمه جای اصلی‌اش بنشیند.
+            box = [max(box[0], union[0]), max(box[1], union[1]),
+                   min(box[2], union[2]), min(box[3], union[3])]
+            if box[2] - box[0] < 24 or box[3] - box[1] < 24:
+                box = union
+    box = [round(value) for value in box]
     text = " ".join(str(by_number[number].get("text", "")).strip() for number in ordered).strip()
     return {
         "lines": ordered,

@@ -197,3 +197,18 @@ def test_single_bubble_with_two_lines_is_not_split(tmp_path):
     bubbles_found = [bubble for bubble in result["bubbles"] if bubble["kind"] != "outside"]
     assert len(bubbles_found) == 1
     assert bubbles_found[0]["lines"] == [1, 2]
+
+
+def test_block_bbox_uses_bubble_geometry_only_when_it_contains_the_text():
+    """کادر [x,y,w,h] بالن باید به [چپ، بالا، راست، پایین] تبدیل و با کادر خطوط تلاقی شود."""
+    by_number = {1: {"text": "hello", "quad": [[150, 200], [250, 200], [250, 240], [150, 240]]}}
+
+    # کادر شکل (x, y, w, h) بزرگ‌تر از متن است.
+    block = bubbles._block([1], by_number, "speech", [100, 150, 200, 300])
+    assert block["bbox"] == [150, 200, 250, 240]
+
+    # کادر شکل با مبدأ جابه‌جا (باگ قبلی: w/h به‌جای راست/پایین استفاده می‌شد).
+    block = bubbles._block([1], by_number, "speech", [140, 190, 120, 60])
+    left, top, right, bottom = block["bbox"]
+    assert right - left < 200 and bottom - top < 200
+    assert left <= 150 and top <= 200 and right >= 250 and bottom >= 240
