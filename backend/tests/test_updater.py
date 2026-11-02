@@ -581,3 +581,208 @@ def test_api_apply_works_when_packaged(env, monkeypatch):
         response = client.post("/api/update/apply")
         assert response.status_code == 200
         assert response.json()["version"] == "1.4.0"
+
+
+# --------------------------------------------------------------------------- دانلود مقاوم
+
+LOGIN_PAGE = b'<!DOCTYPE html><html><head><title>Sign in to GitHub</title></head><body>login</body></html>'
+
+
+def test_private_repo_login_page_is_not_saved_as_the_manifest(env, monkeypatch):
+    """مخزن خصوصی: آدرس مرورگری صفحهٔ ورود (۲۰۰) می‌دهد، نه ۴۰۴.
+
+    این همان حالتی است که قبلاً فهرست را به‌شکل HTML ذخیره می‌کرد و دانلود با پیام
+    عمومی «دانلود آپدیت ناموفق بود.» شکست می‌خورد. حالا باید صفحهٔ ورود رد شود و
+    همان فایل از آدرس API با توکن بیاید.
+    """
+    install = env["install"]
+    changed = {"app.exe": b"new-exe"}
+    manifest = _manifest(install, "1.7.0", changed)
+    env["data"].mkdir(parents=True, exist_ok=True)
+    delta_path = env["data"] / "delta.zip"
+    with zipfile.ZipFile(delta_path, "w") as bundle:
+        for relative, payload in changed.items():
+            bundle.writestr(relative, payload)
+
+    release = _release("v1.7.0", {"update-manifest.json": "https://github.com/x/manifest",
+                                  "update-v1.7.0.zip": "https://github.com/x/delta"})
+    api_base = "https://api.github.com/repos/owner/repo/releases/assets/"
+    for asset in release["assets"]:
+        asset["url"] = api_base + asset["name"]
+    # توکن تنظیم شده است؛ پس اول مسیر API می‌رود.
+    (env["data"]).mkdir(parents=True, exist_ok=True)
+    (env["data"] / "update-settings.json").write_text(
+        json.dumps({"repo": "owner/repo", "enabled": True, "token": "ghp_secret"}),
+        encoding="utf-8")
+
+    calls = _calls(monkeypatch, {
+        "https://api.github.com/repos/owner/repo/releases/latest":
+            FakeResponse(json.dumps(release).encode(), {"ETag": '"e"'}),
+        api_base + "update-manifest.json": FakeResponse(json.dumps(manifest).encode()),
+        api_base + "update-v1.7.0.zip": FakeResponse(
+            delta_path.read_bytes(), {"Content-Length": str(delta_path.stat().st_size)}),
+        "https://github.com/x/manifest": FakeResponse(LOGIN_PAGE,
+                                                     {"Content-Type": "text/html; charset=utf-8"}),
+        "https://github.com/x/delta": FakeResponse(LOGIN_PAGE,
+                                                   {"Content-Type": "text/html"}),
+    })
+    updater.download()
+    assert updater.pending()["version"] == "1.7.0"
+    api_calls = [call for call in calls
+                 if call["headers"].get("Accept") == "application/octet-stream"]
+    assert len(api_calls) == 2
+    assert all(call["headers"].get("Authorization") == "Bearer ghp_secret" for call in api_calls)
+
+
+def test_html_response_without_content_type_is_rejected_too(env, monkeypatch):
+    """حتی اگر گیت‌هاب Content-Type ندهد، بدنهٔ HTML نباید به‌عنوان فهرست پذیرفته شود."""
+    release = _release("v1.8.0", {"update-manifest.json": "https://github.com/x/manifest"})
+    _calls(monkeypatch, {
+        "https://api.github.com/repos/owner/repo/releases/latest":
+            FakeResponse(json.dumps(release).encode(), {"ETag": '"e"'}),
+        "https://github.com/x/manifest": FakeResponse(LOGIN_PAGE),
+    })
+    with pytest.raises(updater.UpdateError) as caught:
+        updater.download()
+    message = str(caught.value)
+    assert "update-manifest.json" in message
+    assert "توکن" in message
+    assert updater.download_state().get("phase") == "error"
+
+
+def test_truncated_download_is_retried_then_reported(env, monkeypatch):
+    """دانلود نصفه یک‌بار دوباره تلاش می‌شود؛ اگر باز هم ناقص بود، پیام روشن می‌دهد."""
+    release = _release("v1.9.0", {"update-manifest.json": "https://github.com/x/manifest"})
+    manifest = {"version": "1.9.0", "files": [
+        {"path": "app.exe", "sha256": "0" * 64, "size": 100}]}
+    body = json.dumps(manifest).encode()
+    calls = _calls(monkeypatch, {
+        "https://api.github.com/repos/owner/repo/releases/latest":
+            FakeResponse(json.dumps(release).encode(), {"ETag": '"e"'}),
+        # هر بار فقط نصف بدنه می‌آید ولی Content-Length کامل اعلام شده است.
+        "https://github.com/x/manifest": [
+            FakeResponse(body[:len(body) // 2], {"Content-Length": str(len(body))}),
+            FakeResponse(body[:len(body) // 2], {"Content-Length": str(len(body))}),
+        ],
+    })
+    with pytest.raises(updater.UpdateError) as caught:
+        updater.download()
+    assert "ناقص" in str(caught.value)
+    manifest_calls = [call for call in calls if call["url"] == "https://github.com/x/manifest"]
+    assert len(manifest_calls) == 2  # یک‌بار تلاش دوباره
+
+
+def test_truncated_download_recovers_on_retry(env, monkeypatch):
+    """اگر تلاش دوم کامل باشد، آپدیت بدون خطا آماده می‌شود."""
+    install = env["install"]
+    changed = {"app.exe": b"new-exe"}
+    manifest = _manifest(install, "1.9.1", changed)
+    env["data"].mkdir(parents=True, exist_ok=True)
+    delta_path = env["data"] / "delta.zip"
+    with zipfile.ZipFile(delta_path, "w") as bundle:
+        for relative, payload in changed.items():
+            bundle.writestr(relative, payload)
+    release = _release("v1.9.1", {"update-manifest.json": "https://github.com/x/manifest",
+                                  "update-v1.9.1.zip": "https://github.com/x/delta"})
+    body = json.dumps(manifest).encode()
+    _calls(monkeypatch, {
+        "https://api.github.com/repos/owner/repo/releases/latest":
+            FakeResponse(json.dumps(release).encode(), {"ETag": '"e"'}),
+        "https://github.com/x/manifest": [
+            FakeResponse(body[:20], {"Content-Length": str(len(body))}),
+            FakeResponse(body, {"Content-Length": str(len(body))}),
+        ],
+        "https://github.com/x/delta": FakeResponse(
+            delta_path.read_bytes(), {"Content-Length": str(delta_path.stat().st_size)}),
+    })
+    updater.download()
+    assert updater.pending()["version"] == "1.9.1"
+
+
+def test_redirect_to_another_host_drops_the_token():
+    """توکن نباید به میزبانِ امضاشدهٔ گیت‌هاب (release-assets) فرستاده شود."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen: dict = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - نام تحمیلی http.server
+            if self.path == "/redirect":
+                target = f"http://localhost:{self.server.server_port}/echo"
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.end_headers()
+                return
+            seen["authorization"] = self.headers.get("Authorization")
+            body = b"asset-bytes"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):  # صدای سرور در آزمون لازم نیست
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_port
+        with updater._open(f"http://127.0.0.1:{port}/redirect",
+                           {"Authorization": "Bearer secret"}) as response:
+            assert response.read() == b"asset-bytes"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert seen["authorization"] is None
+
+
+def test_stale_release_cache_without_api_url_is_refreshed_before_download(env, monkeypatch):
+    """کشِ نسخه‌های قدیمی آدرس API نداشت؛ دانلود باید اول فهرست را تازه کند.
+
+    وگرنه در مخزن خصوصی فقط آدرس مرورگری می‌ماند، صفحهٔ ورود HTML می‌آید و کاربر
+    همان پیام مبهم قبلی را می‌بیند.
+    """
+    install = env["install"]
+    changed = {"app.exe": b"new-exe"}
+    manifest = _manifest(install, "2.0.1", changed)
+    env["data"].mkdir(parents=True, exist_ok=True)
+    delta_path = env["data"] / "delta.zip"
+    with zipfile.ZipFile(delta_path, "w") as bundle:
+        for relative, payload in changed.items():
+            bundle.writestr(relative, payload)
+
+    api_base = "https://api.github.com/repos/owner/repo/releases/assets/"
+    release = _release("v2.0.1", {"update-manifest.json": api_base + "update-manifest.json",
+                                  "update-v2.0.1.zip": api_base + "update-v2.0.1.zip"})
+    for asset in release["assets"]:
+        asset["url"] = api_base + asset["name"]
+
+    # کشِ قدیمی: بدون کلید api در دارایی‌ها و خیلی تازه (پس check معمولی رد می‌شود).
+    stale = {
+        "checkedAt": 4_102_444_800,  # آیندهٔ دور؛ هرگز «کهنه» حساب نمی‌شود
+        "etag": '"e"',
+        "latest": {"tag": "v2.0.1", "version": "2.0.1", "assets": {
+            "update-manifest.json": {"url": "https://github.com/x/manifest"},
+            "update-v2.0.1.zip": {"url": "https://github.com/x/delta"},
+        }, "deltaAsset": "update-v2.0.1.zip", "hasManifest": True},
+    }
+    (env["data"] / "update-state.json").write_text(json.dumps(stale), encoding="utf-8")
+    (env["data"] / "update-settings.json").write_text(
+        json.dumps({"repo": "owner/repo", "enabled": True, "token": "ghp_secret"}),
+        encoding="utf-8")
+
+    calls = _calls(monkeypatch, {
+        "https://api.github.com/repos/owner/repo/releases/latest":
+            FakeResponse(json.dumps(release).encode(), {"ETag": '"f"'}),
+        api_base + "update-manifest.json": FakeResponse(json.dumps(manifest).encode()),
+        api_base + "update-v2.0.1.zip": FakeResponse(
+            delta_path.read_bytes(), {"Content-Length": str(delta_path.stat().st_size)}),
+        "https://github.com/x/manifest": FakeResponse(LOGIN_PAGE, {"Content-Type": "text/html"}),
+        "https://github.com/x/delta": FakeResponse(LOGIN_PAGE, {"Content-Type": "text/html"}),
+    })
+    updater.download()
+    assert updater.pending()["version"] == "2.0.1"
+    assert any(call["url"].endswith("/releases/latest") for call in calls)

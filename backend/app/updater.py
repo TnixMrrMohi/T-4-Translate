@@ -249,11 +249,55 @@ def save_settings(payload: dict) -> dict:
 
 # --------------------------------------------------------------------------- شبکه
 
+def _redirect_handler():
+    """پیروِ ریدایرکتی که توکن را به میزبانِ دیگر نمی‌فرستد.
+
+    دارایی‌های ریلیز با یک ۳۰۲ به میزبانِ امضاشده (`release-assets` یا `objects`)
+    می‌روند. اگر هدر `Authorization` هم با همان درخواست برود، آن میزبان درخواست را
+    رد می‌کند و دانلود با اینکه توکن درست است شکست می‌خورد.
+    """
+    import urllib.parse
+    import urllib.request
+
+    class Handler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            new = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if new is None:
+                return None
+            try:
+                old_host = urllib.parse.urlsplit(req.full_url).hostname
+                new_host = urllib.parse.urlsplit(newurl).hostname
+            except ValueError:
+                return new
+            if new_host and old_host and new_host != old_host:
+                new.remove_header("Authorization")
+                new.unredirected_hdrs.pop("authorization", None)
+                new.unredirected_hdrs.pop("Authorization", None)
+            return new
+
+    return Handler
+
+
+_opener_lock = threading.Lock()
+_opener_cache: dict = {}
+
+
+def _opener():
+    import urllib.request
+
+    with _opener_lock:
+        opener = _opener_cache.get("opener")
+        if opener is None:
+            opener = urllib.request.build_opener(_redirect_handler())
+            _opener_cache["opener"] = opener
+    return opener
+
+
 def _open(url: str, headers: dict, timeout: int = REQUEST_TIMEOUT):
     import urllib.request
 
     request = urllib.request.Request(url, headers=headers)
-    return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310 - آدرس ثابت گیت‌هاب
+    return _opener().open(request, timeout=timeout)  # noqa: S310 - آدرس ثابت گیت‌هاب
 
 
 def _headers(conf: dict, extra: dict | None = None) -> dict:
@@ -439,7 +483,11 @@ def _needed_files(manifest: dict, install: Path) -> list[dict]:
 
 def _safe_extract(archive: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(archive) as bundle:
+    try:
+        bundle = zipfile.ZipFile(archive)
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise UpdateError(f"بستهٔ آپدیت خوانده نشد ({archive.name} خراب یا ناقص است).") from exc
+    with bundle:
         for member in bundle.infolist():
             name = member.filename.replace("\\", "/")
             if name.endswith("/"):
@@ -452,41 +500,88 @@ def _safe_extract(archive: Path, destination: Path) -> None:
                 shutil.copyfileobj(source, handle)
 
 
+HTML_HINT = ("گیت‌هاب به‌جای فایل، یک صفحهٔ وب برگرداند؛ برای مخزن خصوصی در "
+             "«تنظیمات آپدیت» یک توکن فقط‌خواندنی (Contents: Read) وارد کنید.")
+
+
 def _fetch(url: str, destination: Path, headers: dict, on_bytes=None) -> int:
+    """یک فایل را کامل می‌گیرد و اگر دانلود نصفه ماند، یک‌بار دیگر تلاش می‌کند."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    received = 0
-    try:
-        return _fetch_once(url, destination, headers, on_bytes)
-    except Exception as exc:  # noqa: BLE001
-        code = getattr(exc, "code", None)
-        if isinstance(code, int):
-            body = ""
-            try:
-                body = exc.read().decode("utf-8", "replace")[:400]  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001
+    last_error: UpdateError | None = None
+    for attempt in range(2):
+        try:
+            return _fetch_once(url, destination, headers, on_bytes)
+        except UpdateError as exc:
+            last_error = exc
+            # خطای «ناقص ماندن» یا قطع اتصال ارزش تکرار دارد؛ ۴۰۴/۴۰۱ نه.
+            if not any(word in str(exc) for word in ("ناقص", "اتصال", "قطع")):
+                raise
+            continue
+        except Exception as exc:  # noqa: BLE001
+            code = getattr(exc, "code", None)
+            if isinstance(code, int):
                 body = ""
-            raise UpdateError(_error_text(code, body)) from exc
-        raise UpdateError("اتصال به گیت‌هاب برای دریافت آپدیت برقرار نشد.") from exc
+                try:
+                    body = exc.read().decode("utf-8", "replace")[:400]  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001
+                    body = ""
+                raise UpdateError(_error_text(code, body)) from exc
+            raise UpdateError("اتصال به گیت‌هاب برای دریافت آپدیت برقرار نشد.") from exc
+    raise last_error or UpdateError("دانلود فایل آپدیت ناموفق بود.")
+
+
+def _looks_like_html(destination: Path) -> bool:
+    """آیا فایلِ گرفته‌شده صفحهٔ وب است (صفحهٔ ورود/خطای گیت‌هاب) و نه فایل اصلی؟"""
+    try:
+        head = destination.open("rb").read(400).lstrip().lower()
+    except OSError:
+        return False
+    return head.startswith(b"<!doctype html") or head.startswith(b"<html")
 
 
 def _fetch_asset(asset: dict, destination: Path, headers: dict, name: str,
-                 on_bytes=None) -> int:
-    """دریافت یک دارایی ریلیز؛ اگر آدرس مرورگری جواب نداد، از آدرس API استفاده می‌شود.
+                 on_bytes=None, expect: str | None = None):
+    """یک دارایی ریلیز را با چند مسیر و اعتبارسنجیِ محتوا می‌گیرد.
 
-    در مخزن خصوصی، `browser_download_url` بدون احراز هویت ۴۰۴ می‌دهد؛ آدرس API با
-    توکن و `Accept: application/octet-stream` همان فایل را می‌دهد.
+    * اگر توکن داریم، اول آدرس API گیت‌هاب (`assets/{id}` با `Accept:
+      application/octet-stream`) امتحان می‌شود؛ در مخزن خصوصی آدرس مرورگری
+      (`browser_download_url`) به صفحهٔ ورود می‌رسد و فایل نیست.
+    * پاسخ‌های HTML و فایل‌های ناقص رد می‌شوند؛ خطا همیشه می‌گوید کدام فایل و چرا.
+    * ``expect`` نوع فایل است: ``"json"`` برای فهرست (فهرست تجزیه‌شده برمی‌گردد) و
+      ``"zip"`` برای بسته‌ها (بررسی می‌شود واقعاً ZIP است).
     """
-    attempts = [asset.get("url"), asset.get("api")]
-    last_error: UpdateError | None = None
-    for index, url in enumerate(attempts):
+    candidates = []
+    if headers.get("Authorization"):
+        candidates = [("api", asset.get("api")), ("browser", asset.get("url"))]
+    else:
+        candidates = [("browser", asset.get("url")), ("api", asset.get("api"))]
+    last_error: str | None = None
+    for kind, url in candidates:
         if not url:
             continue
-        extra = {"Accept": "application/octet-stream"} if index else {}
+        extra = {"Accept": "application/octet-stream"} if kind == "api" else {}
         try:
-            return _fetch(url, destination, {**headers, **extra}, on_bytes)
+            _fetch(url, destination, {**headers, **extra}, on_bytes)
         except UpdateError as exc:
-            last_error = exc
+            last_error = str(exc)
             continue
+        if _looks_like_html(destination):
+            last_error = HTML_HINT
+            continue
+        if expect == "json":
+            try:
+                payload = json.loads(destination.read_text(encoding="utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                last_error = ("پاسخ «" + name + "» JSON نبود؛ " + HTML_HINT)
+                continue
+            if not isinstance(payload, dict):
+                last_error = f"فهرست فایل‌های آپدیت («{name}») ساختار درستی ندارد."
+                continue
+            return payload
+        if expect == "zip" and not zipfile.is_zipfile(destination):
+            last_error = f"فایل «{name}» یک بستهٔ ZIP سالم نبود؛ " + HTML_HINT
+            continue
+        return destination
     raise UpdateError(f"دریافت «{name}» ناموفق بود: "
                       f"{last_error or 'آدرسی برای این فایل در ریلیز نبود.'}")
 
@@ -494,11 +589,16 @@ def _fetch_asset(asset: dict, destination: Path, headers: dict, name: str,
 def _fetch_once(url: str, destination: Path, headers: dict, on_bytes=None) -> int:
     received = 0
     with _open(url, headers) as response, destination.open("wb") as handle:
+        header_map = getattr(response, "headers", {}) or {}
+        content_type = ""
         length = 0
         try:
-            length = int(response.headers.get("Content-Length") or 0)
+            content_type = str(header_map.get("Content-Type") or "").lower()
+            length = int(header_map.get("Content-Length") or 0)
         except (AttributeError, TypeError, ValueError):
-            length = 0
+            content_type, length = "", 0
+        if content_type.startswith("text/html"):
+            raise UpdateError(HTML_HINT)
         while True:
             block = response.read(CHUNK)
             if not block:
@@ -507,6 +607,8 @@ def _fetch_once(url: str, destination: Path, headers: dict, on_bytes=None) -> in
             received += len(block)
             if on_bytes:
                 on_bytes(received, length)
+    if length and received != length:
+        raise UpdateError(f"دانلود ناقص ماند ({received} از {length} بایت).")
     return received
 
 
@@ -528,6 +630,14 @@ def download() -> dict:
 
     install = install_dir()
     assets = latest.get("assets") or {}
+    if not (assets.get(MANIFEST_ASSET) or {}).get("api"):
+        # کشِ نسخه‌های قدیمی‌تر آدرس API هر دارایی را ذخیره نمی‌کرد؛ بدون آن، در
+        # مخزن خصوصی فقط آدرس مرورگری می‌مانَد که صفحهٔ ورود می‌دهد. یک بررسی تازه
+        # همین‌جا انجام می‌شود تا دانلود با فهرستِ قدیمی شکست نخورد.
+        check(force=True)
+        cached = state()
+        latest = cached.get("latest") or latest
+        assets = latest.get("assets") or {}
     headers = _headers(conf)
     work = updates_dir()
     work.mkdir(parents=True, exist_ok=True)
@@ -542,10 +652,10 @@ def download() -> dict:
             raise UpdateError("این ریلیز فهرست فایل‌ها (update-manifest.json) ندارد؛ "
                               "برای به‌روزرسانی، بستهٔ کامل را از صفحهٔ انتشار بگیرید.")
         manifest_path = archive_dir / MANIFEST_ASSET
-        _fetch_asset(manifest_asset, manifest_path, headers, MANIFEST_ASSET)
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if not isinstance(manifest, dict):
-            raise UpdateError("فهرست فایل‌های آپدیت خوانده نشد.")
+        manifest = _fetch_asset(manifest_asset, manifest_path, headers, MANIFEST_ASSET,
+                                expect="json")
+        if not isinstance(manifest, dict) or not manifest.get("files"):
+            raise UpdateError("فهرست فایل‌های آپدیت خالی یا ناخوانا بود.")
         staged_version = str(manifest.get("version") or latest.get("version") or "")
         if staged_version and not is_newer(staged_version, current_version()):
             raise UpdateError("این ریلیز تازه‌تر از نسخهٔ نصب‌شده نیست.")
@@ -571,7 +681,7 @@ def download() -> dict:
                 delta_path = archive_dir / delta_name
                 _set_download(message="در حال دانلود بستهٔ تغییرات…")
                 _fetch_asset(delta_asset, delta_path, headers, delta_name,
-                             _progress_callback())
+                             _progress_callback(), expect="zip")
                 _safe_extract(delta_path, stage_dir())
                 delta_used = True
                 staged = {item.relative_to(stage_dir()).as_posix()
@@ -585,7 +695,8 @@ def download() -> dict:
                 raise UpdateError("بستهٔ کاملی برای تکمیل آپدیت در این ریلیز نیست.")
             full_path = archive_dir / full
             _set_download(message="در حال دانلود فایل‌های باقی‌مانده…")
-            _fetch_asset(assets[full], full_path, headers, full, _progress_callback())
+            _fetch_asset(assets[full], full_path, headers, full, _progress_callback(),
+                         expect="zip")
             if remaining:
                 partial = stage_dir() / "__full__"
                 _safe_extract(full_path, partial)
@@ -617,12 +728,12 @@ def download() -> dict:
         _set_download(running=False, phase="ready", message="آپدیت دانلود شد؛ آمادهٔ اعمال است.")
         return {"started": True, "status": status()}
     except Exception as exc:  # noqa: BLE001
-        _set_download(running=False, phase="error",
-                      error=str(exc) if isinstance(exc, UpdateError)
-                      else f"دانلود آپدیت ناموفق بود ({type(exc).__name__}).")
+        message = (str(exc) if isinstance(exc, UpdateError)
+                   else f"دانلود آپدیت ناموفق بود ({type(exc).__name__}: {exc}).")
+        _set_download(running=False, phase="error", error=message)
         if isinstance(exc, UpdateError):
             raise
-        raise UpdateError(f"دانلود آپدیت ناموفق بود ({type(exc).__name__}).") from exc
+        raise UpdateError(message) from exc
     finally:
         _set_download(running=False)
 
