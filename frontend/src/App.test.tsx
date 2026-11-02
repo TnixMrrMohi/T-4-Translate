@@ -34,14 +34,20 @@ function mockApi(options: {
   holdOcr?: () => Promise<void>;
   /** پاسخ منبع ترجمه بر اساس تنظیم متن تبلیغاتی (replace/remove). */
   sourceFor?: (promo: string) => unknown;
+  /** فهرست ناحیه‌های پاک‌سازی (مرحلهٔ ۳). */
+  cleanAreas?: unknown;
 } = {}) {
-  const calls: {url: string; method: string}[] = [];
+  const calls: {url: string; method: string; body?: unknown}[] = [];
   let ocrDone = false;
   let uploadIndex = 0;
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const method = (init?.method ?? 'GET').toUpperCase();
-    calls.push({url, method});
+    let body: unknown;
+    if (typeof init?.body === 'string') {
+      try {body = JSON.parse(init.body);} catch {body = init.body;}
+    }
+    calls.push({url, method, body});
     if (url.endsWith('/healthz')) return new Response('ok');
     if (method === 'DELETE') {
       const custom = options.onDelete?.(init);
@@ -60,6 +66,11 @@ function mockApi(options: {
       return json({jobId: JOB_ID, provider: 'mock', lines: options.ocrLines ?? [], revision: 'r'.repeat(64)});
     }
     if (method === 'POST' && url.endsWith('/clean')) {
+      const areas = (body as {areas?: number[]} | undefined)?.areas;
+      if (Array.isArray(areas)) {
+        return json({jobId: JOB_ID, areas,
+                     message: `پاک‌سازی ${areas.length} ناحیهٔ انتخاب‌شده دوباره انجام شد.`});
+      }
       return json({jobId: JOB_ID, message: 'پاک‌سازی آزمایشی انجام شد؛ هنوز ترجمه روی تصویر قرار نگرفته است.'});
     }
     if (method === 'POST' && url.endsWith('/render')) {
@@ -81,6 +92,9 @@ function mockApi(options: {
         return json({font: {id: 'X', name: 'X', family: 'X', style: '', file: 'x.ttf', bundled: false}}, 201);
       }
       return json(options.fonts ?? {fonts: [], types: []});
+    }
+    if (url.includes('/clean-areas')) {
+      return json(options.cleanAreas ?? {jobId: JOB_ID, areas: [], blockCount: 0, cleaned: false});
     }
     if (url.endsWith('/bubbles')) {
       return options.bubbles ? json(options.bubbles) : json({detail: 'نیست'}, 404);
@@ -1114,5 +1128,93 @@ describe('متن تبلیغاتی در مرحلهٔ ۲', () => {
       expect(copied).toContain('آن شماره را کاملاً حذف کن');
       expect(copied).not.toContain('به‌جای ترجمه فقط');
     });
+  });
+});
+
+describe('ناحیه‌های پاک‌سازی در مرحلهٔ ۳', () => {
+  const source = {
+    revision: 'r'.repeat(64),
+    items: [
+      {number: 1, text: 'GO AWAY!', tone: 'فریاد', kind: 'shout', kindLabel: 'فریاد', lines: [1], bbox: [10, 10, 90, 40]},
+      {number: 2, text: 'See you soon.', tone: 'گفت‌وگوی معمولی', kind: 'speech', kindLabel: 'صحبت عادی', lines: [2], bbox: [10, 60, 90, 90]},
+      {number: 3, text: 'Until next time!', tone: 'گفت‌وگوی معمولی', kind: 'speech', kindLabel: 'صحبت عادی', lines: [3], bbox: [10, 110, 90, 140]},
+    ],
+    blockCount: 3,
+    promo: 'replace',
+  };
+
+  const areas = {
+    jobId: JOB_ID,
+    blockCount: 3,
+    cleaned: true,
+    areas: [
+      {number: 1, lines: [1], bbox: [10, 10, 90, 40], kind: 'shout', kindLabel: 'فریاد', text: 'گمشو!', translated: true},
+      {number: 2, lines: [2], bbox: [10, 60, 90, 90], kind: 'speech', kindLabel: 'صحبت عادی', text: 'به‌زودی می‌بینمت.', translated: true},
+      // ناحیهٔ بدون ترجمه نباید در فهرست انتخاب بیاید.
+      {number: 3, lines: [3], bbox: [10, 110, 90, 140], kind: 'speech', kindLabel: 'صحبت عادی', text: '', translated: false},
+    ],
+  };
+
+  async function openCleaning(overrides: Parameters<typeof mockApi>[0] = {}) {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const api = mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source,
+      translation: '[1] گمشو!\n[2] به‌زودی می‌بینمت.',
+      cleanAreas: areas,
+      ...overrides,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'});
+    await user.click(screen.getByRole('button', {name: 'اجرای پاک‌سازی'}));
+    await screen.findByRole('heading', {name: 'ناحیه‌های پاک‌سازی'});
+    return {api, user};
+  }
+
+  it('هر ناحیهٔ پاک‌شده با شماره و متنش فهرست می‌شود و ناحیهٔ بی‌ترجمه نمی‌آید', async () => {
+    const {api} = await openCleaning();
+    expect(api.calls.some(call => call.url.includes('/clean-areas'))).toBe(true);
+
+    const list = screen.getByRole('group', {name: 'ناحیه‌های پاک‌سازی'});
+    expect(within(list).getAllByRole('checkbox')).toHaveLength(2);
+    expect(within(list).getByText('گمشو!')).toBeInTheDocument();
+    expect(within(list).getByText('به‌زودی می‌بینمت.')).toBeInTheDocument();
+    expect(within(list).getByText('فریاد')).toBeInTheDocument();
+    expect(within(list).queryByRole('checkbox', {name: 'ناحیهٔ ۳'})).not.toBeInTheDocument();
+  });
+
+  it('انتخاب یک ناحیه و «پاک‌سازی مجدد» فقط همان ناحیه را به سرور می‌فرستد', async () => {
+    const {api, user} = await openCleaning();
+    const list = screen.getByRole('group', {name: 'ناحیه‌های پاک‌سازی'});
+    const row = within(list).getByRole('checkbox', {name: 'ناحیهٔ ۲'});
+    await user.click(row);
+    expect(row).toBeChecked();
+
+    const button = screen.getByRole('button', {name: 'پاک‌سازی مجدد ناحیه‌های انتخاب‌شده'});
+    await user.click(button);
+
+    await waitFor(() => {
+      const post = api.calls.filter(call => call.method === 'POST' && call.url.endsWith('/clean') && call.body);
+      expect(post).toHaveLength(1);
+      expect(post[0].body).toEqual({areas: [2]});
+    });
+    expect(await screen.findByText('پاک‌سازی 1 ناحیهٔ انتخاب‌شده دوباره انجام شد.')).toBeInTheDocument();
+  });
+
+  it('«انتخاب همه» همهٔ ناحیه‌ها را انتخاب و دوباره خالی می‌کند', async () => {
+    const {user} = await openCleaning();
+    const list = screen.getByRole('group', {name: 'ناحیه‌های پاک‌سازی'});
+    await user.click(screen.getByRole('button', {name: 'انتخاب همه'}));
+    within(list).getAllByRole('checkbox').forEach(box => expect(box).toBeChecked());
+
+    await user.click(screen.getByRole('button', {name: 'حذف انتخاب‌ها'}));
+    within(list).getAllByRole('checkbox').forEach(box => expect(box).not.toBeChecked());
+    expect(screen.getByRole('button', {name: 'پاک‌سازی مجدد ناحیه‌های انتخاب‌شده'})).toBeDisabled();
+  });
+
+  it('بدون انتخاب ناحیه، دکمهٔ پاک‌سازی مجدد غیرفعال است', async () => {
+    await openCleaning();
+    expect(screen.getByRole('button', {name: 'پاک‌سازی مجدد ناحیه‌های انتخاب‌شده'})).toBeDisabled();
   });
 });

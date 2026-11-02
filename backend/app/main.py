@@ -8,10 +8,11 @@ import json
 import os
 import shutil
 import uuid
+from functools import partial
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from app.desktop_security import DesktopOriginGuard
@@ -279,6 +280,12 @@ class TranslationInput(BaseModel):
     promo: str = Field(default="replace")
 
 
+class CleanInput(BaseModel):
+    """ناحیه‌های انتخاب‌شده برای پاک‌سازی؛ خالی یعنی همهٔ ناحیه‌های ترجمه‌شده."""
+
+    areas: list[int] | None = Field(default=None, max_length=9999)
+
+
 PROMO_ACTIONS = ("replace", "remove", "keep")
 
 
@@ -417,8 +424,22 @@ def read_translation(job_id: str) -> dict:
     return result
 
 
+def _render_artifacts(workspace: Path) -> list[Path]:
+    """فایل‌های پیش‌نمایش رندر که با تغییر پاک‌سازی منقضی می‌شوند."""
+    return [workspace / "render.png", workspace / "render-meta.json"]
+
+
+def _drop_render(workspace: Path) -> None:
+    for path in _render_artifacts(workspace):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 @app.post("/api/jobs/{job_id}/clean")
-async def clean_job(job_id: str) -> dict:
+async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -> dict:
+    """پاک‌سازی نواحی ترجمه‌شده؛ با ``areas`` فقط ناحیه‌های انتخاب‌شده دوباره پاک می‌شوند."""
     async with _ocr_lock:
         workspace = workspace_for(job_id)
         translation = read_translation(job_id)
@@ -427,10 +448,30 @@ async def clean_job(job_id: str) -> dict:
         if not translation["translations"]:
             raise HTTPException(409, "ترجمه‌ای برای پاک‌سازی وجود ندارد.")
         source = get_ocr(job_id)
+        line_translations = translation.get("lineTranslations") or translation["translations"]
+        areas = None
+        if body is not None and body.areas is not None:
+            block_list = translation_blocks(job_id, source["lines"])
+            known = {item["number"] for item in block_list}
+            unknown = [number for number in body.areas if number not in known]
+            if unknown:
+                raise HTTPException(400, "ناحیهٔ انتخاب‌شده در این کار وجود ندارد.")
+            areas = sorted({number for number in body.areas})
+            if not areas:
+                raise HTTPException(400, "هیچ ناحیه‌ای برای پاک‌سازی انتخاب نشده است.")
+        only = None
+        base = None
+        if areas is not None:
+            block_list = translation_blocks(job_id, source["lines"])
+            only = {line for item in block_list if item["number"] in areas for line in item["lines"]}
+            existing = workspace / "clean.png"
+            if not existing.is_file():
+                raise HTTPException(409, "ابتدا یک‌بار پاک‌سازی کامل را اجرا کنید.")
+            base = existing
         try:
-            line_translations = translation.get("lineTranslations") or translation["translations"]
-            clean, mask = await run_native_safely(cleaning.clean_image, workspace / "source.img",
-                                                  source["lines"], line_translations)
+            clean, mask = await run_native_safely(
+                partial(cleaning.clean_image, workspace / "source.img", source["lines"],
+                        line_translations, base=base, only=only, force=base is not None))
         except cleaning.CleaningError as exc:
             raise HTTPException(400, str(exc)) from None
         try:
@@ -444,7 +485,33 @@ async def clean_job(job_id: str) -> dict:
         stamp = {"sourceRevision": translation["sourceRevision"], "translations": translation["translations"]}
         (workspace / "clean-meta.json.tmp").write_text(json.dumps(stamp, ensure_ascii=False), encoding="utf-8")
         os.replace(workspace / "clean-meta.json.tmp", workspace / "clean-meta.json")
+        # پاک‌سازی تغییر کرده است؛ پیش‌نمایش رندر قبلی دیگر معتبر نیست.
+        _drop_render(workspace)
+        try:
+            (workspace / "clean-preview.png").unlink()
+        except FileNotFoundError:
+            pass
+        if areas is not None:
+            return {"jobId": job_id, "areas": areas,
+                    "message": f"پاک‌سازی {len(areas)} ناحیهٔ انتخاب‌شده دوباره انجام شد."}
         return {"jobId": job_id, "message": "پاک‌سازی آزمایشی انجام شد؛ هنوز ترجمه روی تصویر قرار نگرفته است."}
+
+
+@app.get("/api/jobs/{job_id}/clean-areas")
+def clean_areas(job_id: str) -> dict:
+    """فهرست ناحیه‌های پاک‌سازی (هر بالن) با کادر و متن ترجمه، برای انتخاب تک‌تک."""
+    translation = read_translation(job_id)
+    source = get_ocr(job_id)
+    block_list = translation_blocks(job_id, source["lines"])
+    texts = translation.get("translations") or {}
+    areas = []
+    for item in block_list:
+        text = str(texts.get(str(item["number"])) or "").strip()
+        areas.append({"number": item["number"], "lines": item["lines"], "bbox": item["bbox"],
+                      "area": item.get("area"), "kind": item["kind"], "kindLabel": item["kindLabel"],
+                      "text": text, "translated": bool(text)})
+    return {"jobId": job_id, "areas": areas, "blockCount": len(areas),
+            "cleaned": (workspace_for(job_id) / "clean.png").is_file()}
 
 
 @app.get("/api/jobs/{job_id}/clean")
@@ -627,6 +694,47 @@ async def _ensure_bubble_preview(job_id: str) -> Path:
     return path
 
 
+def _write_clean_preview(workspace: Path, block_list: list, texts: dict) -> None:
+    """رندر پیش‌نمایش شماره‌دارِ ناحیه‌های پاک‌سازی در نخ کارگر."""
+    image = preview.areas_overlay(workspace / "clean.png", block_list, texts)
+    tmp = workspace / "clean-preview.png.tmp"
+    try:
+        image.save(tmp, format="PNG")
+        os.replace(tmp, workspace / "clean-preview.png")
+    finally:
+        image.close()
+        if tmp.exists():
+            tmp.unlink()
+
+
+async def _ensure_clean_preview(job_id: str) -> Path:
+    """پیش‌نمایش شماره‌دار ناحیه‌های پاک‌شده؛ اگر نباشد ساخته می‌شود."""
+    workspace = workspace_for(job_id)
+    path = workspace / "clean-preview.png"
+    if path.is_file():
+        return path
+    if not (workspace / "clean.png").is_file():
+        raise HTTPException(404, "تصویر پاک‌شده موجود نیست.")
+    translation = read_translation(job_id)
+    source = get_ocr(job_id)
+    block_list = translation_blocks(job_id, source["lines"])
+    texts = translation.get("translations") or {}
+    try:
+        await run_native_safely(_write_clean_preview, workspace, block_list, texts)
+    except preview.PreviewError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except Exception:
+        raise HTTPException(500, "ساخت پیش‌نمایش ناحیه‌های پاک‌سازی ناموفق بود.") from None
+    return path
+
+
+@app.get("/api/jobs/{job_id}/clean-preview")
+async def get_clean_preview(job_id: str):
+    """تصویر پاک‌شده با کادر و شمارهٔ ناحیه‌ها (همان شمارهٔ فهرست)."""
+    path = await _ensure_clean_preview(job_id)
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
 async def _preview_source(job_id: str, kind: str) -> Path:
     """فایل مبدأ پیش‌نمایش؛ پیش‌نمایش‌های OCR و بالن اگر آماده نباشند همان‌جا ساخته می‌شوند.
 
@@ -641,6 +749,8 @@ async def _preview_source(job_id: str, kind: str) -> Path:
         return await _ensure_ocr_preview(job_id)
     if kind == "bubble":
         return await _ensure_bubble_preview(job_id)
+    if kind == "clean-areas":
+        return await _ensure_clean_preview(job_id)
     raise HTTPException(404, "پیش‌نمایش موجود نیست.")
 
 
@@ -648,6 +758,7 @@ THUMB_SOURCES = {
     "source": "source.img",
     "ocr": "ocr-preview.png",
     "clean": "clean.png",
+    "clean-areas": "clean-preview.png",
     "render": "render.png",
     "bubble": "bubble-preview.png",
 }

@@ -12,6 +12,8 @@ from PIL import Image, ImageDraw, ImageFont
 MAX_PREVIEW_SIDE = 2400     # سقف عرض پیش‌نمایش
 MAX_PREVIEW_HEIGHT = 6000   # سقف ارتفاع؛ صفحهٔ بلند وب‌تون به یک نوار ناخوانا تبدیل نشود
 BOX_COLOR = (0, 200, 255)
+AREA_COLOR = (0, 255, 204)      # ناحیه‌های پاک‌سازی‌شده (ترجمه‌دار)
+AREA_MUTED = (140, 150, 155)    # ناحیه‌های بدون ترجمه
 BADGE_COLOR = (0, 0, 0)
 BADGE_TEXT_COLOR = (255, 255, 255)
 
@@ -146,3 +148,57 @@ def scaled_width(path: Path, width: int, max_pixels: int = MAX_DISPLAY_PIXELS) -
     resized = image.resize((width, height), Image.LANCZOS)
     image.close()
     return resized
+
+
+def areas_overlay(path: Path, blocks: list, texts: dict | None = None) -> Image.Image:
+    """تصویر پاک‌شده را با کادر و شمارهٔ ناحیه‌های پاک‌سازی برمی‌گرداند.
+
+    شماره‌ها همان شمارهٔ فهرست ناحیه‌هاست تا کاربر بتواند هر ناحیه را جدا انتخاب
+    کند و برای همان یکی درخواست پاک‌سازی مجدد بدهد.
+    """
+    texts = texts or {}
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGB")
+    except (OSError, ValueError) as exc:
+        raise PreviewError("خواندن تصویر پاک‌شده ناموفق بود.") from exc
+
+    scale = min(1.0, MAX_PREVIEW_SIDE / image.width, MAX_PREVIEW_HEIGHT / image.height)
+    if scale != 1.0:
+        image = image.resize(
+            (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+            Image.LANCZOS,
+        )
+
+    draw = ImageDraw.Draw(image)
+    line_width = max(2, round(min(image.size) / 400))
+    badge_font = _font(max(12, min(28, round(min(image.size) / 30))))
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        box = block.get("area") if isinstance(block.get("area"), list) else block.get("bbox")
+        if not isinstance(box, list) or len(box) != 4:
+            continue
+        try:
+            left, top, right, bottom = [float(value) * scale for value in box]
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(value) for value in (left, top, right, bottom)):
+            continue
+        right, bottom = max(right, left + 2), max(bottom, top + 2)
+        translated = bool(str(texts.get(str(block.get("number"))) or "").strip())
+        color = AREA_COLOR if translated else AREA_MUTED
+        draw.rectangle([left, top, min(image.width - 1, right), min(image.height - 1, bottom)],
+                       outline=color, width=line_width)
+        label = str(block.get("number", ""))
+        if not label:
+            continue
+        text_left, text_top, text_right, text_bottom = draw.textbbox((0, 0), label, font=badge_font)
+        text_width, text_height = text_right - text_left, text_bottom - text_top
+        pad = max(2, line_width)
+        badge_left = min(max(0.0, left), image.width - text_width - 2 * pad)
+        badge_top = max(0.0, top - text_height - 2 * pad)
+        badge = (badge_left, badge_top, badge_left + text_width + 2 * pad, badge_top + text_height + 2 * pad)
+        draw.rectangle(badge, fill=(0, 0, 0))
+        draw.text((badge[0] + pad, badge[1] + pad - text_top), label, fill=color, font=badge_font)
+    return image

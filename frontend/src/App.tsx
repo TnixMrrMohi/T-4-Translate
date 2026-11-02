@@ -32,7 +32,19 @@ const STEPS = [
   {id: 5, title: 'مقایسه'},
 ];
 
-type PreviewKind = 'source' | 'ocr' | 'clean' | 'render' | 'bubble';
+type PreviewKind = 'source' | 'ocr' | 'clean' | 'clean-areas' | 'render' | 'bubble';
+
+/** یک ناحیهٔ پاک‌سازی (همان بلوک/بالن)؛ برای انتخاب تک‌تک و درخواست مجدد. */
+type CleanArea = {
+  number: number;
+  lines: number[];
+  bbox: number[];
+  area?: number[] | null;
+  kind: string;
+  kindLabel: string;
+  text: string;
+  translated: boolean;
+};
 
 /** یک بالن (یا گروه متن بیرون بالن) با دستهٔ تشخیص‌داده‌شده و فونت پیشنهادی. */
 type Bubble = {
@@ -206,7 +218,11 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   const [thumbFailed, setThumbFailed] = useState(false);
   const retryTimer = useRef<number | null>(null);
   const thumbUrl = `/api/jobs/${jobId}/thumb/${kind}?v=${version}&r=${thumbRetry}`;
-  const fullUrl = `/api/jobs/${jobId}/${kind === 'source' ? 'source.img' : kind === 'ocr' ? 'ocr-preview' : kind}?v=${version}`;
+  const fullUrl = `/api/jobs/${jobId}/${
+    kind === 'source' ? 'source.img'
+      : kind === 'ocr' ? 'ocr-preview'
+        : kind === 'clean-areas' ? 'clean-preview'
+          : kind}?v=${version}`;
 
   const retryThumb = () => {
     if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
@@ -420,6 +436,9 @@ export function App() {
   
   // شمارهٔ نسخهٔ هر پیش‌نمایش؛ با هر بازسازی زیاد می‌شود تا کش بندانگشتی و تصویر دور زده شود.
   const [cleanVersion, setCleanVersion] = useState(0);
+  const [cleanAreas, setCleanAreas] = useState<CleanArea[]>([]);
+  const [areaPick, setAreaPick] = useState<number[]>([]);
+  const [areasBusy, setAreasBusy] = useState(false);
   const [renderVersion, setRenderVersion] = useState(0);
   const [sourceVersion, setSourceVersion] = useState(0);
   const [ocrVersion, setOcrVersion] = useState(0);
@@ -776,6 +795,53 @@ export function App() {
     finally {setBusy(false);}
   }
 
+  /** فهرست ناحیه‌های پاک‌سازی (هر بالن) برای انتخاب تک‌تک. */
+  async function loadCleanAreas(jobId: string) {
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/clean-areas`);
+      if (!response.ok) return;
+      const data = await response.json();
+      const list: CleanArea[] = Array.isArray(data?.areas) ? data.areas : [];
+      setCleanAreas(list);
+      setAreaPick(prev => prev.filter(number => list.some(area => area.number === number && area.translated)));
+    } catch {
+      /* فهرست ناحیه‌ها اختیاری است؛ پاک‌سازی کامل بدون آن هم کار می‌کند. */
+    }
+  }
+
+  /** انتخاب/حذف یک ناحیه از فهرست. */
+  function toggleArea(number: number) {
+    setAreaPick(prev => prev.includes(number)
+      ? prev.filter(value => value !== number)
+      : [...prev, number].sort((a, b) => a - b));
+  }
+
+  /** پاک‌سازی مجدد فقط ناحیه‌های انتخاب‌شده (بر پایهٔ تصویر پاک‌شدهٔ فعلی). */
+  async function recleanAreas() {
+    if (!job || busy || areasBusy || loadingData || areaPick.length === 0) return;
+    setAreasBusy(true);
+    setMessage('در حال پاک‌سازی مجدد ناحیه‌های انتخاب‌شده…');
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/clean`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({areas: areaPick}),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی مجدد ناموفق بود.');
+      }
+      setCleanVersion(Date.now());
+      setRenderVersion(0);
+      setMessage(typeof result.message === 'string' ? result.message : 'پاک‌سازی مجدد انجام شد.');
+      await loadCleanAreas(job.jobId);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'پاک‌سازی مجدد ناموفق بود.');
+    } finally {
+      setAreasBusy(false);
+    }
+  }
+
   async function cleanImage() {
     if (!job || busy || loadingData) return;
     setBusy(true); setMessage('در حال پاک‌سازی آزمایشی…'); setCleanVersion(0); setRenderVersion(0);
@@ -785,8 +851,10 @@ export function App() {
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی ناموفق بود.');
       setCleanVersion(Date.now());
       setRenderVersion(0);  // خروجی قبلی با پاک‌سازی جدید معتبر نیست
+      setAreaPick([]);
       setMessage('پاک‌سازی انجام شد. با «ادامه» ترجمه روی تصویر درج می‌شود.');
       setStep(3);
+      await loadCleanAreas(job.jobId);
     } catch (error) {fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');}
     finally {setBusy(false);}
   }
@@ -960,6 +1028,12 @@ export function App() {
 
   useEffect(() => () => stopProgressTimers(), []);
 
+  // فهرست ناحیه‌های پاک‌سازی در مرحلهٔ ۳ (و بعد از هر پاک‌سازی) تازه می‌شود.
+  useEffect(() => {
+    if (step === 3 && job?.jobId) void loadCleanAreas(job.jobId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, job?.jobId, cleanVersion]);
+
   /** OCR و رفتن به مرحلهٔ مقصد؛ در مرحلهٔ ۱ با دکمهٔ ادامه خودکار اجرا می‌شود. */
   async function runOcr(nextStep: number | null = null) {
     if (!job || busy) return;
@@ -993,6 +1067,8 @@ export function App() {
     }
     finally {finishProgress(); setBusy(false);}
   }
+
+  const translatedAreas = cleanAreas.filter(area => area.translated);
 
   return (
     <main className="page">
@@ -1059,6 +1135,17 @@ export function App() {
               alt="پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام"
               downloadName={`t4-${job.jobId}-bubbles.png`}
               caption={<span>کادر هر بالن با نام دسته و درصد اطمینان</span>}
+            />
+          )}
+          {step === 3 && job && cleanVersion > 0 && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="clean-areas"
+              version={cleanVersion}
+              aspect={job.height / job.width}
+              alt="ناحیه‌های پاک‌سازی با شماره"
+              downloadName={`t4-${job.jobId}-clean-areas.png`}
+              caption={<span>ناحیه‌های پاک‌سازی — شماره‌ها مثل فهرست کنار</span>}
             />
           )}
           {step === 3 && job && cleanVersion > 0 && (
@@ -1344,6 +1431,55 @@ export function App() {
                       ? 'پاک‌سازی انجام شد؛ نتیجه را در ستون راست ببینید.'
                       : busy ? 'در حال پاک‌سازی…' : 'هنوز پاک‌سازی اجرا نشده است.'}
                   </p>
+
+                  {cleanVersion > 0 && translatedAreas.length > 0 && (
+                    <>
+                      <h3 className="wizard-subtitle">ناحیه‌های پاک‌سازی</h3>
+                      <p className="wizard-help">
+                        شماره‌ها همان شماره‌های روی پیش‌نمایشِ «ناحیه‌های پاک‌سازی» در ستون راست است. هر ناحیه را
+                        انتخاب کنید تا فقط همان یکی دوباره پاک‌سازی شود و بقیه دست‌نخورده بمانند.
+                      </p>
+                      <div className="area-list" role="group" aria-label="ناحیه‌های پاک‌سازی">
+                        {translatedAreas.map(area => (
+                          <label
+                            key={area.number}
+                            className={`area-row${areaPick.includes(area.number) ? ' is-picked' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={areaPick.includes(area.number)}
+                              onChange={() => toggleArea(area.number)}
+                              disabled={busy || areasBusy}
+                              aria-label={`ناحیهٔ ${area.number.toLocaleString('fa-IR')}`}
+                            />
+                            <span className="area-number">{area.number.toLocaleString('fa-IR')}</span>
+                            <span className="area-kind">{area.kindLabel}</span>
+                            <span className="area-text" dir="rtl">{area.text}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <div className="wizard-nav start">
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={busy || areasBusy}
+                          onClick={() => setAreaPick(
+                            areaPick.length === translatedAreas.length ? [] : translatedAreas.map(area => area.number),
+                          )}
+                        >
+                          {areaPick.length === translatedAreas.length ? 'حذف انتخاب‌ها' : 'انتخاب همه'}
+                        </button>
+                        <button
+                          type="button"
+                          className="ocr"
+                          disabled={busy || areasBusy || loadingData || areaPick.length === 0}
+                          onClick={() => void recleanAreas()}
+                        >
+                          پاک‌سازی مجدد ناحیه‌های انتخاب‌شده
+                        </button>
+                      </div>
+                    </>
+                  )}
 
                   <div className="wizard-nav">
                     <button type="button" className="ghost" onClick={() => goToStep(2)}>مرحلهٔ قبل (ترجمه)</button>

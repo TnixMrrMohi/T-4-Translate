@@ -81,8 +81,14 @@ def _touches_frame(box, left, top, span_x, span_y, size) -> bool:
     return False
 
 
-def _fill_ink(cv2, np, image, result, box, background, mask_total) -> bool:
-    """جوهرِ داخل کادر را تکه‌به‌تکه با رنگ پس‌زمینهٔ دورِ همان تکه پر می‌کند."""
+def _fill_ink(cv2, np, image, result, box, background, mask_total,
+              force: bool = False, quad_mask=None) -> bool:
+    """جوهرِ داخل کادر را تکه‌به‌تکه با رنگ پس‌زمینهٔ دورِ همان تکه پر می‌کند.
+
+    `force` برای «پاک‌سازی مجدد» یک ناحیه است: تکه‌هایی که به لبهٔ کادر می‌رسند
+    یا دور و برشان یکدست نیست هم پاک می‌شوند، اما فقط داخل چهارضلعیِ خودِ خط
+    (`quad_mask`) تا خط دور بالن و بیرونِ متن دست‌نخورده بماند.
+    """
     x0, y0, x1, y1 = box
     if x1 <= x0 or y1 <= y0:
         return False
@@ -97,7 +103,8 @@ def _fill_ink(cv2, np, image, result, box, background, mask_total) -> bool:
     filled_any = False
     for label in range(1, count):
         left, top, span_x, span_y = stats[label][:4]
-        if _touches_frame(box, left, top, span_x, span_y, image.shape[:2]):
+        touches_frame = _touches_frame(box, left, top, span_x, span_y, image.shape[:2])
+        if touches_frame and not force:
             # تکه تا لبهٔ کادر می‌آید: حرف نیست، بلکه خط/حاشیه‌ای است که از کادر
             # بیرون می‌رود (مثل خط دور بالن). دست‌نخورده می‌ماند.
             continue
@@ -125,9 +132,26 @@ def _fill_ink(cv2, np, image, result, box, background, mask_total) -> bool:
             continue
         ring_colors = window[sample].astype(np.float32)
         spread = float(np.std(ring_colors, axis=0).max())
-        if spread > TEXTURE_STD:
+        if spread > TEXTURE_STD and not force:
             # دو رنگِ کاملاً متفاوت دور تکه (مثلاً حاشیهٔ بالن): پاک نمی‌کنیم تا
             # خط دور بالن بریده نشود.
+            continue
+        if force and (touches_frame or spread > TEXTURE_STD):
+            # در حالت تهاجمی فقط داخل چهارضلعیِ خودِ خط پاک می‌شود، با رنگ میانه.
+            if quad_mask is None:
+                continue
+            inside = quad_mask[wy0:wy1, wx0:wx1]
+            component = (component != 0) & inside
+            component = component.astype(np.uint8)
+            if not component.any():
+                continue
+            target = component  # لبهٔ نرم پاک نمی‌شود تا از خط بیرون نزند
+            patch = result[wy0:wy1, wx0:wx1].copy()
+            patch[target != 0] = np.median(ring_colors, axis=0).astype(np.uint8)
+            region = result[wy0:wy1, wx0:wx1]
+            region[target != 0] = patch[target != 0]
+            mask_total[wy0:wy1, wx0:wx1][target != 0] = 255
+            filled_any = True
             continue
         target = cv2.dilate(component, kernel, iterations=MASK_GROW) | component
         # فقط داخل کادر ترجمه‌شده (به‌همراه حاشیه‌اش) تغییر می‌کند.
@@ -152,7 +176,16 @@ def _fill_ink(cv2, np, image, result, box, background, mask_total) -> bool:
     return filled_any
 
 
-def clean_image(path: Path, lines: list, translations: dict) -> tuple[Image.Image, Image.Image]:
+def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
+                only: set[int] | None = None,
+                force: bool = False) -> tuple[Image.Image, Image.Image]:
+    """متن نواحی ترجمه‌شده را پاک می‌کند و تصویر و ماسک را برمی‌گرداند.
+
+    * ``base``: تصویری که نتیجه روی آن نوشته می‌شود؛ برای «پاک‌سازی مجدد» یک ناحیه،
+      تصویر پاک‌شدهٔ فعلی پایه می‌گیرد تا بقیهٔ ناحیه‌ها دست‌نخورده بمانند.
+    * ``only``: شمارهٔ خطوطی (۱-پایه) که باید دوباره پاک شوند؛ بقیه تغییر نمی‌کنند.
+    * ``force``: حالت تهاجمی برای همان نواحی انتخابی (فقط داخل چهارضلعیِ خودِ خط).
+    """
     try:
         import cv2
         import numpy as np
@@ -168,9 +201,10 @@ def clean_image(path: Path, lines: list, translations: dict) -> tuple[Image.Imag
             raise CleaningError('پاک‌سازی آزمایشی تصویر شفاف را پشتیبانی نمی‌کند.')
         image = np.array(original.convert('RGB'))
     height, width = image.shape[:2]
-    selected = np.zeros((height, width), dtype=np.uint8)
-    protected = np.zeros_like(selected)
+    selected = np.zeros((height, width), dtype=np.uint8)     # ناحیه‌هایی که پاک می‌شوند
+    untouched = np.zeros_like(selected)                      # ناحیه‌هایی که نباید تغییر کنند
     boxes: list[tuple[int, int, int, int]] = []
+    quads: list = []
     for number, line in enumerate(lines, 1):
         quad = line.get('quad')
         if not isinstance(quad, list) or len(quad) != 4:
@@ -183,37 +217,61 @@ def clean_image(path: Path, lines: list, translations: dict) -> tuple[Image.Imag
                                for x, y in coords], dtype=np.int32)
         except (TypeError, ValueError, IndexError, OverflowError):
             raise CleaningError('مختصات متن OCR نامعتبر است.') from None
+        picked = only is None or number in only
         translated = bool(translations.get(str(number), '').strip())
-        target = selected if translated else protected
-        if translated:
-            # کادر OCR معمولاً حروف و دنباله‌ها را دقیق در بر نمی‌گیرد؛ کمی بزرگ‌ترش می‌کنیم
-            # تا باقی‌ماندهٔ متن انگلیسی پس از پاک‌سازی نماند. کادرهای ترجمه‌نشده بزرگ نمی‌شوند.
-            span = float(max(points[:, 0].ptp(), points[:, 1].ptp()))
-            pad = int(min(20, max(2, round(span * PADDING_RATIO))))
-            center_x, center_y = points[:, 0].mean(), points[:, 1].mean()
-            points = np.array([
-                [max(0, min(width - 1, int(x) + (pad if x >= center_x else -pad))),
-                 max(0, min(height - 1, int(y) + (pad if y >= center_y else -pad)))]
-                for x, y in points], dtype=np.int32)
-        cv2.fillPoly(target, [points], 255)
-        if translated:
-            boxes.append((int(points[:, 0].min()), int(points[:, 1].min()),
-                          int(points[:, 0].max()) + 1, int(points[:, 1].max()) + 1))
+        if not translated or not picked:
+            # ترجمه‌نشده یا در این درخواست انتخاب نشده: دست‌نخورده می‌ماند.
+            cv2.fillPoly(untouched, [points], 255)
+            continue
+        quad_only = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(quad_only, [points], 255)
+        # کادر OCR معمولاً حروف و دنباله‌ها را دقیق در بر نمی‌گیرد؛ کمی بزرگ‌ترش می‌کنیم
+        # تا باقی‌ماندهٔ متن انگلیسی پس از پاک‌سازی نماند. کادرهای ترجمه‌نشده بزرگ نمی‌شوند.
+        span = float(max(points[:, 0].ptp(), points[:, 1].ptp()))
+        pad = int(min(20, max(2, round(span * PADDING_RATIO))))
+        center_x, center_y = points[:, 0].mean(), points[:, 1].mean()
+        points = np.array([
+            [max(0, min(width - 1, int(x) + (pad if x >= center_x else -pad))),
+             max(0, min(height - 1, int(y) + (pad if y >= center_y else -pad)))]
+            for x, y in points], dtype=np.int32)
+        cv2.fillPoly(selected, [points], 255)
+        boxes.append((int(points[:, 0].min()), int(points[:, 1].min()),
+                      int(points[:, 0].max()) + 1, int(points[:, 1].max()) + 1))
+        quads.append(quad_only)
     if not boxes:
         raise CleaningError('هیچ ناحیهٔ ترجمه‌شده‌ای برای پاک‌سازی وجود ندارد.')
 
     result = image.copy()
     mask_total = np.zeros((height, width), dtype=np.uint8)
-    for box in boxes:
+    for box, quad_only in zip(boxes, quads):
         background = _background(np, cv2, image, box)
         if background is None:
             continue
-        _fill_ink(cv2, np, image, result, box, background, mask_total)
+        _fill_ink(cv2, np, image, result, box, background, mask_total,
+                  force=force, quad_mask=quad_only != 0)
 
-    # ناحیه‌های ترجمه‌نشده و بیرون از کادرها دقیقاً دست‌نخورده می‌مانند.
-    restore = (protected != 0) | (selected == 0)
-    result[restore] = image[restore]
+    # پایهٔ خروجی: تصویر اصلی، یا تصویر پاک‌شدهٔ فعلی برای پاک‌سازی مجدد یک ناحیه.
+    if base is not None:
+        try:
+            with Image.open(base) as existing:
+                if existing.size != (width, height):
+                    raise CleaningError('تصویر پاک‌شدهٔ فعلی با تصویر اصلی هم‌اندازه نیست.')
+                base_array = np.array(existing.convert('RGB'))
+        except CleaningError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise CleaningError('تصویر پاک‌شدهٔ فعلی خوانده نشد.') from exc
+        canvas = base_array.copy()
+        for box in boxes:
+            canvas[box[1]:box[3], box[0]:box[2]] = result[box[1]:box[3], box[0]:box[2]]
+    else:
+        canvas = result
+        base_array = image
+
+    # بیرون از ناحیه‌های انتخاب‌شده و در ناحیه‌های ترجمه‌نشده، همه‌چیز دست‌نخورده می‌ماند.
+    restore = (untouched != 0) | (selected == 0)
+    canvas[restore] = base_array[restore]
     mask_total[restore] = 0
     if not mask_total.any():
         raise CleaningError('متن قابل پاک‌سازی یافت نشد.')
-    return Image.fromarray(result, 'RGB'), Image.fromarray(mask_total, 'L')
+    return Image.fromarray(canvas, 'RGB'), Image.fromarray(mask_total, 'L')
