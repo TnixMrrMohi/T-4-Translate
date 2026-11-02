@@ -40,6 +40,8 @@ function mockApi(options: {
   ocrStatus?: unknown;
   /** تنظیم «متن تبلیغاتی» که ترجمهٔ ذخیره‌شده با آن ساخته شده است. */
   translationPromo?: 'replace' | 'remove';
+  /** چیدمان متن‌ها (مرحلهٔ ۴). */
+  layout?: unknown;
 } = {}) {
   const calls: {url: string; method: string; body?: unknown}[] = [];
   let ocrDone = false;
@@ -99,6 +101,15 @@ function mockApi(options: {
     }
     if (url.endsWith('/api/ocr-status')) {
       return json(options.ocrStatus ?? {ready: true, provider: 'mock', detail: ''});
+    }
+    if (url.includes('/layout')) {
+      if (method === 'PUT') {
+        const blocks = (body as {blocks?: unknown} | undefined)?.blocks ?? {};
+        return json({jobId: JOB_ID, layout: blocks, blocks: Object.keys(blocks as object).length,
+                     message: 'چیدمان متن‌ها ذخیره شد.'});
+      }
+      if (method === 'DELETE') return json({jobId: JOB_ID, layout: {}, message: 'حالت خودکار'});
+      return json(options.layout ?? {jobId: JOB_ID, width: 800, height: 600, blocks: [], layout: {}, fonts: []});
     }
     if (url.includes('/clean-areas')) {
       return json(options.cleanAreas ?? {jobId: JOB_ID, areas: [], blockCount: 0, cleaned: false});
@@ -1275,5 +1286,106 @@ describe('تنظیم متن تبلیغاتی ترجمهٔ ذخیره‌شده', 
     await userEvent.setup().click(screen.getByRole('button', {name: 'مرحلهٔ قبل (ترجمه)'}));
     const removeButton = await screen.findByRole('button', {name: 'حذف کامل'});
     expect(removeButton).toHaveAttribute('aria-pressed', 'true');
+  });
+});
+
+describe('ویرایش تک‌تک متن‌های درج‌شده (چیدمان دستی)', () => {
+  const source = {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}, {number: 2, text: 'Bye'}]};
+  const layoutDoc = {
+    jobId: JOB_ID,
+    width: 800,
+    height: 600,
+    blocks: [
+      {number: 1, kind: 'speech', kindLabel: 'بالن گفتار', text: 'سلام',
+       box: [100, 100, 300, 200], bbox: [120, 120, 280, 180], area: [90, 90, 310, 210],
+       lines: [1], size: 24, center: [200, 150], rotation: 0, font: null, auto: true},
+      {number: 2, kind: 'outside', kindLabel: 'متن بیرون بالن', text: 'خداحافظ',
+       box: [400, 300, 600, 360], bbox: [410, 310, 590, 350], area: null,
+       lines: [2], size: 18, center: [500, 330], rotation: 0, font: null, auto: true},
+    ],
+    layout: {},
+    fonts: [{id: 'Afsaneh', name: 'Afsaneh', file: 'Afsaneh.ttf'}],
+  };
+
+  async function openEditor() {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const api = mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source,
+      translation: '[1] سلام',
+      layout: layoutDoc,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'});
+    await user.click(screen.getByRole('button', {name: 'ادامه (پاک‌سازی و درج ترجمه)'}));
+    await screen.findByRole('heading', {name: 'مرحله ۴: درج ترجمه روی تصویر'});
+    return {...api, user};
+  }
+
+  const lastLayoutPut = (calls: {url: string; method: string; body?: unknown}[]) =>
+    calls.filter(call => call.method === 'PUT' && call.url.endsWith('/layout')).pop()?.body as
+      {blocks?: Record<string, Record<string, unknown>>} | undefined;
+
+  it('فونت، اندازه و چرخش هر متن جداگانه ذخیره می‌شود', async () => {
+    const {calls, user} = await openEditor();
+
+    const picker = await screen.findByLabelText('انتخاب متن برای ویرایش');
+    await user.selectOptions(picker, '1');
+    expect(screen.getByLabelText('فونت این متن')).toBeEnabled();
+
+    await user.selectOptions(screen.getByLabelText('فونت این متن'), 'Afsaneh');
+    await waitFor(() => expect(lastLayoutPut(calls)?.blocks?.['1']?.font).toBe('Afsaneh'));
+
+    const size = screen.getByLabelText('اندازهٔ قلم این متن');
+    await user.clear(size);
+    await user.type(size, '40');
+    await waitFor(() => expect(lastLayoutPut(calls)?.blocks?.['1']?.size).toBe(40));
+
+    const rotation = screen.getByLabelText('چرخش این متن (درجه)');
+    await user.clear(rotation);
+    await user.type(rotation, '15');
+    await waitFor(() => expect(lastLayoutPut(calls)?.blocks?.['1']?.rotation).toBe(15));
+
+    // متن دوم دست‌نخورده می‌ماند؛ یعنی تنظیم‌ها تک‌تک‌اند.
+    expect(lastLayoutPut(calls)?.blocks?.['2']).toBeUndefined();
+  });
+
+  it('هر متن روی تصویر انتخاب می‌شود و با کلید جهت جابه‌جا می‌شود', async () => {
+    const {calls, user} = await openEditor();
+
+    const box = await screen.findByRole('button', {name: 'متن 1: سلام'});
+    await user.click(box);
+    fireEvent.keyDown(box, {key: 'ArrowRight'});
+
+    await waitFor(() => expect(lastLayoutPut(calls)?.blocks?.['1']?.x).toBe(201));
+    expect(lastLayoutPut(calls)?.blocks?.['1']?.y).toBe(150);
+    // بعد از ذخیره، تصویر با چیدمان تازه دوباره درج می‌شود.
+    await waitFor(
+      () => expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/render'))).toBe(true),
+      {timeout: 3000});
+  });
+
+  it('«خودکار برای همه» چیدمان دستی را پاک می‌کند', async () => {
+    const {calls, user} = await openEditor();
+
+    const picker = await screen.findByLabelText('انتخاب متن برای ویرایش');
+    await user.selectOptions(picker, '2');
+    const rotation = screen.getByLabelText('چرخش این متن (درجه)');
+    await user.clear(rotation);
+    await user.type(rotation, '30');
+    await waitFor(() => expect(lastLayoutPut(calls)?.blocks?.['2']?.rotation).toBe(30));
+
+    await user.click(screen.getByRole('button', {name: 'خودکار برای همه'}));
+    await waitFor(() => expect(lastLayoutPut(calls)?.blocks).toEqual({}));
+  });
+
+  it('پنجرهٔ بزرگ ویرایش باز می‌شود و با Esc بسته می‌شود', async () => {
+    const {user} = await openEditor();
+    await user.click(await screen.findByRole('button', {name: 'ویرایش در نمایش بزرگ'}));
+    const dialog = await screen.findByRole('dialog', {name: 'ویرایش بزرگ چیدمان متن‌ها'});
+    expect(within(dialog).getByText(/ویرایش چیدمان متن‌ها/)).toBeInTheDocument();
+    fireEvent.keyDown(window, {key: 'Escape'});
+    await waitFor(() => expect(screen.queryByRole('dialog', {name: 'ویرایش بزرگ چیدمان متن‌ها'})).not.toBeInTheDocument());
   });
 });

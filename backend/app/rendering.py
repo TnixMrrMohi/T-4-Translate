@@ -208,6 +208,19 @@ def _contrast_color(image: Image.Image, box) -> tuple[int, int, int]:
 KIND_INSET = {"shout": 0.16, "solar": 0.16, "monster": 0.18, "fear": 0.10, "cloud": 0.10}
 
 
+def _inset_box(box, kind: str, fill: float = 1.0):
+    """کادر متن را برای شکل‌های دندانه‌دار جمع می‌کند تا حروف داخل دندانه نروند."""
+    left, top, right, bottom = box
+    inset = KIND_INSET.get(kind, 0.0)
+    if 0.3 <= fill < 0.95:
+        inset = max(inset, 0.6 * (1 - fill))
+    if inset:
+        inset_x = (right - left) * inset / 2
+        inset_y = (bottom - top) * inset / 2
+        left, top, right, bottom = left + inset_x, top + inset_y, right - inset_x, bottom - inset_y
+    return left, top, right, bottom
+
+
 def _draw_box(canvas, draw, box, text: str, path: str | None = None,
               fill: float = 1.0, kind: str = "", cap: float | None = None) -> bool:
     """متن فارسی را وسط کادر می‌کشد؛ اگر جای کافی نبود False برمی‌گرداند.
@@ -217,14 +230,7 @@ def _draw_box(canvas, draw, box, text: str, path: str | None = None,
     جای‌گذاری بر اساس جعبهٔ واقعی حروف (ink) است، نه متریک فونت؛ چون فونت‌های
     دست‌کشیده گاهی ascender/descender نامتعارف دارند.
     """
-    left, top, right, bottom = box
-    inset = KIND_INSET.get(kind, 0.0)
-    if 0.3 <= fill < 0.95:
-        inset = max(inset, 0.6 * (1 - fill))
-    if inset:
-        inset_x = (right - left) * inset / 2
-        inset_y = (bottom - top) * inset / 2
-        left, top, right, bottom = left + inset_x, top + inset_y, right - inset_x, bottom - inset_y
+    left, top, right, bottom = _inset_box(box, kind, fill)
     box_width = right - left
     box_height = bottom - top
     if box_width < 8 or box_height < 8:
@@ -358,23 +364,29 @@ def _shape_box(block: dict, text_box, canvas_width: int, canvas_height: int):
     return (max(0, left), max(0, top), min(canvas_width, right), min(canvas_height, bottom))
 
 
-def render_blocks(image: Image.Image, blocks: list, translations: dict,
-                  fonts: dict | None = None) -> tuple[Image.Image, int]:
-    """هر بلوک (بالن) را با یک متن فارسی پر می‌کند؛ خروجی: تصویر و تعداد بلوک‌های رسم‌شده.
+def plan_blocks(image: Image.Image, blocks: list, translations: dict,
+                fonts: dict | None = None, layout: dict | None = None,
+                font_files: dict | None = None) -> list[dict]:
+    """برای هر بلوک، کادر، اندازهٔ قلم، مرکز، رنگ و چرخش نهایی را حساب می‌کند.
 
-    `fonts` نگاشتِ نوع بالن به مسیر فونت است؛ اگر خالی باشد فونت پیش‌فرض برنامه
-    استفاده می‌شود.
+    همان محاسبه‌ای که رسم استفاده می‌کند، برای ویرایشگر هم در دسترس است؛ پس
+    کادر و اندازه‌ای که کاربر روی تصویر می‌بیند دقیقاً همان چیزی است که درج می‌شود.
+
+    ``layout`` تنظیم‌های دستی هر بلوک است (فونت، اندازه، مرکز و چرخش) و
+    ``font_files`` نگاشتِ شناسهٔ فونت به مسیر فایل.
     """
     fonts = fonts or {}
+    font_files = font_files or {}
+    layout = layout or {}
     if image.mode != "RGB":
         image = image.convert("RGB")
-    canvas = image.copy()
-    draw = ImageDraw.Draw(canvas)
-    drawn = 0
+    canvas_width, canvas_height = image.size
+    entries: list[dict] = []
     for block in blocks:
         if not isinstance(block, dict):
             continue
-        text = translations.get(str(block.get("number"))) or translations.get(block.get("number")) or ""
+        number = block.get("number")
+        text = translations.get(str(number)) or translations.get(number) or ""
         text = str(text).strip()
         bbox = block.get("bbox") or []
         if not text or len(bbox) != 4:
@@ -383,15 +395,15 @@ def render_blocks(image: Image.Image, blocks: list, translations: dict,
             left, top, right, bottom = [int(round(float(value))) for value in bbox]
         except (TypeError, ValueError):
             continue
-        left = max(0, min(canvas.width - 1, left))
-        top = max(0, min(canvas.height - 1, top))
-        right = max(0, min(canvas.width, right))
-        bottom = max(0, min(canvas.height, bottom))
+        left = max(0, min(canvas_width - 1, left))
+        top = max(0, min(canvas_height - 1, top))
+        right = max(0, min(canvas_width, right))
+        bottom = max(0, min(canvas_height, bottom))
         if right - left < 4 or bottom - top < 4:
             continue
         # اندازهٔ قلم باید به اندازهٔ «شکل بالن» بستگی داشته باشد، نه به کادر تنگِ
         # متن اصلی؛ وگرنه متن فارسی ناگهان خیلی ریز درمی‌آید.
-        box = _shape_box(block, (left, top, right, bottom), canvas.width, canvas.height)
+        box = _shape_box(block, (left, top, right, bottom), canvas_width, canvas_height)
         if box is None:
             # بالن دست‌کشیده معمولاً کمی از کادر بزرگ‌تر است؛ حاشیهٔ کوچک داخل کادر.
             inset_x = max(2, round((right - left) * 0.04))
@@ -399,8 +411,8 @@ def render_blocks(image: Image.Image, blocks: list, translations: dict,
             box = (left + inset_x, top + inset_y, right - inset_x, bottom - inset_y)
             if block.get("kind") != "outside":
                 # تا لبهٔ ناحیهٔ یکدستِ پس‌زمینه بزرگ می‌شود (تنها با پیکسل‌ها، نه حدس)
-                box = _grow_to_background(canvas, box)
-                box = _grow_text_box(box, canvas.width, canvas.height,
+                box = _grow_to_background(image, box)
+                box = _grow_text_box(box, canvas_width, canvas_height,
                                      TEXT_BOX_GROW_X, TEXT_BOX_GROW_Y)
         if box[2] - box[0] < 8 or box[3] - box[1] < 8:
             continue
@@ -409,11 +421,131 @@ def render_blocks(image: Image.Image, blocks: list, translations: dict,
             fill = float(block.get("fill") or 1.0)
         except (TypeError, ValueError):
             fill = 1.0
+        override = layout.get(str(number)) or {}
+        path = fonts.get(kind)
+        chosen_font = override.get("font")
+        if isinstance(chosen_font, str) and chosen_font in font_files:
+            path = font_files[chosen_font]
         # اندازهٔ نوشتهٔ فارسی، هم‌اندازهٔ نوشتهٔ اصلیِ همان ناحیه می‌ماند: ارتفاع
         # کادر متن تقسیم بر تعداد خطوط OCR، ضرب در نسبت تنظیم‌شده.
         line_count = max(1, len(block.get("lines") or []))
         cap = (bottom - top) / line_count * FONT_TO_SOURCE_RATIO
-        if _draw_box(canvas, draw, box, text, fonts.get(kind), fill, kind, cap):
+        left_b, top_b, right_b, bottom_b = _inset_box(box, kind, fill)
+        box_width = right_b - left_b
+        box_height = bottom_b - top_b
+        if box_width < 8 or box_height < 8:
+            continue
+        if path and not font_supports(path, text):
+            path = None
+        padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
+        wanted = override.get("size")
+        if isinstance(wanted, (int, float)) and not isinstance(wanted, bool) and wanted > 0:
+            font = _font(max(MIN_FONT_SIZE, int(round(float(wanted)))), path)
+            wrapped = wrap_text(text, font, max(8.0, box_width - 2 * padding))
+        else:
+            font, wrapped = _fit(text, box_width - 2 * padding,
+                                 box_height - 2 * padding, path, cap)
+        if not font or not wrapped:
+            continue
+        center_x = (left_b + right_b) / 2
+        center_y = (top_b + bottom_b) / 2
+        if isinstance(override.get("x"), (int, float)):
+            center_x = float(override["x"])
+        if isinstance(override.get("y"), (int, float)):
+            center_y = float(override["y"])
+        rotation = override.get("rotation")
+        rotation = float(rotation) if isinstance(rotation, (int, float)) else 0.0
+        entries.append({
+            "number": number,
+            "kind": kind,
+            "kindLabel": block.get("kindLabel") or kind,
+            "text": text,
+            "box": [int(round(left_b)), int(round(top_b)),
+                    int(round(right_b)), int(round(bottom_b))],
+            "bbox": [left, top, right, bottom],
+            "area": block.get("area"),
+            "lines": list(block.get("lines") or []),
+            "size": int(font.size),
+            "path": path,
+            "wrapped": list(wrapped),
+            "center": [round(center_x, 2), round(center_y, 2)],
+            "rotation": round(rotation, 2),
+            "color": _contrast_color(image, (int(left_b), int(top_b),
+                                             int(right_b), int(bottom_b))),
+            "auto": not override,
+        })
+    return entries
+
+
+def _line_metrics(draw, shaped: list[str], font) -> list[tuple[int, int, int, int]]:
+    metrics = []
+    for line in shaped:
+        ink = draw.textbbox((0, 0), line, font=font)
+        metrics.append((ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]))
+    return metrics
+
+
+def _draw_plan(canvas: Image.Image, draw, entry: dict) -> bool:
+    """یک بلوکِ چیدمان‌شده را روی تصویر می‌کشد (با چرخش، اگر خواسته شده باشد)."""
+    font = _font(int(entry["size"]), entry.get("path"))
+    wrapped = entry.get("wrapped") or []
+    if not wrapped:
+        return False
+    shaped = [shape_text(logical_line) for logical_line in wrapped]
+    metrics = _line_metrics(draw, shaped, font)
+    line_height = max(1.0, max(height for _, _, _, height in metrics) * 1.24)
+    block_height = line_height * len(shaped)
+    center_x, center_y = entry["center"]
+    color = tuple(entry.get("color") or (17, 17, 17))
+    rotation = float(entry.get("rotation") or 0.0)
+
+    if not rotation:
+        # بدون چرخش همان رسم مستقیم قبلی است؛ خروجی بیت‌به‌بیت پایدار می‌ماند.
+        start_y = center_y - block_height / 2
+        for index, line in enumerate(shaped):
+            ink_left, ink_top, ink_width, ink_height = metrics[index]
+            target_left = center_x - ink_width / 2
+            target_top = start_y + index * line_height + (line_height - ink_height) / 2
+            draw.text((target_left - ink_left, target_top - ink_top), line,
+                      font=font, fill=color)
+        return True
+
+    # چرخش: متن روی لایهٔ شفاف کشیده و بعد چرخانده و در مرکز چسبانده می‌شود.
+    widest = max(width for _, _, width, _ in metrics)
+    layer_width = int(math.ceil(widest)) + 8
+    layer_height = int(math.ceil(block_height)) + 8
+    layer = Image.new("RGBA", (max(1, layer_width), max(1, layer_height)), (0, 0, 0, 0))
+    layer_draw = ImageDraw.Draw(layer)
+    for index, line in enumerate(shaped):
+        ink_left, ink_top, ink_width, ink_height = metrics[index]
+        target_left = (layer_width - ink_width) / 2
+        target_top = 4 + index * line_height + (line_height - ink_height) / 2
+        layer_draw.text((target_left - ink_left, target_top - ink_top), line,
+                        font=font, fill=color + (255,))
+    rotated = layer.rotate(-rotation, expand=True, resample=Image.BICUBIC)
+    canvas.paste(rotated, (int(round(center_x - rotated.width / 2)),
+                           int(round(center_y - rotated.height / 2))), rotated)
+    layer.close()
+    rotated.close()
+    return True
+
+
+def render_blocks(image: Image.Image, blocks: list, translations: dict,
+                  fonts: dict | None = None, layout: dict | None = None,
+                  font_files: dict | None = None) -> tuple[Image.Image, int]:
+    """هر بلوک (بالن) را با یک متن فارسی پر می‌کند؛ خروجی: تصویر و تعداد بلوک‌های رسم‌شده.
+
+    `fonts` نگاشتِ نوع بالن به مسیر فونت است؛ اگر خالی باشد فونت پیش‌فرض برنامه
+    استفاده می‌شود. `layout` تنظیم دستی هر بلوک (فونت، اندازه، مرکز، چرخش) و
+    `font_files` نگاشتِ شناسهٔ فونت به مسیر فایل است.
+    """
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    canvas = image.copy()
+    draw = ImageDraw.Draw(canvas)
+    drawn = 0
+    for entry in plan_blocks(canvas, blocks, translations, fonts, layout, font_files):
+        if _draw_plan(canvas, draw, entry):
             drawn += 1
     if not drawn:
         raise RenderError("هیچ ترجمه‌ای برای نمایش روی تصویر وجود ندارد.")

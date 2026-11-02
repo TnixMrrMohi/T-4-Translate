@@ -1,5 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {CompareSlider} from './CompareSlider';
+import {TextLayoutEditor} from './TextLayoutEditor';
+import type {LayoutDoc, TextOverrides} from './TextLayoutEditor';
 import './style.css';
 
 /** هر آیتم منبع، یک بالن است (نه یک خط) و لحن تشخیص‌داده‌شدهٔ خودش را دارد. */
@@ -443,6 +445,11 @@ export function App() {
   const [areaPick, setAreaPick] = useState<number[]>([]);
   const [areasBusy, setAreasBusy] = useState(false);
   const [renderVersion, setRenderVersion] = useState(0);
+  // چیدمان دستی متن‌ها (فونت/اندازه/موقعیت/چرخش هر متن) در مرحلهٔ ۴.
+  const [layoutDoc, setLayoutDoc] = useState<LayoutDoc | null>(null);
+  const [layoutBusy, setLayoutBusy] = useState(false);
+  const [layoutModal, setLayoutModal] = useState(false);
+  const layoutRenderTimer = useRef<number | null>(null);
   const [sourceVersion, setSourceVersion] = useState(0);
   const [ocrVersion, setOcrVersion] = useState(0);
   const [bubbles, setBubbles] = useState<BubbleDoc | null>(null);
@@ -819,6 +826,63 @@ export function App() {
     finally {setBusy(false);}
   }
 
+  /** چیدمان تک‌تک متن‌ها (فونت، اندازه، موقعیت، چرخش) برای ویرایشگر مرحلهٔ ۴. */
+  async function loadLayout(jobId: string) {
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/layout`);
+      if (!response.ok) {
+        setLayoutDoc(null);
+        return;
+      }
+      setLayoutDoc(await response.json() as LayoutDoc);
+    } catch {
+      // چیدمان اختیاری است؛ بدون آن هم درج ترجمه کار می‌کند.
+      setLayoutDoc(null);
+    }
+  }
+
+  /** ذخیرهٔ چیدمان و درج دوبارهٔ تصویر با کمی تأخیر (تا با هر حرکت، رندر تکرار نشود). */
+  async function commitLayout(next: TextOverrides) {
+    if (!job) return;
+    setLayoutDoc(previous => (previous ? {...previous, layout: next} : previous));
+    setLayoutBusy(true);
+    if (layoutRenderTimer.current !== null) window.clearTimeout(layoutRenderTimer.current);
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/layout`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({blocks: next}),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw Error(typeof result.detail === 'string' ? result.detail : 'ذخیرهٔ چیدمان متن ناموفق بود.');
+      }
+      layoutRenderTimer.current = window.setTimeout(() => {
+        layoutRenderTimer.current = null;
+        void rerenderAfterLayout();
+      }, 650);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'ذخیرهٔ چیدمان متن ناموفق بود.');
+    } finally {
+      setLayoutBusy(false);
+    }
+  }
+
+  /** درج بی‌صدای تصویر بعد از تغییر چیدمان؛ رابط کاربری قفل نمی‌شود. */
+  async function rerenderAfterLayout() {
+    if (!job) return;
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/render`, {method: 'POST'});
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw Error(typeof result.detail === 'string' ? result.detail : 'درج دوبارهٔ ترجمه ناموفق بود.');
+      }
+      setRenderVersion(Date.now());
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'درج دوبارهٔ ترجمه ناموفق بود.');
+    }
+  }
+
   /** فهرست ناحیه‌های پاک‌سازی (هر بالن) برای انتخاب تک‌تک. */
   async function loadCleanAreas(jobId: string) {
     try {
@@ -969,6 +1033,25 @@ export function App() {
   useEffect(() => {
     if (step === 4 && job) void loadFonts();
   }, [step, job]);
+
+  // چیدمان متن‌ها هم با ورود به مرحلهٔ ۴ (و بعد از هر پاک‌سازی) تازه می‌شود.
+  useEffect(() => {
+    if (step === 4 && job && cleanVersion > 0) void loadLayout(job.jobId);
+  }, [step, job, cleanVersion]);
+
+  // بستن پنجرهٔ بزرگ ویرایش چیدمان با Esc.
+  useEffect(() => {
+    if (!layoutModal) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setLayoutModal(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [layoutModal]);
+
+  useEffect(() => () => {
+    if (layoutRenderTimer.current !== null) window.clearTimeout(layoutRenderTimer.current);
+  }, []);
 
   /** تشخیص نوع بالن‌ها برای مرحلهٔ ۲؛ نتیجه در بک‌اند کش می‌شود. */
   async function loadBubbles(jobId: string) {
@@ -1542,6 +1625,37 @@ export function App() {
                     فهرست «فونت‌های مخصوص تایپ» انتخاب می‌شود و در نبود آن، وزیرمتن جانشین می‌شود.
                   </p>
 
+                  <h3 className="wizard-subtitle">جای هر متن، فونت، اندازه و چرخش</h3>
+                  <p className="wizard-help">
+                    هر متن جداست: با کشیدن جابه‌جا می‌شود، با گوشه‌ها کوچک و بزرگ می‌شود و با دستهٔ بالای
+                    کادر می‌چرخد. فونت و اندازهٔ هر متن هم از همین نوار تغییر می‌کند.
+                  </p>
+                  {layoutDoc && Array.isArray(layoutDoc.blocks) && layoutDoc.blocks.length > 0 ? (
+                    <>
+                      <TextLayoutEditor
+                        imageUrl={`/api/jobs/${job.jobId}/clean?v=${cleanVersion}`}
+                        width={layoutDoc.width || job.width}
+                        height={layoutDoc.height || job.height}
+                        blocks={layoutDoc.blocks}
+                        fonts={layoutDoc.fonts}
+                        value={layoutDoc.layout}
+                        onCommit={next => void commitLayout(next)}
+                        disabled={layoutBusy || busy || loadingData}
+                      />
+                      <div className="wizard-nav start">
+                        <button type="button" className="ghost" onClick={() => setLayoutModal(true)}>
+                          ویرایش در نمایش بزرگ
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="wizard-note">
+                      {cleanVersion === 0
+                        ? 'برای ویرایش جای متن‌ها، ابتدا پاک‌سازی را اجرا کنید.'
+                        : layoutBusy ? 'در حال آماده‌سازی چیدمان…' : 'چیدمان متن‌ها در دسترس نیست.'}
+                    </p>
+                  )}
+
                   <h3 className="wizard-subtitle">فونت هر نوع بالن</h3>
                   <div className="fonts-upload">
                     <label className={`ghost file-button${fontsBusy ? ' is-busy' : ''}`}>
@@ -1641,6 +1755,36 @@ export function App() {
         </section>
         </section>
       </div>
+
+      {layoutModal && job && layoutDoc && (
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="ویرایش بزرگ چیدمان متن‌ها"
+          onClick={event => {if (event.target === event.currentTarget) setLayoutModal(false);}}
+        >
+          <div className="modal-bar">
+            <span className="grow">ویرایش چیدمان متن‌ها (Esc برای بستن)</span>
+            <span className="modal-actions">
+              <button type="button" onClick={() => setLayoutModal(false)}>بستن ✕</button>
+            </span>
+          </div>
+          <div className="layout-modal-body">
+            <TextLayoutEditor
+              tall
+              imageUrl={`/api/jobs/${job.jobId}/clean?v=${cleanVersion}`}
+              width={layoutDoc.width || job.width}
+              height={layoutDoc.height || job.height}
+              blocks={layoutDoc.blocks}
+              fonts={layoutDoc.fonts}
+              value={layoutDoc.layout}
+              onCommit={next => void commitLayout(next)}
+              disabled={layoutBusy || busy || loadingData}
+            />
+          </div>
+        </div>
+      )}
 
       {dialog && <Dialog request={dialog} onClose={closeDialog} />}
     </main>

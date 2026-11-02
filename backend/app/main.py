@@ -20,7 +20,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
-from app import bubbles, cleaning, fonts, ocr, preview, progress, rendering
+from app import bubbles, cleaning, fonts, layout as layouts, ocr, preview, progress, rendering
 from app.translations import parse_translation
 
 app = FastAPI(title="T-4 Translate", version="0.1.0")
@@ -562,20 +562,32 @@ def get_clean(job_id: str):
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
+def _font_paths() -> dict:
+    """فونت هر دستهٔ بالن از فونت‌های نصب‌شده انتخاب می‌شود؛ در نبود آن، وزیرمتن."""
+    font_paths = {}
+    for kind, info in fonts.resolve_map().items():
+        if info.get("font"):
+            font_paths[kind] = info["font"]["path"]
+    return font_paths
+
+
+def _font_files() -> dict[str, str]:
+    """نگاشت شناسهٔ فونت به مسیر فایل؛ برای فونتِ دستیِ هر متن."""
+    return {font["id"]: font["path"] for font in fonts.list_fonts()
+            if font.get("id") and font.get("path")}
+
+
 def _render_files(clean_path: Path, translation: dict, blocks: list,
-                  image_path: Path, meta_path: Path) -> int:
+                  image_path: Path, meta_path: Path, layout: dict | None = None) -> int:
     """رندر در نخ کارگر انجام می‌شود؛ هر بلوک (بالن) یک متن فارسی می‌گیرد.
 
     کادر بلوک‌ها تازه از نتیجهٔ تشخیص بالن خوانده می‌شود (نه از نسخهٔ ذخیره‌شده در
     translations.json) تا اصلاح هندسه روی کارهای قبلی هم اثر بگذارد.
     """
-    # فونت هر دستهٔ بالن از فونت‌های نصب‌شده انتخاب می‌شود؛ در نبود آن، وزیرمتن.
-    font_paths = {}
-    for kind, info in fonts.resolve_map().items():
-        if info.get("font"):
-            font_paths[kind] = info["font"]["path"]
+    font_paths = _font_paths()
     with Image.open(clean_path) as base:
-        rendered, drawn = rendering.render_blocks(base, blocks, translation["translations"], font_paths)
+        rendered, drawn = rendering.render_blocks(base, blocks, translation["translations"],
+                                                 font_paths, layout, _font_files())
     tmp = image_path.with_name(image_path.name + ".tmp")
     try:
         rendered.save(tmp, format="PNG")
@@ -585,9 +597,23 @@ def _render_files(clean_path: Path, translation: dict, blocks: list,
         if tmp.exists():
             tmp.unlink()
     meta_tmp = meta_path.with_name(meta_path.name + ".tmp")
-    meta_tmp.write_text(json.dumps(drawn, ensure_ascii=False), encoding="utf-8")
+    meta_tmp.write_text(json.dumps({"drawn": drawn,
+                                    "layout": layouts.signature(layout or {})},
+                                   ensure_ascii=False), encoding="utf-8")
     os.replace(meta_tmp, meta_path)
     return drawn
+
+
+def _render_layout_matches(workspace: Path) -> bool:
+    """آیا پیش‌نمایش فعلی با چیدمانِ ذخیره‌شده ساخته شده است؟"""
+    try:
+        stamp = json.loads((workspace / "render-meta.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+    if not isinstance(stamp, dict):
+        # نسخهٔ قدیمی فقط تعداد ترسیم را ذخیره می‌کرد؛ چیدمان دستی هم نداشت.
+        return not layouts.read(workspace)
+    return stamp.get("layout") == layouts.signature(layouts.read(workspace))
 
 
 def _clean_stamp_matches(workspace: Path, translation: dict) -> bool:
@@ -616,7 +642,8 @@ async def render_job(job_id: str) -> dict:
             blocks = translation_blocks(job_id, source["lines"])
             drawn = await run_native_safely(
                 _render_files, workspace / "clean.png", translation, blocks,
-                workspace / "render.png", workspace / "render-meta.json")
+                workspace / "render.png", workspace / "render-meta.json",
+                layouts.read(workspace))
         except rendering.RenderError as exc:
             raise HTTPException(400, str(exc)) from None
         except Exception:
@@ -637,11 +664,122 @@ def get_render(job_id: str):
         raise HTTPException(409, "ترجمه تغییر کرده است؛ دوباره نمایش را اجرا کنید.") from None
     if translation["stale"] or not _clean_stamp_matches(workspace, translation):
         raise HTTPException(409, "ترجمه یا پاک‌سازی تغییر کرده است؛ دوباره نمایش را اجرا کنید.")
-    try:
-        (workspace / "render-meta.json").read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise HTTPException(404, "پیش‌نمایش ترجمه موجود نیست.") from None
+    if not _render_layout_matches(workspace):
+        raise HTTPException(409, "چیدمان متن تغییر کرده است؛ دوباره نمایش را اجرا کنید.")
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+class LayoutInput(BaseModel):
+    """چیدمان دستی متن‌ها: کلید = شمارهٔ بلوک، مقدار = فونت/اندازه/مرکز/چرخش."""
+
+    blocks: dict[str, dict] = Field(default_factory=dict)
+
+
+def _layout_worker(clean_path: Path, translations: dict, blocks: list, layout: dict) -> list[dict]:
+    """محاسبهٔ چیدمانِ هر متن روی تصویر پاک‌شده (همان چیزی که درج می‌شود)."""
+    with Image.open(clean_path) as base:
+        return rendering.plan_blocks(base, blocks, translations, _font_paths(),
+                                     layout, _font_files())
+
+
+def _layout_blocks(job_id: str, workspace: Path, translation: dict, blocks: list,
+                   layout: dict) -> list[dict]:
+    entries = _layout_worker(workspace / "clean.png", translation["translations"],
+                             blocks, layout)
+    result = []
+    for entry in entries:
+        override = layout.get(str(entry["number"])) or {}
+        result.append({
+            "number": entry["number"],
+            "kind": entry["kind"],
+            "kindLabel": entry.get("kindLabel") or entry["kind"],
+            "text": entry["text"],
+            "box": entry["box"],
+            "bbox": entry["bbox"],
+            "area": entry["area"],
+            "lines": entry["lines"],
+            "size": entry["size"],
+            "center": entry["center"],
+            "rotation": entry["rotation"],
+            "font": override.get("font"),
+            "auto": entry["auto"],
+        })
+    return result
+
+
+@app.get("/api/jobs/{job_id}/layout")
+async def read_layout(job_id: str) -> dict:
+    """چیدمان هر متن درج‌شده: کادر، اندازه، مرکز و چرخشِ فعلی + فهرست فونت‌ها."""
+    async with _ocr_lock:
+        workspace = workspace_for(job_id)
+        translation = read_translation(job_id)
+        if translation["stale"]:
+            raise HTTPException(409, "OCR تغییر کرده است؛ ترجمه را دوباره بررسی و ذخیره کنید.")
+        if not (workspace / "clean.png").is_file() or not _clean_stamp_matches(workspace, translation):
+            raise HTTPException(409, "ابتدا پاک‌سازی را با همین ترجمه اجرا کنید.")
+        source = get_ocr(job_id)
+        state = get_job(job_id)
+        layout = layouts.read(workspace)
+        try:
+            blocks = translation_blocks(job_id, source["lines"])
+            items = await run_native_safely(_layout_blocks, job_id, workspace, translation,
+                                            blocks, layout)
+        except rendering.RenderError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(500, "محاسبهٔ چیدمان متن ناموفق بود.") from None
+        return {
+            "jobId": job_id,
+            "width": state.get("width"),
+            "height": state.get("height"),
+            "blocks": items,
+            "layout": layout,
+            "fonts": [{"id": font["id"], "name": font["name"], "file": font["file"]}
+                      for font in fonts.list_fonts() if font.get("id")],
+        }
+
+
+@app.put("/api/jobs/{job_id}/layout")
+def write_layout(job_id: str, body: LayoutInput) -> dict:
+    """ذخیرهٔ چیدمان دستی؛ خروجی رندر کهنه می‌شود و باید دوباره ساخته شود."""
+    workspace = workspace_for(job_id)
+    source = get_ocr(job_id)
+    translation = read_translation(job_id)
+    if translation["stale"]:
+        raise HTTPException(409, "OCR تغییر کرده است؛ ترجمه را دوباره بررسی و ذخیره کنید.")
+    known = {str(item["number"]) for item in translation_blocks(job_id, source["lines"])}
+    known_fonts = set(_font_files())
+    for number, value in body.blocks.items():
+        if number not in known:
+            raise HTTPException(400, "ناحیهٔ انتخاب‌شده در این کار وجود ندارد.")
+        chosen = (value or {}).get("font") if isinstance(value, dict) else None
+        if isinstance(chosen, str) and chosen and chosen not in known_fonts:
+            raise HTTPException(400, "فونت انتخاب‌شده نصب نیست.")
+    saved = layouts.write(workspace, body.blocks)
+    return {"jobId": job_id, "layout": saved, "blocks": len(saved),
+            "message": "چیدمان متن‌ها ذخیره شد؛ برای دیدن نتیجه دوباره درج کنید."}
+
+
+@app.delete("/api/jobs/{job_id}/layout")
+def reset_layout(job_id: str) -> dict:
+    """پاک‌کردن همهٔ تنظیم‌های دستی و برگشت به چیدمان خودکار."""
+    workspace_for(job_id)
+    layouts.clear(workspace_for(job_id))
+    return {"jobId": job_id, "layout": {}, "message": "چیدمان به حالت خودکار برگشت."}
+
+
+@app.get("/api/fonts/{font_id}/file")
+def font_file(font_id: str):
+    """فایل فونت برای پیش‌نمایش دقیق در ویرایشگر (هر فونت نصب‌شده یا همراه برنامه)."""
+    for font in fonts.list_fonts():
+        if font.get("id") == font_id and font.get("path"):
+            path = Path(font["path"])
+            if path.is_file():
+                return FileResponse(path, media_type="font/ttf",
+                                    headers={"Cache-Control": "public, max-age=3600"})
+    raise HTTPException(404, "فونت پیدا نشد.")
 
 
 @app.get("/api/jobs/{job_id}/source.img")
