@@ -189,6 +189,23 @@ API آزمایشی `POST /api/jobs` تصویر معتبر را با وضعیت `
 ترجمه یا OCR لاتین است)، به‌جای مربع خالی، فونت جانشین (وزیرمتن) استفاده می‌شود؛
 `rendering.font_supports` این بررسی را با cmap فونت انجام می‌دهد.
 
+## دانلود نسخهٔ ویندوز (exe بدون نصب)
+
+بستهٔ آمادهٔ ویندوز ۶۴بیتی (همراه مدل OCR، فونت‌ها و رابط ساخته‌شده) در صفحهٔ
+[Releases](https://github.com/TnixMrrMohi/T-4-Translate/releases) هست: فایل
+`T4Translate-<build>-windows-x64.zip` را دانلود کنید، **کامل** از حالت فشرده خارج کنید و
+`T4Translate.exe` را اجرا کنید (فقط exe را جدا نکنید).
+
+ساخت این بسته در GitHub Actions انجام می‌شود (`.github/workflows/ci.yml`) و شامل تست دود است:
+سرور محلی، رابط، بارگذاری مدل OCR، پیدا شدن فونت‌ها و رندر یک متن فارسی. برای ساخت دستی:
+
+```bash
+gh workflow run ci.yml --ref <branch>
+```
+
+یا اجرای دستی همان دستورهای PyInstaller که در `ci.yml` آمده روی ویندوز؛ پایتون ۳٫۱۱ و
+Node.js 20 لازم است.
+
 ## زیرساخت لازم (رم و CPU)
 
 عددهای واقعی و جدول حداقل/پیشنهادی در [`docs/requirements.md`](docs/requirements.md) آمده است.

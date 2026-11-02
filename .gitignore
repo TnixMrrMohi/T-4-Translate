@@ -14,3 +14,8 @@ google_drive/
 
 # Temp build artifacts
 /tmp/
+
+# Windows build outputs
+T4Translate-*-windows-x64.zip
+backend-tests.log
+build/

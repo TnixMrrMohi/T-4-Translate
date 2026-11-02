@@ -150,6 +150,7 @@ def test_spiky_bubble_keeps_text_inside_a_smaller_area():
 
 def test_font_without_latin_falls_back_instead_of_tofu():
     """فونت مانهوا که حروف لاتین ندارد نباید جای متن لاتین مربع خالی بسازد."""
+    pytest.importorskip("fontTools")  # بدون fontTools تشخیص پوشش گلیف ممکن نیست
     affsaneh = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "AFSANEH.ttf"
     if not affsaneh.is_file():
         pytest.skip("فونت افسانه در مخزن نیست")

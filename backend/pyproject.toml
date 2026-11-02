@@ -17,8 +17,9 @@ ocr-experimental = [
     "opencv-python==4.10.0.84",
     "arabic-reshaper==3.0.0",
     "python-bidi==0.6.6",
+    "fonttools==4.59.1",
 ]
-test = ["pytest==8.3.5", "httpx==0.28.1"]
+test = ["pytest==8.3.5", "httpx==0.28.1", "fonttools==4.59.1"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
