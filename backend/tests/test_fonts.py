@@ -1,5 +1,6 @@
 """آزمون فونت‌ها: نصب، فهرست و تطبیق با فونت پیشنهادی هر نوع بالن."""
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -233,3 +234,22 @@ def test_zip_upload_endpoint_installs_every_font(client, tmp_path):
     assert {font["id"] for font in body["fonts"]} == {"Afsaneh", "Koodak"}
     listed = client.get("/api/fonts").json()
     assert {"Afsaneh", "Koodak"} <= {font["id"] for font in listed["fonts"]}
+
+
+def test_assets_fonts_folder_is_used_as_canonical_source(tmp_path, monkeypatch):
+    """بستهٔ assets/fonts (نسخهٔ کانونیکال مخزن) هم خوانده می‌شود و تکراری‌ها یکی می‌شوند."""
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    assets = fonts.repo_root() / "assets" / "fonts"
+    assert assets.is_dir(), "assets/fonts باید در مخزن باشد"
+    listed = fonts.list_fonts()
+    assert any(Path(font["path"]).parent == assets for font in listed)
+    keys = [fonts.normalize(font["family"]) + fonts.normalize(font["style"]) for font in listed]
+    assert len(keys) == len(set(keys))     # هر فونت فقط یک بار
+
+
+def test_missing_font_falls_back_to_vazirmatn_only(tmp_path, monkeypatch):
+    """دستهٔ «نامشخص» نباید فونت یک بالن دیگر را قرض بگیرد."""
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    resolved = fonts.resolve_map()["unknown"]
+    assert resolved["fallback"] is True
+    assert fonts.normalize(resolved["font"]["family"]).startswith("vazirmatn")

@@ -8,3 +8,9 @@ dist/
 
 # User-supplied reference images; keep out of Git.
 samples/private/
+
+# Google Drive download cache (original Fonts.rar kept in assets/archives/)
+google_drive/
+
+# Temp build artifacts
+/tmp/

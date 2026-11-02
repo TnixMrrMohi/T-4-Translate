@@ -55,11 +55,22 @@ def bundled_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent / "frontend" / "public" / "fonts"
 
 
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent
+
+
 def bundled_dirs() -> list[Path]:
-    """پوشهٔ فونت همراه برنامه و زیرپوشهٔ فونت‌های مانهوا (`fonts/ma`)."""
-    base = bundled_dir()
-    directories = [base]
-    if base.is_dir():
+    """پوشه‌های فونتی که همراه مخزن/برنامه‌اند.
+
+    * `assets/fonts` — نسخهٔ کانونیکال بک‌اند
+    * `frontend/public/fonts` — فونت همراه برنامه (وزیرمتن)
+    * زیرپوشه‌ها (`persian-pack`, `ma` و…) — بسته‌های فونت مانهوا
+    """
+    directories: list[Path] = []
+    for base in (repo_root() / "assets" / "fonts", bundled_dir()):
+        if not base.is_dir():
+            continue
+        directories.append(base)
         directories += [path for path in sorted(base.iterdir()) if path.is_dir()]
     return directories
 
@@ -175,16 +186,23 @@ def _match(suggestion: str, fonts: list[dict]) -> dict | None:
 
 
 def fallback_font(bold: bool = False) -> dict | None:
-    """وزیرمتنِ همراه برنامه؛ اگر نبود، هر فونت موجود."""
-    fonts = [font for font in list_fonts() if font["bundled"]]
+    """وزیرمتنِ همراه برنامه؛ اگر نبود، فونت خودِ برنامه و در نهایت هر فونت موجود."""
+    fonts = list_fonts()
     preferred = "bold" if bold else "regular"
-    for font in fonts:
+    vazir = [font for font in fonts if normalize(font["family"]).startswith("vazirmatn")]
+    for font in vazir:
         if normalize(font["style"]) == preferred:
             return font
-    if fonts:
-        return fonts[0]
-    available = list_fonts()
-    return available[0] if available else None
+    if vazir:
+        return vazir[0]
+    # فونت‌های «خود برنامه» (نه بسته‌های مانهوا) شایسته‌ترین جانشین‌اند.
+    own = [font for font in fonts if Path(font["path"]).parent == bundled_dir()]
+    for font in own:
+        if normalize(font["style"]) == preferred:
+            return font
+    if own:
+        return own[0]
+    return fonts[0] if fonts else None
 
 
 def resolve_map() -> dict[str, dict]:
