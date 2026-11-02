@@ -1,14 +1,20 @@
 name: Windows build and tests
 
-# اجرای خودکار روی هر push و PR؛ اجرای دستی (workflow_dispatch) علاوه بر تست و ساخت،
-# یک بستهٔ ZIP قابل دانلود می‌سازد و آن را به یک GitHub Release می‌چسباند.
+# اجرای خودکار روی هر push و PR. علاوه بر آن، با تگ `v*` یا اجرای دستی
+# (workflow_dispatch) یک بستهٔ ZIP قابل دانلود ساخته و به GitHub Release چسبانده می‌شود.
 on:
   push:
+    branches: ['**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write  # فقط برای ساخت ریلیز در اجرای دستی لازم است
+  contents: write  # فقط برای ساخت ریلیز لازم است
+
+env:
+  # ساخت ریلیز فقط برای تگ یا اجرای دستی
+  RELEASE: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
   windows:
@@ -96,7 +102,7 @@ jobs:
           retention-days: 30
 
       - name: Package download bundle
-        if: github.event_name == 'workflow_dispatch'
+        if: env.RELEASE == 'true'
         shell: pwsh
         run: |
           Copy-Item packaging/README-Windows.txt 'dist/T4Translate/README-نصب.txt'
@@ -104,13 +110,14 @@ jobs:
           Get-Item "T4Translate-${{ github.run_number }}-windows-x64.zip" | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
 
       - name: Publish release with the built app
-        if: github.event_name == 'workflow_dispatch'
+        if: env.RELEASE == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "build-${{ github.run_number }}" `
+          $tag = if ("${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true") { "${{ github.ref_name }}" } else { "build-${{ github.run_number }}" }
+          gh release create $tag `
             "T4Translate-${{ github.run_number }}-windows-x64.zip" `
             --repo "${{ github.repository }}" `
-            --title "T-4 Translate — بستهٔ ویندوز (build ${{ github.run_number }})" `
+            --title "T-4 Translate — بستهٔ ویندوز ($tag)" `
             --notes "بستهٔ خودکار ویندوز ۶۴بیتی. فایل ZIP را دانلود کنید، کامل از حالت فشرده خارج کنید و T4Translate.exe را اجرا کنید. تست دودِ بسته (سرور، رابط، مدل OCR، فونت‌ها و رندر فارسی) در همین اجرا موفق بوده است."

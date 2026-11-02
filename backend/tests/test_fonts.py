@@ -253,3 +253,17 @@ def test_missing_font_falls_back_to_vazirmatn_only(tmp_path, monkeypatch):
     resolved = fonts.resolve_map()["unknown"]
     assert resolved["fallback"] is True
     assert fonts.normalize(resolved["font"]["family"]).startswith("vazirmatn")
+
+
+def test_app_roots_include_pyinstaller_meipass(monkeypatch, tmp_path):
+    """در بستهٔ PyInstaller فایل‌های همراه در `_MEIPASS` هستند، نه کنار ماژول برنامه."""
+    import sys
+
+    pack = tmp_path / "frontend" / "public" / "fonts" / "persian-pack"
+    pack.mkdir(parents=True)
+    (pack / "Some Font.ttf").write_bytes((fonts.bundled_dir() / "Vazirmatn-Regular.ttf").read_bytes()[:1024])
+
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert tmp_path in fonts.app_roots()
+    assert fonts.bundled_dir() == tmp_path / "frontend" / "public" / "fonts"
+    assert pack in fonts.bundled_dirs()

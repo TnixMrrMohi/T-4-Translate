@@ -50,9 +50,30 @@ def fonts_dir() -> Path:
     return root / "fonts"
 
 
+def app_roots() -> list[Path]:
+    """ریشه‌هایی که فایل‌های همراه ممکن است کنارشان باشند.
+
+    در بستهٔ PyInstaller، فایل‌های `--add-data` داخل `sys._MEIPASS` می‌نشینند ولی ماژول
+    برنامه در `_internal/app` است؛ پس ریشهٔ پیش‌فرض (سه پله بالاتر از `fonts.py`)
+    پوشهٔ `dist/T4Translate` می‌شود، نه `_MEIPASS`. هر دو بررسی می‌شوند.
+    """
+    import sys
+
+    roots: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass))
+    roots.append(repo_root())
+    return roots
+
+
 def bundled_dir() -> Path:
-    """فونت همراه برنامه در مخزن (وزیرمتن)."""
-    return Path(__file__).resolve().parent.parent.parent / "frontend" / "public" / "fonts"
+    """فونت همراه برنامه (وزیرمتن) در همان ریشه‌ای که واقعاً وجود دارد."""
+    for root in app_roots():
+        candidate = root / "frontend" / "public" / "fonts"
+        if candidate.is_dir():
+            return candidate
+    return app_roots()[-1] / "frontend" / "public" / "fonts"
 
 
 def repo_root() -> Path:
@@ -64,14 +85,20 @@ def bundled_dirs() -> list[Path]:
 
     * `assets/fonts` — نسخهٔ کانونیکال بک‌اند
     * `frontend/public/fonts` — فونت همراه برنامه (وزیرمتن)
-    * زیرپوشه‌ها (`persian-pack`, `ma` و…) — بسته‌های فونت مانهوا
+    * زیرپوشه‌ها (`persian-pack` و…) — بسته‌های فونت مانهوا
     """
     directories: list[Path] = []
-    for base in (repo_root() / "assets" / "fonts", bundled_dir()):
-        if not base.is_dir():
-            continue
-        directories.append(base)
-        directories += [path for path in sorted(base.iterdir()) if path.is_dir()]
+    seen: set[Path] = set()
+    for root in app_roots():
+        for base in (root / "assets" / "fonts", root / "frontend" / "public" / "fonts"):
+            if not base.is_dir() or base in seen:
+                continue
+            seen.add(base)
+            directories.append(base)
+            for path in sorted(base.iterdir()):
+                if path.is_dir() and path not in seen:
+                    seen.add(path)
+                    directories.append(path)
     return directories
 
 
