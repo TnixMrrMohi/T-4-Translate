@@ -40,7 +40,9 @@
 .modal-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .modal-actions button,.modal-actions a{font:inherit;font-size:13px;font-weight:bold;padding:8px 12px;border-radius:8px;background:#123;color:#9bf3cc;border:1px solid #00ffcc60;cursor:pointer;text-decoration:none}
 .modal-actions button:disabled{opacity:.45;cursor:not-allowed}
-.modal-stage{flex:1;overflow:auto;display:flex;justify-content:center;align-items:flex-start;background:#050505;border:1px solid #00ffcc30;border-radius:12px;padding:8px}
+/* direction:ltr تا scrollLeft در حالت راست‌به‌چپ علامت/جهت عوض نکند؛ محتوای
+   صحنه تصویر است و متنی ندارد که جهت بگیرد. حساب پیمایش روی همین پایه است. */
+.modal-stage{flex:1;overflow:auto;direction:ltr;display:flex;justify-content:center;align-items:flex-start;background:#050505;border:1px solid #00ffcc30;border-radius:12px;padding:8px}
 .modal-stage:not(.fit){display:block}
 .modal-stage img{display:block;margin:0 auto;background:#fff}
 .modal-stage.fit{overflow:hidden;align-items:center}

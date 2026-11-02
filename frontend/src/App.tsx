@@ -353,16 +353,26 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   const close = () => {
     setOpen(false);
     setFocusedLabel(null);
+    scrollTarget.current = null;
     window.setTimeout(() => thumbRef.current?.focus(), 0);
   };
   // پیش‌نمایش همیشه کل صفحه را نشان می‌دهد (حتی صفحهٔ ۱۵۰۰۰ پیکسلی که باریک می‌شود)
   // و برای دیدن جزئیات، مودال با زوم و «عرض کامل» باز می‌شود.
   const tall = aspect > 2.5;
-  const openModal = () => {setOpen(true); setFit(true); setZoom(1); setFocusedLabel(null);};
+  const openModal = () => {setOpen(true); setFit(true); setZoom(1); setFocusedLabel(null); scrollTarget.current = null;};
 
   // «برو سراغ این ناحیه»: با هر کلیک روی یک ناحیه، مودال باز می‌شود و بلافاصله
   // روی همان ناحیه زوم و پیمایش می‌شود تا معلوم باشد کدام ناحیه است.
   const pendingFocus = useRef<AreaFocus | null>(null);
+  // نقطهٔ مقصد پیمایش تا وقتی تصویر کامل بار آمده و ارتفاعش معلوم شده باشد.
+  const scrollTarget = useRef<{top: number; left: number} | null>(null);
+  const applyScrollTarget = () => {
+    const target = scrollTarget.current;
+    const stage = stageRef.current;
+    if (!target || !stage) return;
+    stage.scrollTop = target.top;
+    stage.scrollLeft = target.left;
+  };
   useEffect(() => {
     if (!focusRequest) return;
     pendingFocus.current = focusRequest;
@@ -389,11 +399,11 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
       maxZoom: MAX_ZOOM,
     });
     setZoom(view.zoom);
+    scrollTarget.current = {top: view.scrollTop, left: view.scrollLeft};
     const frame = window.requestAnimationFrame(() => {
-      const live = stageRef.current;
-      if (!live) return;
-      live.scrollTop = view.scrollTop;
-      live.scrollLeft = view.scrollLeft;
+      applyScrollTarget();
+      // بار دوم: بعد از این‌که عرض جدید تصویر در چیدمان نشست.
+      window.requestAnimationFrame(applyScrollTarget);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open, focusRequest?.nonce]);
@@ -403,12 +413,14 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   const zoomed = !fit;
   const zoomIn = () => {
     setFocusedLabel(null);
+    scrollTarget.current = null;
     if (fit) {setFit(false); setZoom(FIRST_ZOOM); return;}
     const next = ZOOM_LADDER.find(step => step > zoom + 1e-9);
     if (next !== undefined) setZoom(next);
   };
   const zoomOut = () => {
     setFocusedLabel(null);
+    scrollTarget.current = null;
     if (fit) return;
     const previous = [...ZOOM_LADDER].reverse().find(step => step < zoom - 1e-9);
     if (previous === undefined) {setFit(true); setZoom(1); return;} // پایان پله‌ها: تناسب صفحه
@@ -419,8 +431,8 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
     if (zoomed && zoom >= LAST_ZOOM - 1e-9) {setFit(true); setZoom(1); return;}
     zoomIn();
   };
-  const showWidth = () => {setFit(false); setZoom(1); setFocusedLabel(null);};
-  const showFit = () => {setFit(true); setZoom(1); setFocusedLabel(null);};
+  const showWidth = () => {setFit(false); setZoom(1); setFocusedLabel(null); scrollTarget.current = null;};
+  const showFit = () => {setFit(true); setZoom(1); setFocusedLabel(null); scrollTarget.current = null;};
   const toggleLabel = zoomed ? 'تصویر: پلهٔ بعدی زوم' : 'تصویر: زوم پله‌پله از ۵۰٪';
 
   // اگر بندانگشتی نیاید (۴۰۴/شبکه)، یک‌بار خودکار دوباره خواسته و بعد پیام روشن
@@ -546,6 +558,8 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
                 onLoad={() => {
                   // نسخهٔ کامل ساخته شد؛ بندانگشتی هم دوباره خواسته می‌شود.
                   if (thumbFailed) {setThumbFailed(false); setThumbRetry(value => value + 1);}
+                  // ارتفاع واقعی تصویر تازه معلوم شده؛ پیمایش ناحیه دوباره می‌نشیند.
+                  applyScrollTarget();
                 }}
               />
             </div>
