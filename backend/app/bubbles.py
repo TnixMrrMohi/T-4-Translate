@@ -754,6 +754,10 @@ def overlay(path: Path, document: dict, max_side: int = 1800) -> Image.Image:
 
 
 # ---------------------------------------------------------------- بلوک‌ها
+AREA_SLACK = 2.0        # تحمل چند پیکسلی وقتی کادر شکل باید کادر متن را در بر بگیرد
+AREA_MAX_WIDTH_RATIO = 8.0    # کادر شکل نباید بی‌اندازه پهن‌تر از کادر متن باشد
+AREA_MAX_HEIGHT_RATIO = 10.0  # و نه بی‌اندازه بلندتر (نشانهٔ تشخیص نادرست)
+AREA_MAX_RATIO = 40.0         # و نه بی‌اندازه بزرگ‌تر از نظر مساحت
 OUTSIDE_GROUP_GAP = 1.8  # فاصلهٔ عمودی مجاز (برابر ارتفاع خط) برای یک بلوک بیرون بالن
 
 
@@ -797,6 +801,11 @@ def _block(numbers: list[int], by_number: dict, kind: str, bbox: list, fill: flo
 
     کادر تشخیص بالن [x, y, w, h] است و کادر خطوط [چپ، بالا، راست، پایین]؛ اگر این
     دو مستقیم با هم ترکیب شوند، عرض/ارتفاع متن غلط می‌شود و ترجمه جای خودش نمی‌نشیند.
+
+    `bbox` جای *متن* است (برای ترتیب و مرجع)، و `area` کل فضای *شکلِ* بالن داخل
+    همان کادر. اندازهٔ قلم بر اساس `area` انتخاب می‌شود؛ وگرنه قلم به ارتفاع
+    متن اصلی (که معمولاً یک یا دو خط نازک است) محدود می‌شد و ناگهان خیلی ریز
+    درمی‌آمد.
     """
     meta = BUBBLE_TYPES.get(kind, BUBBLE_TYPES["unknown"])
     ordered = sorted(numbers, key=lambda number: (
@@ -804,9 +813,11 @@ def _block(numbers: list[int], by_number: dict, kind: str, bbox: list, fill: flo
         (_line_box(by_number[number]) or (0, 0, 0, 0))[2]))
     boxes = [box for box in (_line_box(by_number[number]) for number in ordered) if box]
     box = []
+    shape_box = []
     if len(bbox) == 4 and all(isinstance(value, (int, float)) for value in bbox):
         left, top, width, height = [float(value) for value in bbox]
         box = [left, top, left + width, top + height]
+        shape_box = list(box)
     if boxes:
         union = [min(b[2] for b in boxes), min(b[0] for b in boxes),
                  max(b[3] for b in boxes), max(b[1] for b in boxes)]
@@ -820,6 +831,22 @@ def _block(numbers: list[int], by_number: dict, kind: str, bbox: list, fill: flo
             if box[2] - box[0] < 24 or box[3] - box[1] < 24:
                 box = union
     box = [round(value) for value in box]
+    # فضای شکلِ بالن برای اندازهٔ قلم؛ اگر کادر متن را در بر نگیرد یا بی‌اندازه
+    # بزرگ‌تر باشد (تشخیص نادرست)، نادیده گرفته می‌شود.
+    area = None
+    if box and len(shape_box) == 4:
+        shape_width = shape_box[2] - shape_box[0]
+        shape_height = shape_box[3] - shape_box[1]
+        text_width = max(1.0, box[2] - box[0])
+        text_height = max(1.0, box[3] - box[1])
+        text_area = text_width * text_height
+        contains_text = (shape_box[0] <= box[0] + AREA_SLACK and shape_box[1] <= box[1] + AREA_SLACK
+                         and shape_box[2] >= box[2] - AREA_SLACK and shape_box[3] >= box[3] - AREA_SLACK)
+        if (shape_width > 8 and shape_height > 8 and contains_text
+                and shape_width / text_width <= AREA_MAX_WIDTH_RATIO
+                and shape_height / text_height <= AREA_MAX_HEIGHT_RATIO
+                and (shape_width * shape_height) / text_area <= AREA_MAX_RATIO):
+            area = [round(value) for value in shape_box]
     text = " ".join(str(by_number[number].get("text", "")).strip() for number in ordered).strip()
     return {
         "lines": ordered,
@@ -829,6 +856,8 @@ def _block(numbers: list[int], by_number: dict, kind: str, bbox: list, fill: flo
         "tone": meta.get("tone", ""),
         "fonts": meta["fonts"],
         "bbox": box,
+        # کادر شکل (بالن) برای اندازهٔ قلم؛ None یعنی فقط کادر متن در دست است.
+        "area": area,
         # نسبت مساحت شکل به کادرش؛ برای شکل‌های دندانه‌دار متن باید جمع‌تر بنشیند.
         "fill": fill,
     }

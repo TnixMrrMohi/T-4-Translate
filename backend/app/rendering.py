@@ -11,7 +11,7 @@ import math
 from functools import lru_cache
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageStat
 
 
 class RenderError(Exception):
@@ -22,6 +22,16 @@ MAX_FONT_SIZE = 96
 MIN_FONT_SIZE = 8
 LINE_HEIGHT_RATIO = 1.45
 PADDING_RATIO = 0.08
+# وقتی کادر شکلِ بالن در دست نیست، کادر متنِ OCR کمی بزرگ‌تر می‌شود؛ کادر دقیقِ
+# حروف لاتین برای ترجمهٔ فارسیِ بلندتر تنگ است و قلم را ناگهان خیلی ریز می‌کند.
+TEXT_BOX_GROW_X = 1.10
+TEXT_BOX_GROW_Y = 1.40
+# بزرگ‌شدن کادر متن تا جایی که پس‌زمینهٔ یکدست ادامه دارد (حداکثر تا این نسبت‌ها).
+GROW_LIMIT_X = 1.6
+GROW_LIMIT_Y = 2.6
+GROW_STEP = 3
+GROW_TOLERANCE = 26.0
+GROW_MATCH_RATIO = 0.85
 
 
 def font_candidates() -> list[Path]:
@@ -235,6 +245,109 @@ def _draw_box(canvas, draw, box, text: str, path: str | None = None,
     return True
 
 
+
+
+def _box_background(canvas: Image.Image, box) -> tuple[int, int, int] | None:
+    """میانگین رنگ حلقهٔ باریکِ بیرون کادر؛ معیار «همین پس‌زمینه» است."""
+    left, top, right, bottom = box
+    outer = (max(0, left - 3), max(0, top - 3), min(canvas.width, right + 3), min(canvas.height, bottom + 3))
+    if outer[2] <= outer[0] or outer[3] <= outer[1]:
+        return None
+    region = canvas.crop(outer).convert("RGB")
+    mask = Image.new("L", region.size, 255)
+    ImageDraw.Draw(mask).rectangle(
+        [left - outer[0], top - outer[1], right - outer[0] - 1, bottom - outer[1] - 1], fill=0)
+    statistic = ImageStat.Stat(region, mask)
+    if not statistic.count or not statistic.count[0]:
+        return None
+    return tuple(int(round(value)) for value in statistic.mean)
+
+
+def _strip_matches(canvas: Image.Image, strip, background, tolerance: float = GROW_TOLERANCE,
+                   ratio: float = GROW_MATCH_RATIO) -> bool:
+    """آیا نوار تازه‌اضافه‌شده هم‌رنگ پس‌زمینه است؟ (اگر نه، کادر بزرگ‌تر نمی‌شود)"""
+    if strip[2] <= strip[0] or strip[3] <= strip[1]:
+        return False
+    band = canvas.crop(strip).convert("RGB")
+    reference = Image.new("RGB", band.size, background)
+    histogram = ImageChops.difference(band, reference).convert("L").histogram()
+    total = sum(histogram)
+    if not total:
+        return False
+    return sum(histogram[: int(tolerance)]) / total >= ratio
+
+
+def _grow_to_background(canvas: Image.Image, box) -> tuple[int, int, int, int]:
+    """کادر متن را تا لبهٔ ناحیهٔ یکدستِ پس‌زمینه بزرگ می‌کند.
+
+    کادر OCR دور حروف لاتین تنگ است و برای ترجمهٔ فارسی همان بالن جای کافی
+    نمی‌دهد؛ با همین رشدِ مبتنی بر پیکسل، قلم هم‌اندازهٔ خودِ بالن می‌شود بدون
+    اینکه از شکل بیرون بزند.
+    """
+    left, top, right, bottom = [int(value) for value in box]
+    background = _box_background(canvas, (left, top, right, bottom))
+    if background is None:
+        return left, top, right, bottom
+    width, height = right - left, bottom - top
+    max_extra_x = int(round(width * (GROW_LIMIT_X - 1) / 2))
+    max_extra_y = int(round(height * (GROW_LIMIT_Y - 1) / 2))
+    grown = [left, top, right, bottom]
+    for side, limit in ((0, max_extra_x), (1, max_extra_y), (2, max_extra_x), (3, max_extra_y)):
+        extra = 0
+        while extra < limit:
+            step = min(GROW_STEP, limit - extra)
+            candidate = list(grown)
+            candidate[side] += -step if side in (0, 1) else step
+            if side in (0, 1) and candidate[side] < 0:
+                break
+            if side == 2 and candidate[2] > canvas.width:
+                break
+            if side == 3 and candidate[3] > canvas.height:
+                break
+            strip = ((grown[0], grown[1] - step, grown[2], grown[1]) if side == 1 else
+                     (grown[0], grown[3], grown[2], grown[3] + step) if side == 3 else
+                     (grown[0] - step, grown[1], grown[0], grown[3]) if side == 0 else
+                     (grown[2], grown[1], grown[2] + step, grown[3]))
+            if not _strip_matches(canvas, strip, background):
+                break
+            grown = candidate
+            extra += step
+    return tuple(grown)
+
+
+def _grow_text_box(box, canvas_width: int, canvas_height: int, grow_x: float,
+                   grow_y: float) -> tuple[int, int, int, int]:
+    """کادر متن را کمی بزرگ‌تر می‌کند و داخل تصویر نگه می‌دارد."""
+    left, top, right, bottom = box
+    center_x, center_y = (left + right) / 2, (top + bottom) / 2
+    half_width = (right - left) * grow_x / 2
+    half_height = (bottom - top) * grow_y / 2
+    return (max(0, int(round(center_x - half_width))), max(0, int(round(center_y - half_height))),
+            min(canvas_width, int(round(center_x + half_width))),
+            min(canvas_height, int(round(center_y + half_height))))
+
+
+def _shape_box(block: dict, text_box, canvas_width: int, canvas_height: int):
+    """کادر شکلِ بالن (اگر معتبر باشد) برای انتخاب اندازهٔ قلم.
+
+    کادر شکل باید کادر متن را در بر بگیرد و داخل تصویر باشد؛ وگرنه None برمی‌گردد.
+    """
+    area = block.get("area")
+    if not isinstance(area, (list, tuple)) or len(area) != 4:
+        return None
+    try:
+        left, top, right, bottom = [int(round(float(value))) for value in area]
+    except (TypeError, ValueError):
+        return None
+    if right - left < 8 or bottom - top < 8:
+        return None
+    text_left, text_top, text_right, text_bottom = text_box
+    if (left > text_left + 2 or top > text_top + 2
+            or right < text_right - 2 or bottom < text_bottom - 2):
+        return None
+    return (max(0, left), max(0, top), min(canvas_width, right), min(canvas_height, bottom))
+
+
 def render_blocks(image: Image.Image, blocks: list, translations: dict,
                   fonts: dict | None = None) -> tuple[Image.Image, int]:
     """هر بلوک (بالن) را با یک متن فارسی پر می‌کند؛ خروجی: تصویر و تعداد بلوک‌های رسم‌شده.
@@ -266,10 +379,19 @@ def render_blocks(image: Image.Image, blocks: list, translations: dict,
         bottom = max(0, min(canvas.height, bottom))
         if right - left < 4 or bottom - top < 4:
             continue
-        # بالن دست‌کشیده معمولاً کمی از کادر بزرگ‌تر است؛ حاشیهٔ کوچک داخل کادر.
-        inset_x = max(2, round((right - left) * 0.04))
-        inset_y = max(2, round((bottom - top) * 0.04))
-        box = (left + inset_x, top + inset_y, right - inset_x, bottom - inset_y)
+        # اندازهٔ قلم باید به اندازهٔ «شکل بالن» بستگی داشته باشد، نه به کادر تنگِ
+        # متن اصلی؛ وگرنه متن فارسی ناگهان خیلی ریز درمی‌آید.
+        box = _shape_box(block, (left, top, right, bottom), canvas.width, canvas.height)
+        if box is None:
+            # بالن دست‌کشیده معمولاً کمی از کادر بزرگ‌تر است؛ حاشیهٔ کوچک داخل کادر.
+            inset_x = max(2, round((right - left) * 0.04))
+            inset_y = max(2, round((bottom - top) * 0.04))
+            box = (left + inset_x, top + inset_y, right - inset_x, bottom - inset_y)
+            if block.get("kind") != "outside":
+                # تا لبهٔ ناحیهٔ یکدستِ پس‌زمینه بزرگ می‌شود (تنها با پیکسل‌ها، نه حدس)
+                box = _grow_to_background(canvas, box)
+                box = _grow_text_box(box, canvas.width, canvas.height,
+                                     TEXT_BOX_GROW_X, TEXT_BOX_GROW_Y)
         if box[2] - box[0] < 8 or box[3] - box[1] < 8:
             continue
         kind = block.get("kind") or ""

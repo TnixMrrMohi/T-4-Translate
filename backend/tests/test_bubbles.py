@@ -251,3 +251,25 @@ def test_seed_point_ignores_tiny_bright_specks():
     seed = bubbles._seed_point(bright, [30, 30, 90, 90])
     blob, _, _ = bubbles._grow_from(seed, bright, 120, 120)
     assert blob is not None and int(blob.sum()) > 1000
+
+
+def test_block_area_is_the_bubble_geometry_for_font_sizing():
+    """کادر شکل (area) جدا از کادر متن نگه داشته می‌شود تا اندازهٔ قلم به بالن بستگی داشته باشد."""
+    by_number = {1: {"text": "hello", "quad": [[150, 200], [250, 200], [250, 240], [150, 240]]}}
+    block = bubbles._block([1], by_number, "speech", [100, 150, 200, 300])
+    assert block["bbox"] == [150, 200, 250, 240]           # کادر متن
+    assert block["area"] == [100, 150, 300, 450]            # کادر شکل بالن
+
+    # کادری که کادر متن را در بر نمی‌گیرد قابل اعتماد نیست.
+    block = bubbles._block([1], by_number, "speech", [220, 210, 40, 20])
+    assert block["bbox"] == [150, 200, 250, 240]
+    assert block["area"] is None
+
+    # کادر بی‌اندازه بزرگ (تشخیص نادرست) هم نادیده گرفته می‌شود.
+    block = bubbles._block([1], by_number, "speech", [0, 0, 600, 800])
+    assert block["area"] is None
+
+    # بدون بالن (مثلاً متن بیرون بالن) کادر شکل وجود ندارد.
+    block = bubbles._block([1], by_number, "outside", [])
+    assert block["bbox"] == [150, 200, 250, 240]
+    assert block["area"] is None
