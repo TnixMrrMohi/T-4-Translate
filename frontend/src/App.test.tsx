@@ -48,6 +48,8 @@ function mockApi(options: {
   updateAction?: (path: string) => unknown | undefined;
   /** تنظیم‌های آپدیت. */
   updateSettings?: unknown;
+  /** پاسخ دانلود خروجی WebP (مرحلهٔ ۵). */
+  webp?: () => Response | undefined;
 } = {}) {
   const calls: {url: string; method: string; body?: unknown}[] = [];
   let ocrDone = false;
@@ -141,6 +143,13 @@ function mockApi(options: {
       }
       if (method === 'DELETE') return json({jobId: JOB_ID, layout: {}, message: 'حالت خودکار'});
       return json(options.layout ?? {jobId: JOB_ID, width: 800, height: 600, blocks: [], layout: {}, fonts: []});
+    }
+    if (url.includes('/render.webp')) {
+      const custom = options.webp?.();
+      if (custom) return custom;
+      // امضای WebP: RIFF….WEBP
+      const bytes = new Uint8Array([82, 73, 70, 70, 36, 0, 0, 0, 87, 69, 66, 80]);
+      return new Response(new Blob([bytes]), {status: 200, headers: {'Content-Type': 'image/webp'}});
     }
     if (url.includes('/clean-areas')) {
       return json(options.cleanAreas ?? {jobId: JOB_ID, areas: [], blockCount: 0, cleaned: false});
@@ -377,6 +386,60 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     expect(screen.getByRole('img', {name: /ورودی \(تصویر اصلی\)/})).toBeInTheDocument();
     expect(screen.getByRole('img', {name: /خروجی/})).toBeInTheDocument();
     expect(screen.getByRole('button', {name: 'پردهٔ مقایسه'})).toHaveClass('is-active');
+  });
+
+  it('مرحلهٔ ۵ دکمهٔ «دانلود WebP» دارد و خروجیِ تبدیل‌شده را ذخیره می‌کند', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const {calls} = mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+      clean: true,
+      render: true,
+    });
+    const createObjectURL = vi.fn(() => 'blob:t4-webp');
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', Object.assign(URL, {createObjectURL, revokeObjectURL}));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const user = userEvent.setup();
+    render(<App />);
+
+    const button = await screen.findByRole('button', {name: 'دانلود WebP'});
+    expect(screen.getByText(/فرمت/)).toHaveTextContent('WebP');
+    await user.click(button);
+
+    await waitFor(() => {
+      const download = calls.find(call => call.url.includes('/render.webp'));
+      expect(download).toBeTruthy();
+      expect(download?.url).toContain('quality=90');
+    });
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    expect(click).toHaveBeenCalled();
+    expect(await screen.findByText(/خروجی WebP ساخته و دانلود شد/)).toBeInTheDocument();
+  });
+
+  it('اگر ساخت WebP ناموفق باشد، پیام روشن می‌آید و چیزی دانلود نمی‌شود', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+      clean: true,
+      render: true,
+      webp: () => json({detail: 'تبدیل خروجی به WebP ناموفق بود.'}, 500),
+    });
+    const createObjectURL = vi.fn(() => 'blob:t4-webp');
+    vi.stubGlobal('URL', Object.assign(URL, {createObjectURL, revokeObjectURL: vi.fn()}));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', {name: 'دانلود WebP'}));
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText('تبدیل خروجی به WebP ناموفق بود.')).toBeInTheDocument();
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(click).not.toHaveBeenCalled();
   });
 
   it('پردهٔ مقایسه با صفحه‌کلید کار می‌کند و کنترل‌های اضافی حذف شده‌اند', async () => {

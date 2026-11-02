@@ -113,6 +113,18 @@ const TRANSLATION_PROMPT = [
 
 const TOAST_MS = 2500;
 
+/** کیفیت تبدیل خروجی به WebP؛ همان چیزی که سرور هم پیش‌فرض می‌گیرد. */
+const WEBP_QUALITY = 90;
+
+/** حجم فایل با یک رقم اعشار و رقم‌های فارسی (برای پیام دانلود). */
+function formatFileSize(bytes: number): string {
+  const kilobytes = bytes / 1024;
+  const label = kilobytes >= 1024
+    ? `${(kilobytes / 1024).toFixed(1)} مگابایت`
+    : `${Math.max(1, Math.round(kilobytes)).toLocaleString('fa-IR')} کیلوبایت`;
+  return label.replace(/\d/g, digit => '۰۱۲۳۴۵۶۷۸۹'[Number(digit)]);
+}
+
 /** کپی در کلیپ‌بورد با روش جایگزین برای محیط‌های بدون Clipboard API. */
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
@@ -674,6 +686,8 @@ export function App() {
   const [areaPick, setAreaPick] = useState<number[]>([]);
   const [areasBusy, setAreasBusy] = useState(false);
   const [renderVersion, setRenderVersion] = useState(0);
+  // ساخت و دانلود خروجی WebP در مرحلهٔ ۵ (تبدیل سمت سرور انجام می‌شود).
+  const [webpBusy, setWebpBusy] = useState(false);
   // چیدمان دستی متن‌ها (فونت/اندازه/موقعیت/چرخش هر متن) در مرحلهٔ ۴.
   const [layoutDoc, setLayoutDoc] = useState<LayoutDoc | null>(null);
   const [layoutBusy, setLayoutBusy] = useState(false);
@@ -1047,6 +1061,41 @@ export function App() {
       return;
     }
     await runOcr(2);
+  }
+
+  /** خروجی نهایی را از سرور به WebP می‌گیرد و همان لحظه دانلود می‌کند. */
+  async function downloadWebp() {
+    if (!job) return;
+    setWebpBusy(true);
+    try {
+      const response = await fetch(
+        `/api/jobs/${job.jobId}/render.webp?quality=${WEBP_QUALITY}&v=${renderVersion}`);
+      if (!response.ok) {
+        let detail = 'تبدیل خروجی به WebP ناموفق بود.';
+        try {
+          const body = await response.json();
+          if (typeof body?.detail === 'string') detail = body.detail;
+        } catch {
+          // پاسخ JSON نبود؛ همان پیام پیش‌فرض می‌ماند.
+        }
+        fail(detail);
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `t4-${job.jobId}.webp`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage(`خروجی WebP ساخته و دانلود شد (${formatFileSize(blob.size)}).`);
+    } catch {
+      fail('دانلود خروجی WebP ناموفق بود؛ اتصال به سرور محلی را بررسی کنید.');
+    } finally {
+      setWebpBusy(false);
+    }
   }
 
   async function renderImage() {
@@ -2000,7 +2049,16 @@ export function App() {
                     cleanVersion={cleanVersion}
                   />
 
+                  <p className="wizard-help">
+                    خروجی نهایی با فرمت <b>WebP</b> ذخیره می‌شود: همان تصویر با حجم کم‌تر و کیفیت بالا،
+                    مناسب برای آپلود در وب‌تون.
+                  </p>
+
                   <div className="wizard-nav">
+                    <button type="button" className="ocr" disabled={busy || loadingData || webpBusy}
+                      onClick={() => void downloadWebp()}>
+                      {webpBusy ? 'در حال ساخت WebP…' : 'دانلود WebP'}
+                    </button>
                     <button type="button" className="ghost" onClick={() => goToStep(4)}>مرحلهٔ قبل (درج)</button>
                     <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void renderImage()}>درج دوبارهٔ ترجمه</button>
                     <button type="button" className="ghost" onClick={resetApp}>کار جدید</button>
