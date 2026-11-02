@@ -707,7 +707,7 @@ def _cluster(numbers: list[int], by_number: dict) -> list[list[int]]:
     return clusters
 
 
-def _block(numbers: list[int], by_number: dict, kind: str, bbox: list) -> dict:
+def _block(numbers: list[int], by_number: dict, kind: str, bbox: list, fill: float = 1.0) -> dict:
     meta = BUBBLE_TYPES.get(kind, BUBBLE_TYPES["unknown"])
     ordered = sorted(numbers, key=lambda number: (
         (_line_box(by_number[number]) or (0, 0, 0, 0))[0],
@@ -729,6 +729,8 @@ def _block(numbers: list[int], by_number: dict, kind: str, bbox: list) -> dict:
         "tone": meta.get("tone", ""),
         "fonts": meta["fonts"],
         "bbox": box,
+        # نسبت مساحت شکل به کادرش؛ برای شکل‌های دندانه‌دار متن باید جمع‌تر بنشیند.
+        "fill": fill,
     }
 
 
@@ -755,7 +757,9 @@ def blocks(document: dict, lines: list) -> list[dict]:
             for cluster in _cluster(numbers, by_number):
                 result.append(_block(cluster, by_number, "outside", []))
         else:
-            result.append(_block(numbers, by_number, bubble.get("kind", "unknown"), bubble.get("bbox") or []))
+            features = bubble.get("features") or {}
+            result.append(_block(numbers, by_number, bubble.get("kind", "unknown"),
+                                 bubble.get("bbox") or [], float(features.get("solidity") or 1.0)))
     for number in sorted(set(by_number) - seen):
         result.append(_block([number], by_number, "unknown", []))
 

@@ -141,9 +141,19 @@ def _contrast_color(image: Image.Image, box) -> tuple[int, int, int]:
     return (17, 17, 17) if mean > 128 else (245, 245, 245)
 
 
-def _draw_box(canvas, draw, box, text: str, path: str | None = None) -> bool:
-    """متن فارسی را وسط کادر می‌کشد؛ اگر جای کافی نبود False برمی‌گرداند."""
+def _draw_box(canvas, draw, box, text: str, path: str | None = None, fill: float = 1.0) -> bool:
+    """متن فارسی را وسط کادر می‌کشد؛ اگر جای کافی نبود False برمی‌گرداند.
+
+    `fill` نسبت مساحت شکل به کادر است؛ برای بالن دندانه‌دار کمتر از یک است تا متن
+    داخل دندانه‌ها و بیرون از ناحیهٔ سفید نرود.
+    """
     left, top, right, bottom = box
+    if 0.3 <= fill < 0.95:
+        shrink = 0.75 + 0.25 * (fill - 0.3) / 0.65   # بین ۰٫۷۵ و ۱ برابر کادر
+        inset_w = (right - left) * (1 - shrink) / 2
+        inset_h = (bottom - top) * (1 - shrink) / 2
+        left, top = left + inset_w, top + inset_h
+        right, bottom = right - inset_w, bottom - inset_h
     box_width = right - left
     box_height = bottom - top
     padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
@@ -204,7 +214,11 @@ def render_blocks(image: Image.Image, blocks: list, translations: dict,
         if box[2] - box[0] < 8 or box[3] - box[1] < 8:
             continue
         kind = block.get("kind") or ""
-        if _draw_box(canvas, draw, box, text, fonts.get(kind)):
+        try:
+            fill = float(block.get("fill") or 1.0)
+        except (TypeError, ValueError):
+            fill = 1.0
+        if _draw_box(canvas, draw, box, text, fonts.get(kind), fill):
             drawn += 1
     if not drawn:
         raise RenderError("هیچ ترجمه‌ای برای نمایش روی تصویر وجود ندارد.")

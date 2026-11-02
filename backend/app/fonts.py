@@ -21,6 +21,21 @@ MAX_FONT_BYTES = 24 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
 MAX_ARCHIVE_FONTS = 300
 FALLBACK_FAMILY = "vazirmatn"
+# نام‌هایی که در راهنمای PDF آمده‌اند ولی فایلشان نام دیگری دارد.
+ALIASES = {
+    "Koodak Bold Italic": ["B Elm Italic", "B Elm Border"],
+    "A Zangar": ["zangar"],
+    "Aref Graffiti": ["aref graffiti", "Arefi"],
+    "Haleh": ["B Haleh"],
+    "Setareh": ["B Setareh"],
+    "Sina": ["B Sina Bold"],
+    "Esfehan": ["B Esfehan Bold", "IRElham"],
+    "Kamran": ["IRKamran"],
+    "Jadid": ["Persian-Jadid pc"],
+    "Kourosh": ["B Kourosh"],
+    "Mitra": ["B Mitra"],
+    "Narm": ["Narm"],
+}
 
 
 class FontError(Exception):
@@ -38,6 +53,15 @@ def fonts_dir() -> Path:
 def bundled_dir() -> Path:
     """فونت همراه برنامه در مخزن (وزیرمتن)."""
     return Path(__file__).resolve().parent.parent.parent / "frontend" / "public" / "fonts"
+
+
+def bundled_dirs() -> list[Path]:
+    """پوشهٔ فونت همراه برنامه و زیرپوشهٔ فونت‌های مانهوا (`fonts/ma`)."""
+    base = bundled_dir()
+    directories = [base]
+    if base.is_dir():
+        directories += [path for path in sorted(base.iterdir()) if path.is_dir()]
+    return directories
 
 
 def normalize(name: str) -> str:
@@ -72,7 +96,8 @@ def list_fonts() -> list[dict]:
     """همهٔ فونت‌های قابل استفاده: اول فونت‌های نصب‌شدهٔ کاربر، بعد فونت همراه برنامه."""
     fonts: list[dict] = []
     seen: set[str] = set()
-    for directory, bundled in ((fonts_dir(), False), (bundled_dir(), True)):
+    directories = [(fonts_dir(), False)] + [(path, True) for path in bundled_dirs()]
+    for directory, bundled in directories:
         if not directory.is_dir():
             continue
         for path in sorted(directory.iterdir()):
@@ -94,6 +119,10 @@ def _match(suggestion: str, fonts: list[dict]) -> dict | None:
     for font in fonts:
         if wanted in font["aliases"]:
             return font
+    for alias in ALIASES.get(suggestion, []):
+        found = _match(alias, fonts)
+        if found:
+            return found
     # تطبیق نرم: «Koodak Bold» با فایلی که فقط «Koodak» دارد هم جور می‌شود.
     for font in fonts:
         alias = normalize(font["family"])

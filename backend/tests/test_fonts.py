@@ -31,15 +31,27 @@ def test_bundled_vazirmatn_is_always_listed():
 
 
 def test_every_type_resolves_to_something(tmp_path, monkeypatch):
-    """هیچ دسته‌ای بدون فونت نمی‌ماند؛ در نبود فونت پیشنهادی، وزیرمتن می‌آید."""
+    """هیچ دسته‌ای بدون فونت نمی‌ماند؛ فونت پیشنهادی PDF استفاده می‌شود."""
     monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
     resolved = fonts.resolve_map()
     assert set(resolved) >= {"speech", "shout", "hexagon", "outside"}
     for info in resolved.values():
         assert info["font"] is not None
         assert info["font"]["path"]
-    assert resolved["speech"]["fallback"] is True
+    # فونت‌های مانهوا همراه برنامه هستند، پس دسته‌ها فونت خودشان را دارند.
+    assert resolved["speech"]["fallback"] is False
+    assert fonts.normalize(resolved["speech"]["font"]["id"]) == fonts.normalize("Koodak Bold")
+    assert resolved["shout"]["font"]["id"].lower().startswith("afsa")      # Afsaneh
+    assert resolved["hexagon"]["font"]["id"].lower() == "farnaz"
     assert "Koodak Bold" in resolved["speech"]["suggestions"]
+
+
+def test_italic_suggestion_maps_to_italic_font(tmp_path, monkeypatch):
+    """PDF برای تفکر خورشیدی «Koodak Bold Italic» می‌خواهد؛ فونت ایتالیک موجود انتخاب می‌شود."""
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    solar = fonts.resolve_map()["solar"]
+    assert solar["fallback"] is False
+    assert "italic" in solar["font"]["id"].lower() or "italic" in solar["font"]["name"].lower()
 
 
 def test_installed_font_wins_for_its_type(tmp_path, monkeypatch):
@@ -47,7 +59,7 @@ def test_installed_font_wins_for_its_type(tmp_path, monkeypatch):
     fonts.install("Koodak-Bold.ttf", VAZIR_BOLD.read_bytes())
     resolved = fonts.resolve_map()
     assert resolved["speech"]["fallback"] is False
-    assert resolved["speech"]["font"]["id"] == "Koodak-Bold"
+    assert fonts.normalize(resolved["speech"]["font"]["id"]) in {"koodakbold"}
     # بقیهٔ دسته‌ها همچنان جانشین دارند و رندر نمی‌شکند.
     assert resolved["monster"]["font"] is not None
 

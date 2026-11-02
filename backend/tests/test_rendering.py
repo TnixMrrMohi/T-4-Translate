@@ -129,3 +129,19 @@ def test_render_blocks_fills_the_bubble_with_one_text():
     assert drawn == 1
     with pytest.raises(rendering.RenderError):
         rendering.render_blocks(image, blocks, {})
+
+
+def test_spiky_bubble_keeps_text_inside_a_smaller_area():
+    """برای شکل دندانه‌دار، کادر متن بر اساس نسبت پر بودن کوچک‌تر می‌شود."""
+    image = Image.new("RGB", (400, 300), "white")
+    blocks = [
+        {"number": 1, "lines": [1], "bbox": [20, 20, 380, 280], "kind": "shout", "fill": 0.62},
+        {"number": 2, "lines": [2], "bbox": [20, 20, 380, 280], "kind": "speech", "fill": 0.98},
+    ]
+    translations = {"1": "از جلوی چشمم دور شو!", "2": "از جلوی چشمم دور شو!"}
+    spiky, _ = rendering.render_blocks(image, [blocks[0]], translations)
+    round_, _ = rendering.render_blocks(image, [blocks[1]], translations)
+    spiky_ink = spiky.convert("L").point(lambda value: 255 if value < 200 else 0).getbbox()
+    round_ink = round_.convert("L").point(lambda value: 255 if value < 200 else 0).getbbox()
+    # متن شکل دندانه‌دار جمع‌تر و کوچک‌تر از همان متن در بالن گرد است.
+    assert (spiky_ink[2] - spiky_ink[0]) < (round_ink[2] - round_ink[0])
