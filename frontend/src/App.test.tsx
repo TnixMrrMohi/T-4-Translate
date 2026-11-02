@@ -209,6 +209,9 @@ describe('فهرست کارها و حذف', () => {
     await user.click(await screen.findByRole('button', {name: /^حذف کار/}));
     const dialog = await screen.findByRole('alertdialog');
     expect(within(dialog).getByText('حذف کار')).toBeInTheDocument();
+    // دیالوگ هم مثل بقیهٔ لایه‌ها روی body پورتال می‌شود، نه داخل کارت‌ها.
+    expect(dialog.closest('.wizard-card')).toBeNull();
+    expect(dialog.closest('.dialog-backdrop')?.parentElement).toBe(document.body);
     await user.click(within(dialog).getByRole('button', {name: 'نگه دار'}));
 
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
@@ -775,17 +778,43 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
     expect(dialog.closest('.workspace')).toBeNull();
     expect(dialog.closest('.wizard-card')).toBeNull();
 
-    for (const name of ['مرحلهٔ قبل', 'اجرای دوبارهٔ OCR', 'حذف کامل']) {
+    // همهٔ کنترل‌های کارت — از جمله «کپی متن» و «کپی با پرامپت» — بیرون از لایه‌اند.
+    for (const name of ['مرحلهٔ قبل', 'اجرای دوبارهٔ OCR', 'حذف کامل',
+                        'کپی متن', 'کپی با پرامپت']) {
       const button = screen.getByRole('button', {name});
       expect(dialog.contains(button)).toBe(false);
       expect(button.closest('.wizard-card')).not.toBeNull();
     }
     expect(screen.getByRole('button', {name: /جایگزینی با/})).toBeInTheDocument();
 
+    // هیچ لایه‌ای در کل صفحه داخل کارت یا ستون رندر نمی‌شود؛ قاعده برای همهٔ مودال‌ها.
+    const overlays = Array.from(document.querySelectorAll('.modal-backdrop'));
+    expect(overlays).toHaveLength(1);
+    for (const overlay of overlays) {
+      expect(overlay.parentElement).toBe(document.body);
+    }
+
     // بستن مودال، کارت و دکمه‌هایش را دست‌نخورده برمی‌گرداند.
     await user.click(within(dialog).getByRole('button', {name: 'بستن ✕'}));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByRole('button', {name: 'اجرای دوبارهٔ OCR'})).toBeInTheDocument();
+  });
+
+  it('در طول باز بودن لایه، محتوای پشت آن inert و از دید صفحه‌خوان پنهان است', async () => {
+    const root = document.createElement('div');
+    root.id = 'root';
+    document.body.appendChild(root);   // همان ریشه‌ای که اپ واقعی داخلش رندر می‌شود
+    try {
+      const user = await openPreview();
+      expect(root).toHaveAttribute('inert');
+      expect(root).toHaveAttribute('aria-hidden', 'true');
+
+      await user.click(screen.getByRole('button', {name: 'بستن ✕'}));
+      expect(root).not.toHaveAttribute('inert');
+      expect(root).not.toHaveAttribute('aria-hidden');
+    } finally {
+      root.remove();
+    }
   });
 
   it('با صفحه‌کلید (Enter) هم یک پله زوم می‌شود', async () => {

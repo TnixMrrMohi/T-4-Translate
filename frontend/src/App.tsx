@@ -243,6 +243,32 @@ function ProgressBar({progress}: {progress: Progress}) {
   );
 }
 
+// شمار لایه‌های باز؛ تا وقتی حتی یکی باز است، محتوای اپ پشت آن غیرفعال می‌ماند.
+let activeOverlays = 0;
+
+/**
+ * در طول باز بودن لایه، ریشهٔ اپ `inert` و از دید صفحه‌خوان پنهان می‌شود؛ پس هیچ
+ * دکمه‌ای از کارت مرحله‌ها نه فوکوس می‌گیرد و نه کلیک می‌شود. (رنگ‌آمیزی هم با
+ * پورتال حل شده است؛ این لایهٔ دومِ محافظت است.)
+ */
+function useOverlayIsolation() {
+  useEffect(() => {
+    const root = document.getElementById('root');
+    activeOverlays += 1;
+    if (root && activeOverlays === 1) {
+      root.setAttribute('inert', '');
+      root.setAttribute('aria-hidden', 'true');
+    }
+    return () => {
+      activeOverlays = Math.max(0, activeOverlays - 1);
+      if (root && activeOverlays === 0) {
+        root.removeAttribute('inert');
+        root.removeAttribute('aria-hidden');
+      }
+    };
+  }, []);
+}
+
 /**
  * لایهٔ تمام‌صفحه (مودال) همیشه با پورتال مستقیم روی <body> رندر می‌شود.
  *
@@ -257,9 +283,11 @@ function Overlay({label, onBackdropClick, className = 'modal-backdrop', children
   className?: string;
   children: React.ReactNode;
 }) {
+  useOverlayIsolation();
   return createPortal(
     <div
       className={className}
+      data-overlay="modal"
       role="dialog"
       aria-modal="true"
       aria-label={label}
@@ -278,7 +306,12 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   const [zoom, setZoom] = useState(1);
   const closeRef = useRef<HTMLButtonElement>(null);
   const thumbRef = useRef<HTMLButtonElement>(null);
-  const close = () => {setOpen(false); thumbRef.current?.focus();};
+  // فوکوس پس از بسته‌شدن لایه برمی‌گردد؛ کمی بعد، چون تا برداشتن inert از ریشه
+  // فوکوس روی محتوای پشتِ لایه نادیده گرفته می‌شود.
+  const close = () => {
+    setOpen(false);
+    window.setTimeout(() => thumbRef.current?.focus(), 0);
+  };
   // پیش‌نمایش همیشه کل صفحه را نشان می‌دهد (حتی صفحهٔ ۱۵۰۰۰ پیکسلی که باریک می‌شود)
   // و برای دیدن جزئیات، مودال با زوم و «عرض کامل» باز می‌شود.
   const tall = aspect > 2.5;
@@ -452,6 +485,7 @@ type DialogState = {
 function Dialog({request, onClose}: {request: DialogState; onClose: (ok: boolean) => void}) {
   const okRef = useRef<HTMLButtonElement>(null);
   const confirmKind = request.kind === 'confirm';
+  useOverlayIsolation();
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -474,7 +508,7 @@ function Dialog({request, onClose}: {request: DialogState; onClose: (ok: boolean
     else if (!event.shiftKey && document.activeElement === last) {event.preventDefault(); first.focus();}
   };
 
-  return (
+  return createPortal((
     <div
       className="dialog-backdrop"
       onClick={event => {if (event.target === event.currentTarget) onClose(false);}}
@@ -506,7 +540,7 @@ function Dialog({request, onClose}: {request: DialogState; onClose: (ok: boolean
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 export function App() {
