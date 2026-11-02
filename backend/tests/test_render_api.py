@@ -29,7 +29,7 @@ def _upload(client):
 def test_render_requires_clean_and_fresh_translation(tmp_path, monkeypatch):
     pytest.importorskip('arabic_reshaper')
     monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
-    monkeypatch.setattr(ocr, 'recognize', lambda path: [
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: [
         {'text': 'Hello', 'confidence': .9, 'quad': [[10, 10], [100, 10], [100, 60], [10, 60]]}])
     with TestClient(app) as client:
         job = _upload(client).json()['jobId']

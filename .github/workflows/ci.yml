@@ -81,6 +81,26 @@ jobs:
           --hidden-import uvicorn.lifespan.on
           desktop/launcher.py
 
+      # نسخه و مخزن داخل بسته نوشته می‌شود تا برنامه بداند نسخهٔ فعلی چیست و
+      # آپدیت را از کدام ریلیز بگیرد.
+      - name: Stamp version info
+        shell: pwsh
+        run: |
+          $tag = if ("${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true") { "${{ github.ref_name }}" } else { "build-${{ github.run_number }}" }
+          $version = $tag -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+') { $version = "0.0.0-$tag" }
+          $info = [ordered]@{
+            version = $version
+            tag     = $tag
+            repo    = "${{ github.repository }}"
+            commit  = "${{ github.sha }}"
+            builtAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+          } | ConvertTo-Json
+          Set-Content -Path 'dist/T4Translate/version.json' -Value $info -Encoding utf8
+          "T4_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "T4_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "version: $version ($tag)"
+
       - name: Smoke test packaged application
         shell: pwsh
         run: |
@@ -105,10 +125,35 @@ jobs:
         if: env.RELEASE == 'true'
         shell: pwsh
         run: |
-          $tag = if ("${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true") { "${{ github.ref_name }}" } else { "build-${{ github.run_number }}" }
           Copy-Item packaging/README-Windows.txt 'dist/T4Translate/README-نصب.txt'
-          Compress-Archive -Path 'dist/T4Translate/*' -DestinationPath "T4Translate-$tag-windows-x64.zip"
-          Get-Item "T4Translate-$tag-windows-x64.zip" | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+          Compress-Archive -Path 'dist/T4Translate/*' -DestinationPath "T4Translate-$env:T4_TAG-windows-x64.zip"
+          Get-Item "T4Translate-$env:T4_TAG-windows-x64.zip" | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+
+      # فهرست همهٔ فایل‌ها + بستهٔ تغییرات نسبت به ریلیز منتشرشدهٔ قبلی. برنامهٔ
+      # نصب‌شده با همین فهرست می‌فهمد کدام فایل‌ها عوض شده‌اند و فقط همان‌ها را
+      # دانلود می‌کند (نه بستهٔ کامل ۱۲۰ مگابایتی).
+      - name: Build update manifest and delta bundle
+        if: env.RELEASE == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path previous | Out-Null
+          gh release download --repo "${{ github.repository }}" --pattern 'update-manifest.json' --dir previous
+          if ($LASTEXITCODE -ne 0) { Write-Host 'previous release has no update-manifest.json yet' }
+          $build = @('packaging/update_manifest.py',
+                    '--dist', 'dist/T4Translate',
+                    '--version', $env:T4_VERSION,
+                    '--out', 'dist/update-manifest.json',
+                    '--summary', 'dist/update-summary.json',
+                    '--delta', "dist/update-$env:T4_TAG.zip")
+          if (Test-Path 'previous/update-manifest.json') {
+            $build += @('--previous', 'previous/update-manifest.json')
+          } else {
+            Write-Host 'no previous manifest; this release ships a full manifest'
+          }
+          python @build
+          Get-Item "dist/update-$env:T4_TAG.zip" | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,2)}}
 
       - name: Publish release with the built app
         if: env.RELEASE == 'true'
@@ -116,9 +161,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = if ("${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true") { "${{ github.ref_name }}" } else { "build-${{ github.run_number }}" }
-          gh release create $tag `
-            "T4Translate-$tag-windows-x64.zip" `
+          $assets = @("T4Translate-$env:T4_TAG-windows-x64.zip", 'dist/update-manifest.json')
+          $delta = "dist/update-$env:T4_TAG.zip"
+          if (Test-Path $delta) { $assets += $delta }
+          # بیلدهای دستی (build-*) به‌صورت prerelease منتشر می‌شوند تا جای «آخرین
+          # ریلیز» را نگیرند و به کاربران عادی به‌عنوان آپدیت پیشنهاد نشوند.
+          $flags = @()
+          if ($env:T4_TAG -like 'build-*') { $flags += '--prerelease' }
+          $notes = "بستهٔ خودکار ویندوز ۶۴بیتی. فایل ZIP را دانلود کنید، کامل از حالت فشرده خارج کنید و T4Translate.exe را اجرا کنید. تست دودِ بسته (سرور، رابط، مدل OCR، فونت‌ها و رندر فارسی) در همین اجرا موفق بوده است.`n`nبرنامه از همین ریلیز به‌روزرسانی خودکار می‌گیرد: update-manifest.json فهرست فایل‌ها و update-$env:T4_TAG.zip فقط فایل‌های تغییرکرده است."
+          gh release create $env:T4_TAG @assets @flags `
             --repo "${{ github.repository }}" `
-            --title "T-4 Translate — بستهٔ ویندوز ($tag)" `
-            --notes "بستهٔ خودکار ویندوز ۶۴بیتی. فایل ZIP را دانلود کنید، کامل از حالت فشرده خارج کنید و T4Translate.exe را اجرا کنید. تست دودِ بسته (سرور، رابط، مدل OCR، فونت‌ها و رندر فارسی) در همین اجرا موفق بوده است."
+            --title "T-4 Translate — بستهٔ ویندوز ($env:T4_TAG)" `
+            --notes $notes

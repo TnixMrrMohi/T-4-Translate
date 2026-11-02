@@ -1,5 +1,8 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {CompareSlider} from './CompareSlider';
+import {TextLayoutEditor} from './TextLayoutEditor';
+import {UpdatePanel} from './UpdatePanel';
+import type {LayoutDoc, TextOverrides} from './TextLayoutEditor';
 import './style.css';
 
 /** هر آیتم منبع، یک بالن است (نه یک خط) و لحن تشخیص‌داده‌شدهٔ خودش را دارد. */
@@ -10,7 +13,14 @@ type SourceItem = {
   kind?: string;
   kindLabel?: string;
   lines?: number[];
+  /** این بلوک متن تبلیغاتی است و در حالت جانشینی به moonb.ir تبدیل می‌شود. */
+  promo?: boolean;
 };
+
+/** رفتار متن تبلیغاتی (واترمارک/آدرس سایت/نام اسکنر) در شماره‌گذاری مرحلهٔ ۲. */
+type PromoAction = 'replace' | 'remove';
+const PROMO_KEY = 't4-promo';
+const PROMO_SITE = 'moonb.ir';
 type Source = {revision: string; items: SourceItem[]; blockCount?: number};
 type Job = {jobId: string; width: number; height: number; format: string; status: string};
 type JobSummary = Job & {createdAt: string; sizeBytes?: number};
@@ -25,7 +35,19 @@ const STEPS = [
   {id: 5, title: 'مقایسه'},
 ];
 
-type PreviewKind = 'source' | 'ocr' | 'clean' | 'render' | 'bubble';
+type PreviewKind = 'source' | 'ocr' | 'clean' | 'clean-areas' | 'render' | 'bubble';
+
+/** یک ناحیهٔ پاک‌سازی (همان بلوک/بالن)؛ برای انتخاب تک‌تک و درخواست مجدد. */
+type CleanArea = {
+  number: number;
+  lines: number[];
+  bbox: number[];
+  area?: number[] | null;
+  kind: string;
+  kindLabel: string;
+  text: string;
+  translated: boolean;
+};
 
 /** یک بالن (یا گروه متن بیرون بالن) با دستهٔ تشخیص‌داده‌شده و فونت پیشنهادی. */
 type Bubble = {
@@ -61,6 +83,12 @@ type FontType = {
 type FontsDoc = {fonts: FontEntry[]; types: FontType[]};
 
 /** دستور ترجمه که همراه متن شماره‌گذاری‌شده کپی می‌شود. */
+/** قاعدهٔ متن تبلیغاتی که به پرامپت اضافه می‌شود. */
+const PROMO_RULES: Record<PromoAction, string> = {
+  replace: `- اگر شماره‌ای متن تبلیغاتی بود (واترمارک، آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال یا شبکهٔ اجتماعی)، آن را ترجمه نکن و به‌جای ترجمه فقط «${PROMO_SITE}» بنویس.`,
+  remove: '- اگر شماره‌ای متن تبلیغاتی بود (واترمارک، آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال یا شبکهٔ اجتماعی)، آن شماره را کاملاً حذف کن و در پاسخ نیاور.',
+};
+
 const TRANSLATION_PROMPT = [
   'متن زیر از یک صفحهٔ مانگا/وب‌تون استخراج شده است. هر [شماره] یک بالن (یا یک متن بیرون بالن) است و',
   'متن همهٔ خطوط همان بالن با هم آمده است؛ نه هر خط یک ترجمهٔ جدا.',
@@ -121,6 +149,50 @@ type PreviewProps = {
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 
+/** نسبت استاندارد قاب پیش‌نمایش؛ همهٔ صفحه‌ها (هر عرض/ارتفاعی) در همین قاب یک‌اندازه دیده می‌شوند. */
+const PREVIEW_RATIO = '3 / 4';
+
+/** مرحله‌های گزارش‌شدهٔ سرور؛ هر کلید یک برچسب فارسی دارد. */
+const PROGRESS_STAGES: Record<string, string> = {
+  idle: 'در انتظار شروع…',
+  start: 'آماده‌سازی صفحه…',
+  model: 'بارگذاری موتور تشخیص متن…',
+  strips: 'خواندن متن، نوار به نوار…',
+  merge: 'یکسان‌سازی خطوط هم‌پوشان…',
+  save: 'ذخیرهٔ نتیجهٔ تشخیص…',
+  done: 'پایان تشخیص متن',
+  error: 'تشخیص متن ناموفق بود',
+};
+
+/** پیشرفت یک کار؛ کسر ۰ تا ۱ و نام مرحله (همان چیزی که سرور می‌دهد). */
+type Progress = {fraction: number; stage: string; running?: boolean; finished?: boolean; error?: string | null};
+
+/** نوار پیشرفتِ تشخیص خودکار متن؛ جای متن ساده را می‌گیرد و تا ۱۰۰٪ پر می‌شود. */
+function ProgressBar({progress}: {progress: Progress}) {
+  const percent = Math.max(0, Math.min(100, Math.round(progress.fraction * 100)));
+  const label = PROGRESS_STAGES[progress.stage] ?? 'در حال تشخیص خودکار متن…';
+  return (
+    <div className="progress-panel" data-stage={progress.stage}>
+      <div className="progress-head">
+        <span className="progress-label">{label}</span>
+        <span className="progress-percent" dir="ltr">{percent.toLocaleString('fa-IR')}٪</span>
+      </div>
+      <div
+        className="progress-track"
+        role="progressbar"
+        aria-label="پیشرفت تشخیص خودکار متن"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`${percent} درصد — ${label}`}
+      >
+        <div className="progress-fill" style={{width: `${percent}%`}} />
+      </div>
+      <p className="progress-hint">صفحه به نوارهای افقی شکسته می‌شود؛ هر نوار که خوانده شود، نوار پیشرفت جلو می‌رود.</p>
+    </div>
+  );
+}
+
 /** بندانگشتی ثابت‌اندازه؛ تصویر کامل (حتی ۱۵۰۰۰ پیکسل) فقط در مودال نمایش داده می‌شود. */
 function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1}: PreviewProps) {
   const [open, setOpen] = useState(false);
@@ -134,8 +206,39 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   const tall = aspect > 2.5;
   const openModal = () => {setOpen(true); setFit(true); setZoom(1);};
 
-  const thumbUrl = `/api/jobs/${jobId}/thumb/${kind}?v=${version}`;
-  const fullUrl = `/api/jobs/${jobId}/${kind === 'source' ? 'source.img' : kind === 'ocr' ? 'ocr-preview' : kind}?v=${version}`;
+  // «عرض کامل» یعنی تصویر به اندازهٔ عرض صفحه (۱۰۰٪ قاب) دیده شود.
+  const widthMode = !fit && zoom === 1;
+  /** کلیک روی خود تصویر: بین «تناسب صفحه» و «عرض کامل» جابه‌جا می‌کند. */
+  const toggleWidth = () => {
+    if (widthMode) {setFit(true); setZoom(1);}
+    else {setFit(false); setZoom(1);}
+  };
+  const toggleLabel = widthMode ? 'تصویر: برگشت به تناسب صفحه' : 'تصویر: نمایش به عرض صفحه';
+
+  // اگر بندانگشتی نیاید (۴۰۴/شبکه)، یک‌بار خودکار دوباره خواسته و بعد پیام روشن
+  // نشان داده می‌شود؛ آیکون «عکس شکسته» مرورگر هرگز دیده نمی‌شود.
+  const [thumbRetry, setThumbRetry] = useState(0);
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const retryTimer = useRef<number | null>(null);
+  const thumbUrl = `/api/jobs/${jobId}/thumb/${kind}?v=${version}&r=${thumbRetry}`;
+  const fullUrl = `/api/jobs/${jobId}/${
+    kind === 'source' ? 'source.img'
+      : kind === 'ocr' ? 'ocr-preview'
+        : kind === 'clean-areas' ? 'clean-preview'
+          : kind}?v=${version}`;
+
+  const retryThumb = () => {
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+    retryTimer.current = window.setTimeout(() => {
+      retryTimer.current = null;
+      setThumbRetry(value => value + 1);
+    }, 500);
+  };
+
+  // با تغییر تصویر/نسخه، دوباره از صفر تلاش می‌شود.
+  useEffect(() => {setThumbFailed(false); setThumbRetry(0);}, [version]);
+
+  useEffect(() => () => {if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);}, []);
 
   useEffect(() => {
     if (!open) return;
@@ -147,6 +250,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
       else if (event.key === '+' || event.key === '=') {setFit(false); setZoom(z => Math.min(MAX_ZOOM, +(z + 0.25).toFixed(2)));}
       else if (event.key === '-') {setFit(false); setZoom(z => Math.max(MIN_ZOOM, +(z - 0.25).toFixed(2)));}
       else if (event.key === '0') {setFit(true); setZoom(1);}
+      else if (event.key === 'w' || event.key === 'W') toggleWidth();
     };
     window.addEventListener('keydown', onKey);
     return () => {window.removeEventListener('keydown', onKey); document.body.style.overflow = previous;};
@@ -154,16 +258,36 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
 
   return (
     <>
-      <figure className="preview-card">
+      <figure
+        className="preview-card"
+        style={{'--preview-ratio': PREVIEW_RATIO} as React.CSSProperties}
+        data-preview-ratio={PREVIEW_RATIO}
+      >
         <button
           type="button"
           ref={thumbRef}
-          className={`preview-thumb${tall ? ' is-tall' : ''}`}
+          className="preview-thumb"
           onClick={openModal}
           aria-label={`بزرگ‌نمایی: ${alt}`}
           title="برای بزرگ‌نمایی کلیک کنید"
         >
-          <img src={thumbUrl} alt={alt} loading="lazy" />
+          {thumbFailed ? (
+            <span className="preview-missing" role="img" aria-label={`${alt} — پیش‌نمایش آماده نشد`}>
+              <span className="preview-missing-icon" aria-hidden="true">🖼</span>
+              <span>پیش‌نمایش آماده نشد؛ برای ساخت دوباره کلیک کنید</span>
+            </span>
+          ) : (
+            <img
+              src={thumbUrl}
+              alt={alt}
+              loading="lazy"
+              onLoad={() => setThumbFailed(false)}
+              onError={() => {
+                if (thumbRetry < 2) retryThumb();
+                else setThumbFailed(true);
+              }}
+            />
+          )}
           <span className="zoom-hint">{tall ? 'صفحهٔ بلند — بزرگ‌نمایی' : 'بزرگ‌نمایی'}</span>
         </button>
         <figcaption>{caption}</figcaption>
@@ -183,19 +307,41 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
               <button type="button" onClick={() => {setFit(false); setZoom(z => Math.max(MIN_ZOOM, +(z - 0.25).toFixed(2)));}} disabled={!fit && zoom <= MIN_ZOOM} aria-label="کوچک‌تر">−</button>
               <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
               <button type="button" onClick={() => {setFit(false); setZoom(z => Math.min(MAX_ZOOM, +(z + 0.25).toFixed(2)));}} disabled={!fit && zoom >= MAX_ZOOM} aria-label="بزرگ‌تر">+</button>
-              <button type="button" onClick={() => {setFit(false); setZoom(1);}} disabled={!fit && zoom === 1}>عرض کامل</button>
+              <button type="button" onClick={() => {setFit(false); setZoom(1);}} disabled={widthMode}>عرض کامل</button>
               <button type="button" onClick={() => {setFit(true); setZoom(1);}} disabled={fit}>تناسب صفحه</button>
               <a href={fullUrl} download={downloadName ?? `${kind}.png`}>دانلود</a>
               <button type="button" ref={closeRef} onClick={close}>بستن ✕</button>
             </span>
           </div>
-          {tall && <p style={{color: '#f2c14e', fontSize: '13px', margin: '0 0 8px'}}>این صفحه بلند است؛ کل صفحه نمایش داده می‌شود. برای خواندن متن روی «+» بزنید یا «عرض کامل» را انتخاب کنید.</p>}
-          <div className={`modal-stage${fit ? ' fit' : ''}`}>
-            <img
-              src={fullUrl}
-              alt={alt}
-              style={fit ? undefined : {width: `${Math.round(zoom * 100)}%`, maxWidth: 'none', height: 'auto'}}
-            />
+          {tall && <p style={{color: '#f2c14e', fontSize: '13px', margin: '0 0 8px'}}>این صفحه بلند است؛ کل صفحه نمایش داده می‌شود. برای خواندن متن روی «+» بزنید یا روی تصویر کلیک کنید تا به عرض صفحه در بیاید.</p>}
+          <p className="modal-hint" aria-live="polite">
+            {widthMode
+              ? 'عرض کامل صفحه — برای برگشت به تناسب صفحه، روی تصویر کلیک کنید'
+              : 'تناسب صفحه — برای عرض کامل، روی تصویر کلیک کنید'}
+          </p>
+          <div className={`modal-stage${fit ? ' fit' : ''}${widthMode ? ' width' : ''}`}>
+            {/* کلیک روی تصویر عرض را به عرض صفحه می‌برد و کلیک دوم برمی‌گرداند. */}
+            <div
+              className="modal-image"
+              role="button"
+              tabIndex={0}
+              aria-label={toggleLabel}
+              title={widthMode ? 'کلیک: تناسب صفحه' : 'کلیک: عرض کامل صفحه'}
+              onClick={toggleWidth}
+              onKeyDown={event => {
+                if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); toggleWidth();}
+              }}
+            >
+              <img
+                src={fullUrl}
+                alt={alt}
+                style={fit ? undefined : {width: `${Math.round(zoom * 100)}%`, maxWidth: 'none', height: 'auto'}}
+                onLoad={() => {
+                  // نسخهٔ کامل ساخته شد؛ بندانگشتی هم دوباره خواسته می‌شود.
+                  if (thumbFailed) {setThumbFailed(false); setThumbRetry(value => value + 1);}
+                }}
+              />
+            </div>
           </div>
         </div>
       )}
@@ -285,6 +431,9 @@ export function App() {
   const [copied, setCopied] = useState<'text' | 'prompt' | null>(null);
   const copiedTimer = useRef<number | null>(null);
   const [message, setMessage] = useState('');
+  // وضعیت موتور آزمایشی OCR؛ اگر روی این سیستم نصب/اجراشدنی نباشد، پیش از
+  // کلیک به کاربر گفته می‌شود تا در بن‌بستِ «OCR ناموفق بود» نماند.
+  const [ocrEngine, setOcrEngine] = useState<{ready: boolean; detail: string} | null>(null);
   const [busy, setBusy] = useState(false);
   const [source, setSource] = useState<Source | null>(null);
   const [translation, setTranslation] = useState('');
@@ -293,15 +442,31 @@ export function App() {
   
   // شمارهٔ نسخهٔ هر پیش‌نمایش؛ با هر بازسازی زیاد می‌شود تا کش بندانگشتی و تصویر دور زده شود.
   const [cleanVersion, setCleanVersion] = useState(0);
+  const [cleanAreas, setCleanAreas] = useState<CleanArea[]>([]);
+  const [areaPick, setAreaPick] = useState<number[]>([]);
+  const [areasBusy, setAreasBusy] = useState(false);
   const [renderVersion, setRenderVersion] = useState(0);
+  // چیدمان دستی متن‌ها (فونت/اندازه/موقعیت/چرخش هر متن) در مرحلهٔ ۴.
+  const [layoutDoc, setLayoutDoc] = useState<LayoutDoc | null>(null);
+  const [layoutBusy, setLayoutBusy] = useState(false);
+  const [layoutModal, setLayoutModal] = useState(false);
+  const layoutRenderTimer = useRef<number | null>(null);
   const [sourceVersion, setSourceVersion] = useState(0);
   const [ocrVersion, setOcrVersion] = useState(0);
   const [bubbles, setBubbles] = useState<BubbleDoc | null>(null);
-  const [bubblesBusy, setBubblesBusy] = useState(false);
   const [bubbleVersion, setBubbleVersion] = useState(0);
   const bubblesRequested = useRef<string | null>(null);
   const [fontsDoc, setFontsDoc] = useState<FontsDoc | null>(null);
   const [fontsBusy, setFontsBusy] = useState(false);
+  // رفتار متن تبلیغاتی؛ انتخاب کاربر بین دو کار همان اجرا می‌ماند.
+  const [promoAction, setPromoAction] = useState<PromoAction>(
+    () => (localStorage.getItem(PROMO_KEY) === 'remove' ? 'remove' : 'replace'));
+
+  // پیشرفت زندهٔ تشخیص خودکار متن (نوار پیشرفت مرحلهٔ ۱).
+  const [ocrProgress, setOcrProgress] = useState<Progress | null>(null);
+  const progressTimer = useRef<number | null>(null);
+  const progressHideTimer = useRef<number | null>(null);
+  const progressActive = useRef(false);
 
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const dialogResolve = useRef<((ok: boolean) => void) | null>(null);
@@ -347,6 +512,10 @@ export function App() {
     uploadStarted.current = false;
   }
 
+  // «کارهای قبلی» فقط کارهایی است که دیگر باز نیستند: عکسی که همین حالا اضافه شده
+  // هنوز «کار قبلی» نیست؛ به‌محض انتخاب عکس بعدی یا ریست/شروع دوباره، در فهرست می‌آید.
+  const previousJobs = job ? jobs.filter(entry => entry.jobId !== job.jobId) : jobs;
+
   // بالاترین مرحله‌ای که کاربر می‌تواند باز کند؛ بر اساس خروجی‌های موجود.
   const maxStep = !job ? 1
     : !source ? 1
@@ -365,13 +534,43 @@ export function App() {
     void loadJobs();
   };
 
+  /** پرامپت ترجمه با قاعدهٔ متن تبلیغاتیِ انتخاب‌شده. */
+  const translationPrompt = TRANSLATION_PROMPT.replace(
+    '- پرانتز لحن را در پاسخ تکرار نکن',
+    `${PROMO_RULES[promoAction]}\n- پرانتز لحن را در پاسخ تکرار نکن`,
+  );
+
   const numberedSource = source
     ? source.items.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n')
     : '';
 
+  /** شمارندهٔ زندهٔ فیلد ترجمه: تعداد خط و نویسه. */
+  const translationMeta = translation.trim()
+    ? `${translation.split('\n').filter(line => line.trim()).length.toLocaleString('fa-IR')} خط · ${translation.length.toLocaleString('fa-IR')} نویسه`
+    : 'خالی — منتظر ترجمه';
+
+  /** تغییر رفتار متن تبلیغاتی: ذخیرهٔ انتخاب و خواندن دوبارهٔ شماره‌گذاری از سرور. */
+  async function choosePromo(action: PromoAction) {
+    if (action === promoAction) return;
+    setPromoAction(action);
+    localStorage.setItem(PROMO_KEY, action);
+    if (!job) return;
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/translation-source?promo=${action}`);
+      if (!response.ok) return;
+      const updated: Source = await response.json();
+      setSource(updated);
+      setWarnings(translation.trim()
+        ? 'شماره‌گذاری متن تبلیغاتی عوض شد؛ ترجمهٔ فعلی را دوباره بررسی کنید.'
+        : '');
+    } catch {
+      fail('خواندن دوبارهٔ متن با تنظیم جدید ناموفق بود.');
+    }
+  }
+
   async function copySource(withPrompt: boolean) {
     if (!numberedSource) return;
-    const payload = withPrompt ? `${TRANSLATION_PROMPT}\n${numberedSource}` : numberedSource;
+    const payload = withPrompt ? `${translationPrompt}\n${numberedSource}` : numberedSource;
     const ok = await copyToClipboard(payload);
     if (!ok) {
       fail('کپی در حافظه ممکن نشد؛ متن را دستی انتخاب و کپی کنید.');
@@ -472,8 +671,20 @@ export function App() {
       .then(r => {if (!r.ok) throw Error(); return r.text();})
       .then(t => setStatus(t === 'ok' ? 'سرویس آماده است' : 'پاسخ سرویس نامعتبر است'))
       .catch(e => {if (e.name !== 'AbortError') setStatus('ارتباط با سرویس برقرار نشد');});
+
+    // آیا موتور OCR نصب و اجراشدنی است؟ (پاسخ نامعلوم یعنی چیزی نمایش ندهیم.)
+    fetch('/api/ocr-status', {signal: controller.signal})
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data || typeof data.ready !== 'boolean') return;
+        setOcrEngine({ready: data.ready, detail: typeof data.detail === 'string' ? data.detail : ''});
+      })
+      .catch(() => {});
     
-    const last = localStorage.getItem(key);
+    // پیوند مستقیم به یک کار: `?job=<id>` بر آخرین کار ذخیره‌شده اولویت دارد
+    // (برای بازکردن سریع همان صفحه، بدون جست‌وجو در فهرست).
+    const fromUrl = new URLSearchParams(window.location.search).get('job');
+    const last = fromUrl && /^[a-f0-9]{32}$/.test(fromUrl) ? fromUrl : localStorage.getItem(key);
     if (last && /^[a-f0-9]{32}$/.test(last)) {
       fetch(`/api/jobs/${last}`, {signal: controller.signal}).then(async r => {
         if (r.status === 404) {localStorage.removeItem(key); return;}
@@ -499,7 +710,7 @@ export function App() {
     setLoadingData(true);
     setSource(null); setTranslation(''); setWarnings(''); setOcrVersion(0); setRenderVersion(0); setCleanVersion(0);
     Promise.all([
-      fetch(`/api/jobs/${job.jobId}/translation-source`, {signal: controller.signal}),
+      fetch(`/api/jobs/${job.jobId}/translation-source?promo=${promoAction}`, {signal: controller.signal}),
       fetch(`/api/jobs/${job.jobId}/translations`, {signal: controller.signal}),
       fetch(`/api/jobs/${job.jobId}/artifacts`, {signal: controller.signal}),
     ]).then(async ([sourceResponse, translationResponse, artifactResponse]) => {
@@ -508,7 +719,18 @@ export function App() {
       const savedSource: Source | null = sourceResponse.ok ? await sourceResponse.json() : null;
       const savedTranslation = translationResponse.ok ? await translationResponse.json() : null;
       const artifacts = artifactResponse.ok ? await artifactResponse.json() : null;
-      setSource(savedSource);
+      // ترجمه با همان تنظیم «متن تبلیغاتی» ذخیره شده؛ همان تنظیم را می‌خوانیم تا
+      // شماره‌گذاری بلوک‌ها با چیزی که کاربر ترجمه کرده یکی بماند.
+      let shownSource: Source | null = savedSource;
+      const storedPromo = savedTranslation?.promo;
+      if ((storedPromo === 'replace' || storedPromo === 'remove') && storedPromo !== promoAction) {
+        setPromoAction(storedPromo);
+        localStorage.setItem(PROMO_KEY, storedPromo);
+        const again = await fetch(`/api/jobs/${job.jobId}/translation-source?promo=${storedPromo}`,
+                                  {signal: controller.signal});
+        if (again.ok) shownSource = await again.json();
+      }
+      setSource(shownSource);
       if (savedTranslation) {
         setTranslation(savedTranslation.text);
         setHasSaved(true);
@@ -516,13 +738,13 @@ export function App() {
       } else {
         setHasSaved(false);
       }
-      if (savedSource) {
+      if (shownSource) {
         setOcrVersion(Date.now());
         if (artifacts?.render) setRenderVersion(Date.now());
         if (artifacts?.clean) setCleanVersion(Date.now());
       }
       // کاربر را به دورترین مرحله‌ای می‌بریم که داده‌اش آماده است.
-      const next = !savedSource ? 1
+      const next = !shownSource ? 1
         : !savedTranslation ? 2
           : !artifacts?.clean ? 3
             : !artifacts?.render ? 3 : 5;
@@ -530,6 +752,7 @@ export function App() {
     }).catch(e => {if (e.name !== 'AbortError') fail('بازیابی متن‌ها ممکن نشد.');})
       .finally(() => {if (!controller.signal.aborted) setLoadingData(false);});
     return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.jobId]);
 
   async function saveTranslation() {
@@ -538,7 +761,7 @@ export function App() {
     try {
       const response = await fetch(`/api/jobs/${job.jobId}/translations`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({text: translation, sourceRevision: source.revision}),
+        body: JSON.stringify({text: translation, sourceRevision: source.revision, promo: promoAction}),
       });
       const result = await response.json();
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'ذخیرهٔ ترجمه ناموفق بود.');
@@ -604,6 +827,110 @@ export function App() {
     finally {setBusy(false);}
   }
 
+  /** چیدمان تک‌تک متن‌ها (فونت، اندازه، موقعیت، چرخش) برای ویرایشگر مرحلهٔ ۴. */
+  async function loadLayout(jobId: string) {
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/layout`);
+      if (!response.ok) {
+        setLayoutDoc(null);
+        return;
+      }
+      setLayoutDoc(await response.json() as LayoutDoc);
+    } catch {
+      // چیدمان اختیاری است؛ بدون آن هم درج ترجمه کار می‌کند.
+      setLayoutDoc(null);
+    }
+  }
+
+  /** ذخیرهٔ چیدمان و درج دوبارهٔ تصویر با کمی تأخیر (تا با هر حرکت، رندر تکرار نشود). */
+  async function commitLayout(next: TextOverrides) {
+    if (!job) return;
+    setLayoutDoc(previous => (previous ? {...previous, layout: next} : previous));
+    setLayoutBusy(true);
+    if (layoutRenderTimer.current !== null) window.clearTimeout(layoutRenderTimer.current);
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/layout`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({blocks: next}),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw Error(typeof result.detail === 'string' ? result.detail : 'ذخیرهٔ چیدمان متن ناموفق بود.');
+      }
+      layoutRenderTimer.current = window.setTimeout(() => {
+        layoutRenderTimer.current = null;
+        void rerenderAfterLayout();
+      }, 650);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'ذخیرهٔ چیدمان متن ناموفق بود.');
+    } finally {
+      setLayoutBusy(false);
+    }
+  }
+
+  /** درج بی‌صدای تصویر بعد از تغییر چیدمان؛ رابط کاربری قفل نمی‌شود. */
+  async function rerenderAfterLayout() {
+    if (!job) return;
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/render`, {method: 'POST'});
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw Error(typeof result.detail === 'string' ? result.detail : 'درج دوبارهٔ ترجمه ناموفق بود.');
+      }
+      setRenderVersion(Date.now());
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'درج دوبارهٔ ترجمه ناموفق بود.');
+    }
+  }
+
+  /** فهرست ناحیه‌های پاک‌سازی (هر بالن) برای انتخاب تک‌تک. */
+  async function loadCleanAreas(jobId: string) {
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/clean-areas`);
+      if (!response.ok) return;
+      const data = await response.json();
+      const list: CleanArea[] = Array.isArray(data?.areas) ? data.areas : [];
+      setCleanAreas(list);
+      setAreaPick(prev => prev.filter(number => list.some(area => area.number === number && area.translated)));
+    } catch {
+      /* فهرست ناحیه‌ها اختیاری است؛ پاک‌سازی کامل بدون آن هم کار می‌کند. */
+    }
+  }
+
+  /** انتخاب/حذف یک ناحیه از فهرست. */
+  function toggleArea(number: number) {
+    setAreaPick(prev => prev.includes(number)
+      ? prev.filter(value => value !== number)
+      : [...prev, number].sort((a, b) => a - b));
+  }
+
+  /** پاک‌سازی مجدد فقط ناحیه‌های انتخاب‌شده (بر پایهٔ تصویر پاک‌شدهٔ فعلی). */
+  async function recleanAreas() {
+    if (!job || busy || areasBusy || loadingData || areaPick.length === 0) return;
+    setAreasBusy(true);
+    setMessage('در حال پاک‌سازی مجدد ناحیه‌های انتخاب‌شده…');
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/clean`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({areas: areaPick}),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی مجدد ناموفق بود.');
+      }
+      setCleanVersion(Date.now());
+      setRenderVersion(0);
+      setMessage(typeof result.message === 'string' ? result.message : 'پاک‌سازی مجدد انجام شد.');
+      await loadCleanAreas(job.jobId);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'پاک‌سازی مجدد ناموفق بود.');
+    } finally {
+      setAreasBusy(false);
+    }
+  }
+
   async function cleanImage() {
     if (!job || busy || loadingData) return;
     setBusy(true); setMessage('در حال پاک‌سازی آزمایشی…'); setCleanVersion(0); setRenderVersion(0);
@@ -613,8 +940,10 @@ export function App() {
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی ناموفق بود.');
       setCleanVersion(Date.now());
       setRenderVersion(0);  // خروجی قبلی با پاک‌سازی جدید معتبر نیست
+      setAreaPick([]);
       setMessage('پاک‌سازی انجام شد. با «ادامه» ترجمه روی تصویر درج می‌شود.');
       setStep(3);
+      await loadCleanAreas(job.jobId);
     } catch (error) {fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');}
     finally {setBusy(false);}
   }
@@ -706,11 +1035,29 @@ export function App() {
     if (step === 4 && job) void loadFonts();
   }, [step, job]);
 
+  // چیدمان متن‌ها هم با ورود به مرحلهٔ ۴ (و بعد از هر پاک‌سازی) تازه می‌شود.
+  useEffect(() => {
+    if (step === 4 && job && cleanVersion > 0) void loadLayout(job.jobId);
+  }, [step, job, cleanVersion]);
+
+  // بستن پنجرهٔ بزرگ ویرایش چیدمان با Esc.
+  useEffect(() => {
+    if (!layoutModal) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setLayoutModal(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [layoutModal]);
+
+  useEffect(() => () => {
+    if (layoutRenderTimer.current !== null) window.clearTimeout(layoutRenderTimer.current);
+  }, []);
+
   /** تشخیص نوع بالن‌ها برای مرحلهٔ ۲؛ نتیجه در بک‌اند کش می‌شود. */
   async function loadBubbles(jobId: string) {
     if (bubblesRequested.current === jobId) return;
     bubblesRequested.current = jobId;
-    setBubblesBusy(true);
     try {
       let response = await fetch(`/api/jobs/${jobId}/bubbles`);
       if (response.status === 404) {
@@ -726,8 +1073,6 @@ export function App() {
       // تشخیص بالن اختیاری است؛ اگر نشد، بقیهٔ مرحله باید کار کند.
       bubblesRequested.current = null;
       setMessage(error instanceof Error ? `تشخیص نوع بالن انجام نشد: ${error.message}` : 'تشخیص نوع بالن انجام نشد.');
-    } finally {
-      setBubblesBusy(false);
     }
   }
 
@@ -736,6 +1081,66 @@ export function App() {
     if (step !== 2 || !job || !source) return;
     void loadBubbles(job.jobId);
   }, [step, job, source]);
+
+  function stopProgressTimers() {
+    if (progressTimer.current !== null) {window.clearInterval(progressTimer.current); progressTimer.current = null;}
+    if (progressHideTimer.current !== null) {window.clearTimeout(progressHideTimer.current); progressHideTimer.current = null;}
+  }
+
+  /** شروع نوار پیشرفت: درصد واقعی از سرور خوانده می‌شود و تا آن هنگام از زمان تخمین زده می‌شود. */
+  function startProgress(jobId: string) {
+    stopProgressTimers();
+    progressActive.current = true;
+    const startedAt = Date.now();
+    setOcrProgress({fraction: 0.02, stage: 'start', running: true});
+    const poll = async () => {
+      let server: Progress | null = null;
+      try {
+        const response = await fetch(`/api/jobs/${jobId}/progress`);
+        if (response.ok) {
+          const data = await response.json() as Partial<Progress>;
+          if (typeof data.fraction === 'number') server = data as Progress;
+        }
+      } catch {
+        // سرور جواب نداد؛ تخمین زمانی نوار را جلو می‌برد.
+      }
+      const seconds = (Date.now() - startedAt) / 1000;
+      // تخمین: سریع بالا می‌رود و آرام به ۹۶٪ می‌رسد تا پیش از پایانِ واقعی پر نشود.
+      const estimate = Math.min(0.96, 1 - Math.exp(-seconds / 5));
+      setOcrProgress(previous => {
+        if (!previous) return previous;
+        const fraction = Math.min(0.99, Math.max(previous.fraction, estimate, server?.fraction ?? 0));
+        const stage = server?.stage && server.stage !== 'idle' ? server.stage : previous.stage;
+        return {fraction, stage, running: true};
+      });
+    };
+    void poll();
+    progressTimer.current = window.setInterval(() => void poll(), 350);
+  }
+
+  /** پایان کار: نوار تا ۱۰۰٪ پر می‌شود و نیم‌ثانیه بعد جای خود را به نتیجه می‌دهد. */
+  function finishProgress() {
+    stopProgressTimers();
+    if (!progressActive.current) return;
+    progressActive.current = false;
+    setOcrProgress({fraction: 1, stage: 'done', finished: true});
+    progressHideTimer.current = window.setTimeout(() => {setOcrProgress(null); progressHideTimer.current = null;}, 500);
+  }
+
+  /** توقف فوری (خطا یا ترک صفحه): نوار بدون رسیدن به ۱۰۰٪ پاک می‌شود. */
+  function abortProgress() {
+    stopProgressTimers();
+    progressActive.current = false;
+    setOcrProgress(null);
+  }
+
+  useEffect(() => () => stopProgressTimers(), []);
+
+  // فهرست ناحیه‌های پاک‌سازی در مرحلهٔ ۳ (و بعد از هر پاک‌سازی) تازه می‌شود.
+  useEffect(() => {
+    if (step === 3 && job?.jobId) void loadCleanAreas(job.jobId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, job?.jobId, cleanVersion]);
 
   /** OCR و رفتن به مرحلهٔ مقصد؛ در مرحلهٔ ۱ با دکمهٔ ادامه خودکار اجرا می‌شود. */
   async function runOcr(nextStep: number | null = null) {
@@ -751,11 +1156,12 @@ export function App() {
       if (!ok) return;
     }
     setBusy(true); setMessage('در حال اجرای OCR آزمایشی…');
+    startProgress(job.jobId);
     try {
       const response = await fetch(`/api/jobs/${job.jobId}/ocr`, {method: 'POST'});
       const result = await response.json();
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'OCR ناموفق بود.');
-      const next = await fetch(`/api/jobs/${job.jobId}/translation-source`);
+      const next = await fetch(`/api/jobs/${job.jobId}/translation-source?promo=${promoAction}`);
       if (!next.ok) throw Error('دریافت متن OCR ناموفق بود.');
       const updated: Source = await next.json();
       if (source && source.revision !== updated.revision && translation) setWarnings('متن OCR تغییر کرده است؛ ترجمهٔ قبلی را پیش از ذخیره بررسی کنید.');
@@ -763,9 +1169,14 @@ export function App() {
       setOcrVersion(Date.now());
       if (nextStep !== null) setStep(nextStep);
       setMessage('متن تشخیص داده شد. مرحلهٔ بعد: ترجمه.');
-    } catch (error) {fail(error instanceof Error ? error.message : 'OCR ناموفق بود.');}
-    finally {setBusy(false);}
+    } catch (error) {
+      abortProgress();
+      fail(error instanceof Error ? error.message : 'OCR ناموفق بود.');
+    }
+    finally {finishProgress(); setBusy(false);}
   }
+
+  const translatedAreas = cleanAreas.filter(area => area.translated);
 
   return (
     <main className="page">
@@ -775,7 +1186,11 @@ export function App() {
         <span className="status" role="status">{status}</span>
       </header>
 
-      <div className="wizard">
+      <UpdatePanel />
+
+      <div className="layout">
+        {/* ستون راست: پنج مرحله و پیش‌نمایش تصویر همان مرحله */}
+        <aside className="sidebar" aria-label="مراحل و پیش‌نمایش">
         <ol className="wizard-steps" aria-label="مراحل کار">
           {STEPS.map(item => {
             const stepState = item.id === step ? 'current'
@@ -798,6 +1213,87 @@ export function App() {
           })}
         </ol>
 
+        <div className="sidebar-previews" aria-label="پیش‌نمایش مرحلهٔ جاری">
+          {job && sourceVersion > 0 && step === 1 && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="source"
+              version={sourceVersion}
+              aspect={job.height / job.width}
+              alt="نمایش تصویر اصلی"
+              downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
+              caption={<span>تصویر اصلی — برای بزرگ‌نمایی کلیک کنید</span>}
+            />
+          )}
+          {step === 2 && source && ocrVersion > 0 && job && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="ocr"
+              version={ocrVersion}
+              aspect={job.height / job.width}
+              alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
+              downloadName={`t4-${job.jobId}-ocr.png`}
+              caption={<span>کادر و شمارهٔ خطوط (همان شماره‌های متن کنار)</span>}
+            />
+          )}
+          {step === 2 && bubbles && bubbles.bubbles.length > 0 && job && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="bubble"
+              version={bubbleVersion}
+              aspect={job.height / job.width}
+              alt="پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام"
+              downloadName={`t4-${job.jobId}-bubbles.png`}
+              caption={<span>کادر هر بالن با نام دسته و درصد اطمینان</span>}
+            />
+          )}
+          {step === 3 && job && cleanVersion > 0 && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="clean-areas"
+              version={cleanVersion}
+              aspect={job.height / job.width}
+              alt="ناحیه‌های پاک‌سازی با شماره"
+              downloadName={`t4-${job.jobId}-clean-areas.png`}
+              caption={<span>ناحیه‌های پاک‌سازی — شماره‌ها مثل فهرست کنار</span>}
+            />
+          )}
+          {step === 3 && job && cleanVersion > 0 && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="clean"
+              version={cleanVersion}
+              aspect={job.height / job.width}
+              alt="تصویر پاک‌سازی‌شده، بدون متن اصلی"
+              downloadName={`t4-${job.jobId}-clean.png`}
+              caption={<span>تصویر پاک‌سازی‌شده (بدون متن اصلی)</span>}
+            />
+          )}
+          {step === 4 && job && renderVersion > 0 && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="render"
+              version={renderVersion}
+              aspect={job.height / job.width}
+              alt="خروجی فارسی روی تصویر"
+              downloadName={`t4-${job.jobId}-fa.png`}
+              caption={<span>خروجی فارسی (آزمایشی)</span>}
+            />
+          )}
+          {/* مرحلهٔ ۵ خودش هر دو لایه را در پردهٔ مقایسه نشان می‌دهد؛ تکرارش لازم نیست. */}
+          {step === 5 && (
+            <p className="sidebar-empty">
+              مقایسهٔ پرده‌ای در کارت کنار نمایش داده می‌شود: ورودی و خروجی روی هم، با دستگیره.
+            </p>
+          )}
+          {step !== 5 && (!job || sourceVersion === 0) && (
+            <p className="sidebar-empty">پس از انتخاب تصویر، پیش‌نمایش همین‌جا نمایش داده می‌شود.</p>
+          )}
+        </div>
+        </aside>
+
+        {/* ستون چپ: کارت مرحلهٔ جاری، چسبیده به گوشهٔ چپ صفحه */}
+        <section className="workspace" aria-label="مرحلهٔ جاری">
         <p className="wizard-status" role="status">{message}</p>
 
         <section className="wizard-card" aria-live="polite">
@@ -809,6 +1305,38 @@ export function App() {
               <h2 className="wizard-title">مرحله ۱: انتخاب تصویر</h2>
               <p className="wizard-help">تصویر مانگا یا وب‌تون را انتخاب یا اینجا رها کنید. در مرحلهٔ بعد متن‌ها تشخیص داده می‌شوند.</p>
 
+              {ocrEngine && !ocrEngine.ready && (
+                <p className="wizard-warning" role="alert">
+                  <b>تشخیص خودکار متن روی این سیستم کار نمی‌کند.</b>{' '}
+                  {ocrEngine.detail || 'موتور آزمایشی OCR نصب یا اجرا نشد.'}
+                </p>
+              )}
+
+              {/* نوار بالای ناحیهٔ ورود عکس: برچسب سمت راست، آیکون سطل زباله سمت چپ */}
+              <div className="upload-bar">
+                <span className="upload-bar-label">تصویر ورودی</span>
+                <button
+                  type="button"
+                  className="icon-button trash"
+                  onClick={resetApp}
+                  disabled={busy || loadingData || !job}
+                  aria-label="حذف تصویر انتخاب‌شده و شروع دوباره"
+                  title={job ? 'حذف تصویر انتخاب‌شده و شروع دوباره' : 'تصویری انتخاب نشده است'}
+                >
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 6h18" />
+                    <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                    <path d="M10 11v6" />
+                    <path d="M14 11v6" />
+                  </svg>
+                </button>
+              </div>
+
+              {ocrProgress ? (
+                <ProgressBar progress={ocrProgress} />
+              ) : (
               <div
                 ref={dropZoneRef}
                 className={`select ${busy ? 'busy' : ''}`}
@@ -833,34 +1361,34 @@ export function App() {
                   onChange={e => {void upload(e.target.files?.[0]); e.target.value = '';}}
                 />
               </div>
+              )}
 
               {job && sourceVersion > 0 && (
                 <>
-                  <p className="wizard-note">تصویر فعلی: <span dir="ltr">{job.width} × {job.height} · {job.format}</span></p>
-                  <ImagePreview
-                    jobId={job.jobId}
-                    kind="source"
-                    version={sourceVersion}
-                    aspect={job.height / job.width}
-                    alt="نمایش تصویر اصلی"
-                    downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
-                    caption={<span>تصویر اصلی — برای بزرگ‌نمایی کلیک کنید</span>}
-                  />
+                  <p className="wizard-note">
+                    تصویر فعلی: <span dir="ltr">{job.width} × {job.height} · {job.format}</span>
+                    {' '}— پیش‌نمایش در ستون راست است.
+                  </p>
                   <div className="wizard-nav">
-                    <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void continueFromImage()}>
+                    <button
+                      type="button"
+                      className="ocr"
+                      disabled={busy || loadingData || ocrEngine?.ready === false}
+                      title={ocrEngine?.ready === false ? 'موتور OCR نصب یا اجرا نشد؛ ابتدا آن را نصب کنید.' : undefined}
+                      onClick={() => void continueFromImage()}
+                    >
                       {source ? 'ادامه به ترجمه' : 'ادامه (تشخیص خودکار متن)'}
                     </button>
-                    <button type="button" className="ghost" onClick={resetApp}>حذف انتخاب و شروع دوباره</button>
                   </div>
                 </>
               )}
 
-              {jobs.length > 0 && (
+              {previousJobs.length > 0 && (
                 <section className="jobs" aria-label="کارهای قبلی">
                   <h3>کارهای قبلی روی این سیستم</h3>
                   <ul>
-                    {jobs.map(item => (
-                      <li key={item.jobId} className={item.jobId === job?.jobId ? 'is-open' : undefined}>
+                    {previousJobs.map(item => (
+                      <li key={item.jobId}>
                         <span className="jobs-meta">
                           {new Intl.DateTimeFormat('fa-IR', {dateStyle: 'short', timeStyle: 'short'}).format(new Date(item.createdAt))}
                           {' · '}
@@ -870,10 +1398,10 @@ export function App() {
                           <button
                             type="button"
                             className="ocr"
-                            disabled={busy || loadingData || item.jobId === job?.jobId}
+                            disabled={busy || loadingData}
                             onClick={() => void openJob(item)}
                           >
-                            {item.jobId === job?.jobId ? 'باز است' : 'بازکردن'}
+                            بازکردن
                           </button>
                           <button
                             type="button"
@@ -898,69 +1426,33 @@ export function App() {
           {step === 2 && (
             <>
               <h2 className="wizard-title">مرحله ۲: ترجمهٔ فارسی</h2>
+              {ocrProgress && <ProgressBar progress={ocrProgress} />}
               {!source ? (
                 <p className="wizard-help">برای این کار هنوز متنی تشخیص داده نشده است؛ ابتدا OCR را اجرا کنید.</p>
               ) : (
                 <>
-                  {ocrVersion > 0 && (
-                    <ImagePreview
-                      jobId={job!.jobId}
-                      kind="ocr"
-                      version={ocrVersion}
-                      aspect={job!.height / job!.width}
-                      alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
-                      downloadName={`t4-${job!.jobId}-ocr.png`}
-                      caption={<span>کادر و شمارهٔ خطوط تشخیص‌داده‌شده (همان شماره‌های متن زیر)</span>}
-                    />
-                  )}
-                  <h3 className="wizard-subtitle">نوع بالن‌ها</h3>
-                  <p className="wizard-help">
-                    هر خط تشخیص‌داده‌شده به بالن خودش نسبت داده می‌شود و شکل آن بالن، دسته و فونت پیشنهادی
-                    (بر اساس «لیست فونت‌های مخصوص تایپ») را تعیین می‌کند. تشخیص هندسی است و ممکن است
-                    برای بالن‌های دست‌کشیده اشتباه کند.
-                  </p>
-                  {bubblesBusy && <p className="wizard-help" role="status">در حال تشخیص نوع بالن‌ها…</p>}
-                  {bubbles && bubbles.bubbles.length > 0 && (
-                    <>
-                      <ImagePreview
-                        jobId={job!.jobId}
-                        kind="bubble"
-                        version={bubbleVersion}
-                        aspect={job!.height / job!.width}
-                        alt="پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام"
-                        downloadName={`t4-${job!.jobId}-bubbles.png`}
-                        caption={<span>کادر هر بالن با نام دسته و درصد اطمینان</span>}
-                      />
-                      <ul className="bubble-list">
-                        {bubbles.bubbles.map(bubble => (
-                          <li key={bubble.id} className="bubble-item">
-                            <div className="bubble-head">
-                              <span className="bubble-kind">{bubble.kindLabel}</span>
-                              <span className="bubble-conf">{Math.round(bubble.confidence * 100)}٪ اطمینان</span>
-                            </div>
-                            <div className="bubble-lines">
-                              خطوط: {bubble.lines.length > 0 ? bubble.lines.join('، ') : '—'}
-                            </div>
-                            {bubble.fonts.length > 0 && (
-                              <div className="bubble-fonts">
-                                فونت پیشنهادی: {bubble.fonts.slice(0, 4).join('، ')}
-                              </div>
-                            )}
-                            {bubble.variants && bubble.variants.length > 0 && (
-                              <div className="bubble-variants">
-                                حالت‌های ممکن: {bubble.variants.map(variant => variant.label).join('، ')}
-                              </div>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-                  <h3 className="wizard-subtitle">متن شماره‌گذاری‌شده (هر شماره یک بالن)</h3>
-                  <p className="wizard-help">
-                    متن OCR آزمایشی است؛ خطاهای آن را در ترجمه در نظر بگیرید. خطوط هر بالن با هم یک شماره شده‌اند و
-                    لحن همان بالن کنارشان آمده است. متن را کپی کنید و پاسخ شماره‌دار را پایین بچسبانید.
-                  </p>
+                  {/* اعلام و تنظیم رفتار متن تبلیغاتی؛ همراه شماره‌گذاری انجام می‌شود */}
+                  <div className="promo-setting" role="group" aria-label="رفتار متن تبلیغاتی">
+                    <span className="promo-setting-label">
+                      متن تبلیغاتی (آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال) در شماره‌گذاری:
+                    </span>
+                    <span className="promo-options">
+                      <button
+                        type="button"
+                        aria-pressed={promoAction === 'replace'}
+                        onClick={() => void choosePromo('replace')}
+                      >
+                        جایگزینی با {PROMO_SITE}
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={promoAction === 'remove'}
+                        onClick={() => void choosePromo('remove')}
+                      >
+                        حذف کامل
+                      </button>
+                    </span>
+                  </div>
                   <div className="copy-row">
                     <button
                       type="button"
@@ -979,41 +1471,47 @@ export function App() {
                     >
                       {copied === 'prompt' ? 'کپی شد ✓' : 'کپی با پرامپت'}
                     </button>
-                    <span className="copy-hint" role="status" aria-live="polite">
-                      {source.items.length} بالن
-                    </span>
                   </div>
-                  <details className="prompt-preview">
-                    <summary>نمایش پرامپت همراه</summary>
-                    <pre dir="rtl">{TRANSLATION_PROMPT}</pre>
-                  </details>
-                  <textarea
-                    readOnly
-                    aria-label="متن انگلیسی شماره‌گذاری‌شده"
-                    dir="ltr"
-                    rows={8}
-                    value={numberedSource}
-                  />
+                  <div className="text-field">
+                    <div className="text-field-head">
+                      <label className="text-field-title" htmlFor="numbered-source">متن انگلیسی</label>
+                      <span className="text-field-meta">
+                        {source.items.length.toLocaleString('fa-IR')} بالن · فقط خواندنی
+                      </span>
+                    </div>
+                    <textarea
+                      id="numbered-source"
+                      className="text-box source"
+                      readOnly
+                      dir="ltr"
+                      rows={9}
+                      spellCheck={false}
+                      value={numberedSource}
+                    />
+                  </div>
 
                   {source.items.length > 0 ? (
                     <>
-                      <h3 className="wizard-subtitle">ترجمهٔ دستی</h3>
-                      <p className="wizard-help">
-                        ترجمه را با همان شماره‌ها وارد کنید؛ هر شماره یک بالن است و موارد جاافتاده حفظ می‌شوند.
-                      </p>
-                      <textarea
-                        aria-label="ترجمهٔ فارسی شماره‌گذاری‌شده"
-                        dir="rtl"
-                        rows={8}
-                        placeholder="[1] ترجمهٔ فارسی"
-                        value={translation}
-                        onChange={e => setTranslation(e.target.value)}
-                        disabled={busy || loadingData}
-                      />
-                      <p className="wizard-note">{warnings}</p>
+                      <div className="text-field">
+                        <div className="text-field-head">
+                          <label className="text-field-title" htmlFor="manual-translation">ترجمهٔ فارسی</label>
+                          <span className="text-field-meta">{translationMeta}</span>
+                        </div>
+                        <textarea
+                          id="manual-translation"
+                          className="text-box translation-input"
+                          dir="rtl"
+                          rows={9}
+                          placeholder="[1] ترجمهٔ فارسی"
+                          value={translation}
+                          onChange={e => setTranslation(e.target.value)}
+                          disabled={busy || loadingData}
+                        />
+                      </div>
+                      {warnings && <p className="wizard-note">{warnings}</p>}
                       <div className="wizard-nav">
                         <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
-                        <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void runOcr()}>اجرای دوبارهٔ OCR</button>
+                        <button type="button" className="ghost" disabled={busy || loadingData || ocrEngine?.ready === false} onClick={() => void runOcr()}>اجرای دوبارهٔ OCR</button>
                         <button type="button" className="ocr" disabled={busy || loadingData || !translation.trim()} onClick={() => void saveTranslation()}>
                           ذخیرهٔ ترجمه و ادامه
                         </button>
@@ -1051,18 +1549,59 @@ export function App() {
                     </button>
                   </div>
 
-                  {cleanVersion > 0 ? (
-                    <ImagePreview
-                      jobId={job.jobId}
-                      kind="clean"
-                      version={cleanVersion}
-                      aspect={job.height / job.width}
-                      alt="تصویر پاک‌سازی‌شده، بدون متن اصلی"
-                      downloadName={`t4-${job.jobId}-clean.png`}
-                      caption={<span>تصویر پاک‌سازی‌شده (بدون متن اصلی)</span>}
-                    />
-                  ) : (
-                    <p className="wizard-note">{busy ? 'در حال پاک‌سازی…' : 'هنوز پاک‌سازی اجرا نشده است.'}</p>
+                  <p className="wizard-note">
+                    {cleanVersion > 0
+                      ? 'پاک‌سازی انجام شد؛ نتیجه را در ستون راست ببینید.'
+                      : busy ? 'در حال پاک‌سازی…' : 'هنوز پاک‌سازی اجرا نشده است.'}
+                  </p>
+
+                  {cleanVersion > 0 && translatedAreas.length > 0 && (
+                    <>
+                      <h3 className="wizard-subtitle">ناحیه‌های پاک‌سازی</h3>
+                      <p className="wizard-help">
+                        شماره‌ها همان شماره‌های روی پیش‌نمایشِ «ناحیه‌های پاک‌سازی» در ستون راست است. هر ناحیه را
+                        انتخاب کنید تا فقط همان یکی دوباره پاک‌سازی شود و بقیه دست‌نخورده بمانند.
+                      </p>
+                      <div className="area-list" role="group" aria-label="ناحیه‌های پاک‌سازی">
+                        {translatedAreas.map(area => (
+                          <label
+                            key={area.number}
+                            className={`area-row${areaPick.includes(area.number) ? ' is-picked' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={areaPick.includes(area.number)}
+                              onChange={() => toggleArea(area.number)}
+                              disabled={busy || areasBusy}
+                              aria-label={`ناحیهٔ ${area.number.toLocaleString('fa-IR')}`}
+                            />
+                            <span className="area-number">{area.number.toLocaleString('fa-IR')}</span>
+                            <span className="area-kind">{area.kindLabel}</span>
+                            <span className="area-text" dir="rtl">{area.text}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <div className="wizard-nav start">
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={busy || areasBusy}
+                          onClick={() => setAreaPick(
+                            areaPick.length === translatedAreas.length ? [] : translatedAreas.map(area => area.number),
+                          )}
+                        >
+                          {areaPick.length === translatedAreas.length ? 'حذف انتخاب‌ها' : 'انتخاب همه'}
+                        </button>
+                        <button
+                          type="button"
+                          className="ocr"
+                          disabled={busy || areasBusy || loadingData || areaPick.length === 0}
+                          onClick={() => void recleanAreas()}
+                        >
+                          پاک‌سازی مجدد ناحیه‌های انتخاب‌شده
+                        </button>
+                      </div>
+                    </>
                   )}
 
                   <div className="wizard-nav">
@@ -1088,6 +1627,37 @@ export function App() {
                     متن فارسی داخل کادر هر بالن روی تصویر پاک‌سازی‌شده نوشته می‌شود؛ فونت هر نوع بالن از
                     فهرست «فونت‌های مخصوص تایپ» انتخاب می‌شود و در نبود آن، وزیرمتن جانشین می‌شود.
                   </p>
+
+                  <h3 className="wizard-subtitle">جای هر متن، فونت، اندازه و چرخش</h3>
+                  <p className="wizard-help">
+                    هر متن جداست: با کشیدن جابه‌جا می‌شود، با گوشه‌ها کوچک و بزرگ می‌شود و با دستهٔ بالای
+                    کادر می‌چرخد. فونت و اندازهٔ هر متن هم از همین نوار تغییر می‌کند.
+                  </p>
+                  {layoutDoc && Array.isArray(layoutDoc.blocks) && layoutDoc.blocks.length > 0 ? (
+                    <>
+                      <TextLayoutEditor
+                        imageUrl={`/api/jobs/${job.jobId}/clean?v=${cleanVersion}`}
+                        width={layoutDoc.width || job.width}
+                        height={layoutDoc.height || job.height}
+                        blocks={layoutDoc.blocks}
+                        fonts={layoutDoc.fonts}
+                        value={layoutDoc.layout}
+                        onCommit={next => void commitLayout(next)}
+                        disabled={layoutBusy || busy || loadingData}
+                      />
+                      <div className="wizard-nav start">
+                        <button type="button" className="ghost" onClick={() => setLayoutModal(true)}>
+                          ویرایش در نمایش بزرگ
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="wizard-note">
+                      {cleanVersion === 0
+                        ? 'برای ویرایش جای متن‌ها، ابتدا پاک‌سازی را اجرا کنید.'
+                        : layoutBusy ? 'در حال آماده‌سازی چیدمان…' : 'چیدمان متن‌ها در دسترس نیست.'}
+                    </p>
+                  )}
 
                   <h3 className="wizard-subtitle">فونت هر نوع بالن</h3>
                   <div className="fonts-upload">
@@ -1137,19 +1707,11 @@ export function App() {
                     </button>
                   </div>
 
-                  {renderVersion > 0 ? (
-                    <ImagePreview
-                      jobId={job.jobId}
-                      kind="render"
-                      version={renderVersion}
-                      aspect={job.height / job.width}
-                      alt="خروجی فارسی روی تصویر"
-                      downloadName={`t4-${job.jobId}-fa.png`}
-                      caption={<span>خروجی فارسی (آزمایشی)</span>}
-                    />
-                  ) : (
-                    <p className="wizard-note">{busy ? 'در حال درج ترجمه…' : 'هنوز ترجمه روی تصویر درج نشده است.'}</p>
-                  )}
+                  <p className="wizard-note">
+                    {renderVersion > 0
+                      ? 'ترجمه روی تصویر درج شد؛ خروجی در ستون راست است.'
+                      : busy ? 'در حال درج ترجمه…' : 'هنوز ترجمه روی تصویر درج نشده است.'}
+                  </p>
 
                   <div className="wizard-nav">
                     <button type="button" className="ghost" onClick={() => goToStep(3)}>مرحلهٔ قبل (پاک‌سازی)</button>
@@ -1194,7 +1756,38 @@ export function App() {
             </>
           )}
         </section>
+        </section>
       </div>
+
+      {layoutModal && job && layoutDoc && (
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="ویرایش بزرگ چیدمان متن‌ها"
+          onClick={event => {if (event.target === event.currentTarget) setLayoutModal(false);}}
+        >
+          <div className="modal-bar">
+            <span className="grow">ویرایش چیدمان متن‌ها (Esc برای بستن)</span>
+            <span className="modal-actions">
+              <button type="button" onClick={() => setLayoutModal(false)}>بستن ✕</button>
+            </span>
+          </div>
+          <div className="layout-modal-body">
+            <TextLayoutEditor
+              tall
+              imageUrl={`/api/jobs/${job.jobId}/clean?v=${cleanVersion}`}
+              width={layoutDoc.width || job.width}
+              height={layoutDoc.height || job.height}
+              blocks={layoutDoc.blocks}
+              fonts={layoutDoc.fonts}
+              value={layoutDoc.layout}
+              onCommit={next => void commitLayout(next)}
+              disabled={layoutBusy || busy || loadingData}
+            />
+          </div>
+        </div>
+      )}
 
       {dialog && <Dialog request={dialog} onClose={closeDialog} />}
     </main>

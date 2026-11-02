@@ -1,7 +1,7 @@
 """آزمون‌های نمایش آزمایشی ترجمهٔ فارسی روی تصویر."""
 import pytest
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw
 
 pytest.importorskip("arabic_reshaper", reason="افزونهٔ رندر نصب نشده است")
 pytest.importorskip("bidi", reason="افزونهٔ رندر نصب نشده است")
@@ -161,3 +161,71 @@ def test_font_without_latin_falls_back_instead_of_tofu():
     canvas, drawn = rendering.render_blocks(image, blocks, {"1": "kelgt"}, {"shout": str(affsaneh)})
     assert drawn == 1
     assert canvas.crop((30, 30, 270, 170)).getbbox() is not None
+
+
+def _ink_box(image):
+    """کادر جوهرِ رسم‌شده (متن تیره روی زمینهٔ روشن)."""
+    return image.convert("L").point(lambda value: 255 if value < 200 else 0).getbbox()
+
+
+def test_font_size_follows_the_source_text_not_the_bubble_area():
+    """اندازهٔ نوشتهٔ فارسی هم‌اندازهٔ نوشتهٔ اصلیِ همان بالن است.
+
+    قبلاً اندازه تا پر شدن شکلِ بالن بزرگ می‌شد؛ نتیجه این بود که یک «عجیبه.»
+    کوتاه غول‌آسا و یک دیالوگ بلند ریز می‌شد. حالا سقف اندازه از ارتفاع کادر متنِ
+    اصلی می‌آید، پس اندازه‌ها بین بالن‌ها یکدست می‌مانند.
+    """
+    image = Image.new("RGB", (420, 300), "white")
+    area = [40, 60, 380, 240]
+    short_source = {"number": 1, "lines": [1], "bbox": [160, 140, 260, 165], "kind": "speech", "area": area}
+    tall_source = {"number": 2, "lines": [2], "bbox": [160, 120, 260, 195], "kind": "speech", "area": area}
+    small, _ = rendering.render_blocks(image, [short_source], {"1": "سلام"})
+    big, _ = rendering.render_blocks(image, [tall_source], {"2": "سلام"})
+    small_ink, big_ink = _ink_box(small), _ink_box(big)
+    assert small_ink and big_ink
+    # متن اصلیِ بلندتر، نوشتهٔ فارسیِ بلندتری هم می‌دهد.
+    assert (big_ink[3] - big_ink[1]) > 1.6 * (small_ink[3] - small_ink[1])
+    # و هیچ‌کدام از شکلِ بالن بیرون نمی‌زنند.
+    assert big_ink[0] >= 40 and big_ink[1] >= 60
+    assert big_ink[2] <= 380 and big_ink[3] <= 240
+    assert small_ink[0] >= 40 and small_ink[1] >= 60
+    assert small_ink[2] <= 380 and small_ink[3] <= 240
+
+
+def test_short_text_in_a_big_bubble_does_not_fill_it():
+    """متن کوتاه در بالن بزرگ، غول‌آسا نمی‌شود (سقف اندازه از متن اصلی می‌آید)."""
+    image = Image.new("RGB", (420, 300), "white")
+    block = {"number": 1, "lines": [1], "bbox": [190, 145, 230, 165], "kind": "speech",
+             "area": [40, 40, 380, 260]}
+    canvas, _ = rendering.render_blocks(image, [block], {"1": "عجیبه."})
+    ink = _ink_box(canvas)
+    assert ink
+    assert (ink[3] - ink[1]) <= 26          # نزدیک ارتفاع متن اصلی (۲۰)، نه ارتفاع بالن
+    assert (ink[2] - ink[0]) <= 120
+
+
+def test_text_box_grows_over_uniform_background():
+    """بدون کادر شکل، کادر متن تا لبهٔ ناحیهٔ یکدست بزرگ می‌شود تا متن جا شود."""
+    image = Image.new("RGB", (420, 300), "white")
+    block = {"number": 1, "lines": [1], "bbox": [190, 140, 230, 160], "kind": "speech"}
+    canvas, drawn = rendering.render_blocks(image, [block], {"1": "سلام"})
+    assert drawn == 1
+    ink = _ink_box(canvas)
+    assert ink
+    # اندازهٔ قلم از ارتفاع متن اصلی می‌آید (حدود ۲۰)، پس نه ریز است نه غول‌آسا.
+    assert 10 <= (ink[3] - ink[1]) <= 24
+    assert ink[0] > 0 and ink[2] < canvas.width      # از کل صفحه بزرگ‌تر نشده
+
+
+def test_growth_stops_at_a_bubble_border():
+    """رشد کادر باید پشتِ خط دورِ بالن بایستد و متن از شکل بیرون نزند."""
+    image = Image.new("RGB", (300, 260), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle([40, 40, 260, 220], outline=(150, 150, 150), width=3)
+    block = {"number": 1, "lines": [1], "bbox": [130, 120, 170, 140], "kind": "speech"}
+    canvas, _ = rendering.render_blocks(image, [block], {"1": "سلام دنیا"})
+    # فقط متن (تیره) سنجیده می‌شود، نه خط دورِ خاکستری.
+    ink = canvas.convert("L").point(lambda value: 255 if value < 100 else 0).getbbox()
+    assert ink
+    assert 43 <= ink[0] and ink[2] <= 257 and 43 <= ink[1] and ink[3] <= 217
+    assert (ink[3] - ink[1]) > 20      # بلندتر از کادر اولیهٔ ۲۰ پیکسلی

@@ -64,7 +64,7 @@ def test_overlay_missing_file_raises(tmp_path):
 
 def test_preview_endpoint_and_media_type(tmp_path, monkeypatch):
     monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(ocr, "recognize", lambda path: [_line()])
+    monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [_line()])
     with TestClient(app) as client:
         job = client.post("/api/jobs", files={"file": ("a.png", _png(), "image/png")}).json()["jobId"]
         # بدون OCR هنوز پیش‌نمایشی وجود ندارد.
@@ -76,7 +76,7 @@ def test_preview_endpoint_and_media_type(tmp_path, monkeypatch):
         # کش: درخواست دوم همان بایت‌ها را می‌دهد.
         assert client.get(f"/api/jobs/{job}/ocr-preview").content == first.content
         # با تغییر OCR، پیش‌نمایش بازسازی می‌شود.
-        monkeypatch.setattr(ocr, "recognize", lambda path: [_line([[20, 20], [100, 20], [100, 60], [20, 60]])])
+        monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [_line([[20, 20], [100, 20], [100, 60], [20, 60]])])
         client.post(f"/api/jobs/{job}/ocr")
         assert client.get(f"/api/jobs/{job}/ocr-preview").content != first.content
 
@@ -114,7 +114,7 @@ def test_thumbnail_handles_transparent_png(tmp_path):
 
 def test_thumb_endpoint_for_source_and_render(tmp_path, monkeypatch):
     monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(ocr, "recognize", lambda path: [_line()])
+    monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [_line()])
     buffer = BytesIO()
     Image.new("RGB", (1600, 900), "white").save(buffer, format="PNG")
     with TestClient(app) as client:
@@ -132,12 +132,12 @@ def test_thumb_endpoint_for_source_and_render(tmp_path, monkeypatch):
 
 def test_thumb_cache_invalidates_when_preview_changes(tmp_path, monkeypatch):
     monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(ocr, "recognize", lambda path: [_line()])
+    monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [_line()])
     with TestClient(app) as client:
         job = client.post("/api/jobs", files={"file": ("a.png", _png(), "image/png")}).json()["jobId"]
         client.post(f"/api/jobs/{job}/ocr")
         first = client.get(f"/api/jobs/{job}/thumb/ocr").content
-        monkeypatch.setattr(ocr, "recognize", lambda path: [_line([[60, 40], [90, 40], [90, 70], [60, 70]])])
+        monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [_line([[60, 40], [90, 40], [90, 70], [60, 70]])])
         client.post(f"/api/jobs/{job}/ocr")
         assert client.get(f"/api/jobs/{job}/ocr-preview").status_code == 200
         assert client.get(f"/api/jobs/{job}/thumb/ocr").content != first
@@ -182,3 +182,38 @@ def test_display_endpoint_returns_webp_with_requested_width(tmp_path, monkeypatc
         assert Image.open(BytesIO(client.get(f"/api/jobs/{job}/display/source", params={"width": 50}).content)).width == 240
         assert client.get(f"/api/jobs/{job}/display/render").status_code == 404
         assert client.get(f"/api/jobs/{job}/display/bogus").status_code == 404
+
+
+def test_card_gives_every_page_the_same_frame(tmp_path):
+    """کارت پیش‌نمایش برای صفحهٔ بلند و صفحهٔ پهن همان نسبت ۳:۴ را می‌دهد."""
+    from PIL import Image
+
+    tall = tmp_path / "tall.png"
+    Image.new("RGB", (690, 5880), "white").save(tall)
+    card = preview.card(tall)
+    assert card.size == (480, 640)      # از بالا بریده می‌شود، نه نواری باریک
+    assert card.getpixel((5, 5)) == (255, 255, 255)
+
+    wide = tmp_path / "wide.png"
+    Image.new("RGB", (1600, 900), "black").save(wide)
+    card = preview.card(wide)
+    assert card.size == (480, 270)      # صفحهٔ پهن کامل می‌ماند و قاب پس‌زمینه می‌گیرد
+
+    small = tmp_path / "small.png"
+    Image.new("RGB", (200, 100), "gray").save(small)
+    assert preview.card(small).size == (200, 100)  # بزرگ‌نمایی مصنوعی نمی‌شود
+
+
+def test_card_keeps_the_top_of_the_page(tmp_path):
+    """برش از بالای صفحه است تا سرصفحه و اولین بالن‌ها در کارت دیده شوند."""
+    from PIL import Image
+
+    page = tmp_path / "stripes.png"
+    image = Image.new("RGB", (300, 3000), (0, 0, 255))
+    image.paste((255, 0, 0), (0, 0, 300, 300))   # ناحیهٔ قرمز فقط در بالای صفحه
+    image.save(page)
+    card = preview.card(page, width=300)
+    assert card.size == (300, 400)
+    top, bottom = card.getpixel((10, 10)), card.getpixel((10, 399))
+    assert top[0] > 200 and top[2] < 80      # بالای قاب قرمز است
+    assert bottom[2] > 200 and bottom[0] < 80  # پایین قاب از ادامهٔ صفحه (آبی)

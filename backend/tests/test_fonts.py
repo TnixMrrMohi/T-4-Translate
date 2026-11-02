@@ -159,7 +159,7 @@ def test_font_upload_through_api_is_used_in_render(client, tmp_path, monkeypatch
     image.save(buffer, format="PNG")
     lines = [{"text": "GO AWAY", "confidence": 0.9,
               "quad": [[90, 150], [210, 150], [210, 190], [90, 190]]}]
-    monkeypatch.setattr(ocr, "recognize", lambda path: lines)
+    monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: lines)
 
     job = client.post("/api/jobs", files={"file": ("p.png", buffer.getvalue(), "image/png")}).json()["jobId"]
     client.post(f"/api/jobs/{job}/ocr")
