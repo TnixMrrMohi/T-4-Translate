@@ -1179,11 +1179,6 @@ export function App() {
                 <p className="wizard-help">برای این کار هنوز متنی تشخیص داده نشده است؛ ابتدا OCR را اجرا کنید.</p>
               ) : (
                 <>
-                  <h3 className="wizard-subtitle">متن شماره‌گذاری‌شده (هر شماره یک بالن)</h3>
-                  <p className="wizard-help">
-                    متن OCR آزمایشی است؛ خطاهای آن را در ترجمه در نظر بگیرید. خطوط هر بالن با هم یک شماره شده‌اند و
-                    لحن همان بالن کنارشان آمده است. متن را کپی کنید و پاسخ شماره‌دار را پایین بچسبانید.
-                  </p>
                   <div className="copy-row">
                     <button
                       type="button"
@@ -1202,17 +1197,10 @@ export function App() {
                     >
                       {copied === 'prompt' ? 'کپی شد ✓' : 'کپی با پرامپت'}
                     </button>
-                    <span className="copy-hint" role="status" aria-live="polite">
-                      {source.items.length} بالن
-                    </span>
                   </div>
-                  <details className="prompt-preview">
-                    <summary>نمایش پرامپت همراه</summary>
-                    <pre dir="rtl">{TRANSLATION_PROMPT}</pre>
-                  </details>
                   <div className="text-field">
                     <div className="text-field-head">
-                      <label className="text-field-title" htmlFor="numbered-source">متن انگلیسی شماره‌گذاری‌شده</label>
+                      <label className="text-field-title" htmlFor="numbered-source">متن انگلیسی</label>
                       <span className="text-field-meta">
                         {source.items.length.toLocaleString('fa-IR')} بالن · فقط خواندنی
                       </span>
@@ -1226,14 +1214,13 @@ export function App() {
                       spellCheck={false}
                       value={numberedSource}
                     />
-                    <p className="text-field-hint">هر [شماره] یک بالن است و خطوط یک بالن با هم آمده‌اند.</p>
                   </div>
 
                   {source.items.length > 0 ? (
                     <>
                       <div className="text-field">
                         <div className="text-field-head">
-                          <label className="text-field-title" htmlFor="manual-translation">ترجمهٔ فارسی شماره‌گذاری‌شده</label>
+                          <label className="text-field-title" htmlFor="manual-translation">ترجمهٔ فارسی</label>
                           <span className="text-field-meta">{translationMeta}</span>
                         </div>
                         <textarea
@@ -1246,11 +1233,8 @@ export function App() {
                           onChange={e => setTranslation(e.target.value)}
                           disabled={busy || loadingData}
                         />
-                        <p className="text-field-hint">
-                          شماره‌ها را نگه دارید؛ هر شماره یک بالن است و موارد جاافتاده حفظ می‌شوند.
-                        </p>
                       </div>
-                      <p className="wizard-note">{warnings}</p>
+                      {warnings && <p className="wizard-note">{warnings}</p>}
                       <div className="wizard-nav">
                         <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
                         <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void runOcr()}>اجرای دوبارهٔ OCR</button>

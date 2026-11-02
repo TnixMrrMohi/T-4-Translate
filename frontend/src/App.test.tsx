@@ -389,11 +389,6 @@ describe('کپی متن و پرامپت در مرحلهٔ ترجمه', () => {
     });
   });
 
-  it('پرامپت همراه در بخش بازشو قابل مشاهده است', async () => {
-    await openTranslationStep();
-    await userEvent.setup().click(screen.getByText('نمایش پرامپت همراه'));
-    expect(await screen.findByText(/فقط ترجمه را برگردان/)).toBeInTheDocument();
-  });
 });
 
 describe('تشخیص نوع بالن‌ها در مرحلهٔ ترجمه', () => {
@@ -447,8 +442,10 @@ describe('تشخیص نوع بالن‌ها در مرحلهٔ ترجمه', () =>
     expect(card.queryByText(/فونت پیشنهادی/)).not.toBeInTheDocument();
     expect(card.queryByText(/حالت‌های ممکن/)).not.toBeInTheDocument();
     expect(document.querySelector('.bubble-list')).toBeNull();
-    // کارت مستقیم با «متن شماره‌گذاری‌شده» شروع می‌شود.
-    expect(screen.getByRole('heading', {name: 'متن شماره‌گذاری‌شده (هر شماره یک بالن)'})).toBeInTheDocument();
+    // کارت هیچ تیتر/متن اضافی ندارد و مستقیم با دکمه‌های کپی و دو فیلد شروع می‌شود.
+    expect(screen.queryByRole('heading', {name: /متن شماره‌گذاری‌شده/})).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'کپی متن'})).toBeInTheDocument();
+    expect(screen.getAllByRole('textbox')).toHaveLength(2);
   });
 
   it('اگر تشخیص بالن شکست بخورد، بقیهٔ مرحله کار می‌کند', async () => {
@@ -486,9 +483,9 @@ describe('لحن بالن‌ها در متن ترجمه', () => {
     render(<App />);
     await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
 
-    expect(screen.getByLabelText('متن انگلیسی شماره‌گذاری‌شده')).toHaveValue(
+    expect(screen.getByLabelText('متن انگلیسی')).toHaveValue(
       '[1] (لحن: فریاد و عصبانیت) GO AWAY!\n[2] (لحن: گفت‌وگوی معمولی) I will stay');
-    expect(screen.getByText('2 بالن')).toBeInTheDocument();
+    expect(screen.getByText('۲ بالن · فقط خواندنی')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', {name: 'کپی با پرامپت'}));
     await waitFor(async () => {
@@ -1010,16 +1007,20 @@ describe('فیلدهای متنی مرحلهٔ ۲', () => {
       expect(field).toBeTruthy();
       expect(field?.querySelector('.text-field-title')).toBeTruthy();
       expect(field?.querySelector('.text-field-meta')).toBeTruthy();
-      expect(field?.querySelector('.text-field-hint')).toBeTruthy();
     }
+    // متن‌های اضافی مرحلهٔ ۲ (تیتر، پاراگراف توضیحی، راهنمای زیر فیلد و پرامپت بازشو) حذف شده‌اند.
+    expect(container.querySelector('.text-field-hint')).toBeNull();
+    expect(container.querySelector('.prompt-preview')).toBeNull();
+    expect(container.querySelector('.copy-hint')).toBeNull();
+    expect(container.querySelectorAll('.wizard-help')).toHaveLength(0);
 
     // فیلد انگلیسی: چپ‌چین، فقط‌خواندنی و با فونت ثابت‌عرض.
-    const english = screen.getByLabelText('متن انگلیسی شماره‌گذاری‌شده');
+    const english = screen.getByLabelText('متن انگلیسی');
     expect(english).toHaveAttribute('dir', 'ltr');
     expect(english).toHaveAttribute('readonly');
     expect(english.className).toContain('source');
     // فیلد فارسی: راست‌چین و قابل ویرایش.
-    const persian = screen.getByLabelText('ترجمهٔ فارسی شماره‌گذاری‌شده');
+    const persian = screen.getByLabelText('ترجمهٔ فارسی');
     expect(persian).toHaveAttribute('dir', 'rtl');
     expect(persian).not.toHaveAttribute('readonly');
     expect(persian.className).toContain('translation-input');
@@ -1035,7 +1036,7 @@ describe('فیلدهای متنی مرحلهٔ ۲', () => {
     const {user} = await openStep();
     expect(screen.getByText('خالی — منتظر ترجمه')).toBeInTheDocument();
 
-    const persian = screen.getByLabelText('ترجمهٔ فارسی شماره‌گذاری‌شده');
+    const persian = screen.getByLabelText('ترجمهٔ فارسی');
     await user.type(persian, '[1] برو بیرون!');
     expect(await screen.findByText(/۱ خط · /)).toBeInTheDocument();
   });

@@ -158,10 +158,6 @@
 .copy-row button{font:inherit;font-size:13px;font-weight:bold;padding:7px 14px;border-radius:9px;background:transparent;color:#9bf3cc;border:1px solid #00ffcc55;cursor:pointer}
 .copy-row button:hover:not(:disabled){background:#0e2426;border-color:#00ffcc}
 .copy-row button:disabled{opacity:.5;cursor:not-allowed}
-.copy-hint{color:#7d9294;font-size:12px}
-.prompt-preview{margin:0 0 12px}
-.prompt-preview summary{cursor:pointer;color:#9fb5b2;font-size:13px}
-.prompt-preview pre{margin:8px 0 0;white-space:pre-wrap;background:#0b171d;border:1px dashed #ffffff26;border-radius:10px;padding:12px;color:#cfe1de;font-size:12.5px;line-height:1.9}
 
 /* --- مقایسهٔ پرده‌ای (اسلایدر) --- */
 .cmp{margin-top:6px}
@@ -243,7 +239,6 @@
 .text-field-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .text-field-title{color:#e8fbf7;font-size:14px;font-weight:700}
 .text-field-meta{color:#7d9294;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
-.text-field-hint{margin:0;color:#7d9294;font-size:12px;line-height:1.7}
 .text-box{display:block;width:100%;max-width:100%;min-width:0;min-height:190px;padding:14px 16px;border:1px solid #00ffcc40;border-radius:12px;background:#050505;color:#e8fbf7;font:inherit;font-size:14px;line-height:1.95;resize:vertical;box-sizing:border-box;caret-color:#00ffcc;transition:border-color .15s,box-shadow .15s,background .15s}
 .text-box::placeholder{color:#5c6f70}
 .text-box:hover:not(:disabled){border-color:#00ffcc66}
