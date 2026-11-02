@@ -981,3 +981,62 @@ describe('پیش‌نمایش‌های مرحلهٔ ۲', () => {
     expect(image.getAttribute('src')).toContain('/ocr-preview');
   });
 });
+
+describe('فیلدهای متنی مرحلهٔ ۲', () => {
+  const source = {
+    revision: 'r'.repeat(64),
+    items: [{number: 1, text: 'GO AWAY!'}, {number: 2, text: 'I will stay'}],
+  };
+
+  async function openStep() {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source,
+    });
+    const user = userEvent.setup();
+    const view = render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+    return {user, ...view};
+  }
+
+  it('هر دو فیلد قالب یکسان (عنوان، شمارنده و راهنما) و عرض کامل دارند', async () => {
+    const {container} = await openStep();
+
+    const boxes = Array.from(container.querySelectorAll('.text-box'));
+    expect(boxes).toHaveLength(2);
+    for (const box of boxes) {
+      const field = box.closest('.text-field');
+      expect(field).toBeTruthy();
+      expect(field?.querySelector('.text-field-title')).toBeTruthy();
+      expect(field?.querySelector('.text-field-meta')).toBeTruthy();
+      expect(field?.querySelector('.text-field-hint')).toBeTruthy();
+    }
+
+    // فیلد انگلیسی: چپ‌چین، فقط‌خواندنی و با فونت ثابت‌عرض.
+    const english = screen.getByLabelText('متن انگلیسی شماره‌گذاری‌شده');
+    expect(english).toHaveAttribute('dir', 'ltr');
+    expect(english).toHaveAttribute('readonly');
+    expect(english.className).toContain('source');
+    // فیلد فارسی: راست‌چین و قابل ویرایش.
+    const persian = screen.getByLabelText('ترجمهٔ فارسی شماره‌گذاری‌شده');
+    expect(persian).toHaveAttribute('dir', 'rtl');
+    expect(persian).not.toHaveAttribute('readonly');
+    expect(persian.className).toContain('translation-input');
+
+    // هر دو فیلد در یک قالب مشترک‌اند و اندازهٔ پیش‌فرض مرورگر (۲۰ ستون) کنار گذاشته شده.
+    expect(english).toHaveAttribute('rows', '9');
+    expect(persian).toHaveAttribute('rows', '9');
+    expect(english).toHaveClass('text-box');
+    expect(persian).toHaveClass('text-box');
+  });
+
+  it('شمارندهٔ فیلد ترجمه با تایپ به‌روز می‌شود', async () => {
+    const {user} = await openStep();
+    expect(screen.getByText('خالی — منتظر ترجمه')).toBeInTheDocument();
+
+    const persian = screen.getByLabelText('ترجمهٔ فارسی شماره‌گذاری‌شده');
+    await user.type(persian, '[1] برو بیرون!');
+    expect(await screen.findByText(/۱ خط · /)).toBeInTheDocument();
+  });
+});

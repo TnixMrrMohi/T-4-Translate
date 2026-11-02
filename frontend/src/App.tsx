@@ -491,6 +491,11 @@ export function App() {
     ? source.items.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n')
     : '';
 
+  /** شمارندهٔ زندهٔ فیلد ترجمه: تعداد خط و نویسه. */
+  const translationMeta = translation.trim()
+    ? `${translation.split('\n').filter(line => line.trim()).length.toLocaleString('fa-IR')} خط · ${translation.length.toLocaleString('fa-IR')} نویسه`
+    : 'خالی — منتظر ترجمه';
+
   async function copySource(withPrompt: boolean) {
     if (!numberedSource) return;
     const payload = withPrompt ? `${TRANSLATION_PROMPT}\n${numberedSource}` : numberedSource;
@@ -1205,29 +1210,46 @@ export function App() {
                     <summary>نمایش پرامپت همراه</summary>
                     <pre dir="rtl">{TRANSLATION_PROMPT}</pre>
                   </details>
-                  <textarea
-                    readOnly
-                    aria-label="متن انگلیسی شماره‌گذاری‌شده"
-                    dir="ltr"
-                    rows={8}
-                    value={numberedSource}
-                  />
+                  <div className="text-field">
+                    <div className="text-field-head">
+                      <label className="text-field-title" htmlFor="numbered-source">متن انگلیسی شماره‌گذاری‌شده</label>
+                      <span className="text-field-meta">
+                        {source.items.length.toLocaleString('fa-IR')} بالن · فقط خواندنی
+                      </span>
+                    </div>
+                    <textarea
+                      id="numbered-source"
+                      className="text-box source"
+                      readOnly
+                      dir="ltr"
+                      rows={9}
+                      spellCheck={false}
+                      value={numberedSource}
+                    />
+                    <p className="text-field-hint">هر [شماره] یک بالن است و خطوط یک بالن با هم آمده‌اند.</p>
+                  </div>
 
                   {source.items.length > 0 ? (
                     <>
-                      <h3 className="wizard-subtitle">ترجمهٔ دستی</h3>
-                      <p className="wizard-help">
-                        ترجمه را با همان شماره‌ها وارد کنید؛ هر شماره یک بالن است و موارد جاافتاده حفظ می‌شوند.
-                      </p>
-                      <textarea
-                        aria-label="ترجمهٔ فارسی شماره‌گذاری‌شده"
-                        dir="rtl"
-                        rows={8}
-                        placeholder="[1] ترجمهٔ فارسی"
-                        value={translation}
-                        onChange={e => setTranslation(e.target.value)}
-                        disabled={busy || loadingData}
-                      />
+                      <div className="text-field">
+                        <div className="text-field-head">
+                          <label className="text-field-title" htmlFor="manual-translation">ترجمهٔ فارسی شماره‌گذاری‌شده</label>
+                          <span className="text-field-meta">{translationMeta}</span>
+                        </div>
+                        <textarea
+                          id="manual-translation"
+                          className="text-box translation-input"
+                          dir="rtl"
+                          rows={9}
+                          placeholder="[1] ترجمهٔ فارسی"
+                          value={translation}
+                          onChange={e => setTranslation(e.target.value)}
+                          disabled={busy || loadingData}
+                        />
+                        <p className="text-field-hint">
+                          شماره‌ها را نگه دارید؛ هر شماره یک بالن است و موارد جاافتاده حفظ می‌شوند.
+                        </p>
+                      </div>
                       <p className="wizard-note">{warnings}</p>
                       <div className="wizard-nav">
                         <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
