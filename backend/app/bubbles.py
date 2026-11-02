@@ -681,6 +681,10 @@ def analyze(path: Path, lines: list) -> dict:
     for index, bubble in enumerate(bubbles, 1):
         bubble["id"] = index
 
+    # خط‌هایی که با رشد ناحیهٔ روشن در حباب نیفتادند، اگر مدل تشخیص حباب نصب باشد
+    # با ماسک خودِ مدل جای‌گذاری می‌شوند (بالن‌های تیره، رنگی و پرنقش).
+    outside_lines = _detector_place(lines, bubbles, outside_lines, path, np, cv2)
+
     if outside_lines:
         meta = BUBBLE_TYPES["outside"]
         bubbles.append({
@@ -704,6 +708,79 @@ def analyze(path: Path, lines: list) -> dict:
         json.dumps(bubbles, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
     return document
+
+
+def _detector_place(lines: list, bubbles: list, outside_lines: list, path: Path,
+                    np, cv2) -> list:
+    """خط‌های بیرون‌مانده را با ماسک حبابِ مدل به حباب خودشان برمی‌گرداند.
+
+    فقط خط‌هایی جابه‌جا می‌شوند که مرکزشان داخل یک ناحیهٔ حبابِ خودِ مدل باشد؛ بقیه
+    مثل قبل «بیرون حباب» می‌مانند. اگر مدل نصب نباشد هیچ تغییری رخ نمی‌دهد.
+    """
+    if not outside_lines:
+        return outside_lines
+    try:
+        from . import textdet
+
+        if not textdet.available():
+            return outside_lines
+        with Image.open(path) as source:
+            array = np.array(source.convert("RGB"))
+        found = textdet.masks(array)
+    except Exception:  # noqa: BLE001 - مدل نباید تشخیص حباب را بشکند
+        return outside_lines
+    bubble_mask = (found or {}).get("bubble")
+    if bubble_mask is None or not bool(np.asarray(bubble_mask).any()):
+        return outside_lines
+    height, width = bubble_mask.shape[:2]
+    total = float(height * width)
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(
+        np.asarray(bubble_mask, dtype=np.uint8), 8)
+    grouped: dict[int, list[int]] = {}
+    remaining: list[int] = []
+    for number in outside_lines:
+        box = _line_box(lines[number - 1]) if 0 < number <= len(lines) else None
+        if box is None:
+            remaining.append(number)
+            continue
+        top, bottom, left, right = box
+        cx = max(0, min(width - 1, int((left + right) / 2)))
+        cy = max(0, min(height - 1, int((top + bottom) / 2)))
+        label = int(labels[cy, cx])
+        if label == 0:
+            # مرکز خط ممکن است روی خودِ حرف بیفتد؛ همان کادر را می‌گردیم.
+            patch = labels[max(0, int(top)):max(1, int(bottom)),
+                           max(0, int(left)):max(1, int(right))]
+            values = patch[patch > 0]
+            if values.size == 0:
+                remaining.append(number)
+                continue
+            label = int(np.bincount(values).argmax())
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area < total * 0.0002 or area > total * 0.6:
+            remaining.append(number)   # لکهٔ ریز یا کل صفحه، نه حباب
+            continue
+        grouped.setdefault(label, []).append(number)
+    for label, numbers in grouped.items():
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        w = int(stats[label, cv2.CC_STAT_WIDTH])
+        h = int(stats[label, cv2.CC_STAT_HEIGHT])
+        meta = BUBBLE_TYPES["speech"]
+        bubbles.append({
+            "id": 0,
+            "kind": "speech",
+            "kindLabel": meta["label"],
+            "description": meta["description"],
+            "confidence": 0.66,
+            "reason": "حباب با مدل تشخیص حباب پیدا شد (بالن تیره/رنگی/پرنقش).",
+            "bbox": [x, y, w, h],
+            "lines": sorted(numbers),
+            "fonts": meta["fonts"],
+            "style": meta["style"],
+            "features": {"detector": "comic-text-detector"},
+        })
+    return remaining
 
 
 def _label_font(size: int):

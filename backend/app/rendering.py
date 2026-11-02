@@ -1,9 +1,11 @@
 """نمایش آزمایشی ترجمهٔ فارسی روی تصویر پاک‌شده.
 
-Pillow این محیط با RAQM ساخته نشده، بنابراین shaping با arabic-reshaper و
-الگوریتم bidi انجام می‌شود و متن نهایی به شکل «ترتیب نمایشی» با چیدمان سادهٔ
-FreeType کشیده می‌شود. این روش برای فارسی و متن سادهٔ ترکیبی (عدد/انگلیسی)
-مناسب است، اما kerning و لیگاتورهای پیچیده را کامل پشتیبانی نمی‌کند.
+اگر Pillow با RAQM/HarfBuzz ساخته شده باشد (روی ویندوز و مک معمول است)، اتصال
+حروف، kerning و ترتیب دوجهته را همان موتور انجام می‌دهد و متنِ منطقی مستقیم
+کشیده می‌شود. اگر RAQM نباشد، shaping با arabic-reshaper و الگوریتم bidi انجام
+می‌شود و متن به شکل «ترتیب نمایشی» با چیدمان سادهٔ FreeType رسم می‌شود؛ این روش
+برای فارسی و متن سادهٔ ترکیبی (عدد/انگلیسی) مناسب است، اما لیگاتورهای پیچیده را
+کامل پشتیبانی نمی‌کند.
 """
 from __future__ import annotations
 
@@ -68,11 +70,12 @@ def font_path() -> Path:
 def _font(size: int, path: str | None = None) -> ImageFont.FreeTypeFont:
     """فونت با اندازهٔ مشخص؛ مسیر صریح برای فونتِ مخصوص هر نوع بالن."""
     chosen = Path(path) if path else font_path()
+    engine = ImageFont.Layout.RAQM if has_raqm() else ImageFont.Layout.BASIC
     try:
-        return ImageFont.truetype(str(chosen), size)
+        return ImageFont.truetype(str(chosen), size, layout_engine=engine)
     except OSError:
         try:
-            return ImageFont.truetype(str(font_path()), size)
+            return ImageFont.truetype(str(font_path()), size, layout_engine=engine)
         except OSError as exc:
             raise RenderError("بارگذاری فونت فارسی ناموفق بود.") from exc
 
@@ -112,6 +115,52 @@ def font_supports(path: str | None, text: str) -> bool:
 
 
 @lru_cache(maxsize=1)
+def has_raqm() -> bool:
+    """آیا Pillow با RAQM/HarfBuzz ساخته شده است؟ (shaping واقعی و bidi)"""
+    try:
+        from PIL import features
+
+        return bool(features.check("raqm"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _rtl_kwargs(text: str) -> dict:
+    """پارامترهای جهت برای RAQM؛ بدون RAQM همان ترتیب نمایشیِ آماده رسم می‌شود."""
+    if not has_raqm():
+        return {}
+    if any('\u0600' <= character <= '\u06ff' for character in text):
+        return {"direction": "rtl", "language": "fa"}
+    return {}
+
+
+_measure = None
+
+
+def _measure_draw():
+    """یک ImageDraw کوچک و مشترک برای اندازه‌گیری متن."""
+    global _measure
+    if _measure is None:
+        _measure = ImageDraw.Draw(Image.new("L", (2, 2)))
+    return _measure
+
+
+def text_width(font, text: str) -> float:
+    """عرض متنِ منطقی با shaping و جهت درست."""
+    return _measure_draw().textlength(shape_text(text), font=font, **_rtl_kwargs(text))
+
+
+def text_ink(draw, text: str, font) -> tuple[int, int, int, int]:
+    """جعبهٔ واقعی حروف (ink) با shaping و جهت درست."""
+    return draw.textbbox((0, 0), shape_text(text), font=font, **_rtl_kwargs(text))
+
+
+def draw_text(draw, xy, text: str, font, fill) -> None:
+    """رسم یک خطِ منطقی (shaping/جهت داخل همین تابع انجام می‌شود)."""
+    draw.text(xy, shape_text(text), font=font, fill=fill, **_rtl_kwargs(text))
+
+
+@lru_cache(maxsize=1)
 def _reshaper():
     import arabic_reshaper
 
@@ -127,6 +176,9 @@ def shape_text(text: str) -> str:
     configparser را صدا می‌زند و بدون کش، رندر یک صفحه چند ده ثانیه طول می‌کشید
     (چون `_fit` برای هر اندازهٔ فونت و هر خط دوباره shaping می‌کند).
     """
+    if has_raqm():
+        # خودِ HarfBuzz اتصال و ترتیب را انجام می‌دهد؛ reshaper روی آن اثر معکوس دارد.
+        return text
     from bidi.algorithm import get_display
 
     return get_display(_reshaper().reshape(text))
@@ -141,7 +193,7 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> list
     current = words[0]
     for word in words[1:]:
         candidate = f"{current} {word}"
-        if font.getlength(shape_text(candidate)) <= max_width:
+        if text_width(font, candidate) <= max_width:
             current = candidate
         else:
             lines.append(current)
@@ -184,7 +236,7 @@ def _fit(text: str, box_width: float, box_height: float, path: str | None = None
             return None, []
         if previous == (size, lines):
             continue  # همین شکست خط در اندازهٔ قبلی هم بود؛ محاسبهٔ دوباره لازم نیست
-        widest = max(font.getlength(shape_text(line)) for line in lines)
+        widest = max(text_width(font, line) for line in lines)
         needed = len(lines) * size * LINE_HEIGHT_RATIO
         if widest <= box_width and needed <= box_height:
             return font, lines
@@ -242,22 +294,18 @@ def _draw_box(canvas, draw, box, text: str, path: str | None = None,
     font, wrapped = _fit(text, box_width - 2 * padding, box_height - 2 * padding, path, cap)
     if not font or not wrapped:
         return False
-    shaped = [shape_text(logical_line) for logical_line in wrapped]
     # اندازهٔ واقعی حروف هر خط و ارتفاع کل بلوک بر اساس ink، نه متریک فونت.
-    metrics = []
-    for line in shaped:
-        ink = draw.textbbox((0, 0), line, font=font)
-        metrics.append((ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]))
+    metrics = _line_metrics(draw, wrapped, font)
     line_height = max(1.0, max(height for _, _, _, height in metrics) * 1.24)
-    block_height = line_height * len(shaped)
+    block_height = line_height * len(wrapped)
     start_y = top + (box_height - block_height) / 2
     center_x = left + box_width / 2
     color = _contrast_color(canvas, box)
-    for index, line in enumerate(shaped):
+    for index, line in enumerate(wrapped):
         ink_left, ink_top, ink_width, ink_height = metrics[index]
         target_left = center_x - ink_width / 2
         target_top = start_y + index * line_height + (line_height - ink_height) / 2
-        draw.text((target_left - ink_left, target_top - ink_top), line, font=font, fill=color)
+        draw_text(draw, (target_left - ink_left, target_top - ink_top), line, font, color)
     return True
 
 
@@ -477,10 +525,11 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
     return entries
 
 
-def _line_metrics(draw, shaped: list[str], font) -> list[tuple[int, int, int, int]]:
+def _line_metrics(draw, lines: list[str], font) -> list[tuple[int, int, int, int]]:
+    """جعبهٔ واقعی هر خط (منطقی، نه نمایشی)؛ با RAQM جهت هم اعمال می‌شود."""
     metrics = []
-    for line in shaped:
-        ink = draw.textbbox((0, 0), line, font=font)
+    for line in lines:
+        ink = text_ink(draw, line, font)
         metrics.append((ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]))
     return metrics
 
@@ -491,10 +540,9 @@ def _draw_plan(canvas: Image.Image, draw, entry: dict) -> bool:
     wrapped = entry.get("wrapped") or []
     if not wrapped:
         return False
-    shaped = [shape_text(logical_line) for logical_line in wrapped]
-    metrics = _line_metrics(draw, shaped, font)
+    metrics = _line_metrics(draw, wrapped, font)
     line_height = max(1.0, max(height for _, _, _, height in metrics) * 1.24)
-    block_height = line_height * len(shaped)
+    block_height = line_height * len(wrapped)
     center_x, center_y = entry["center"]
     color = tuple(entry.get("color") or (17, 17, 17))
     rotation = float(entry.get("rotation") or 0.0)
@@ -502,12 +550,11 @@ def _draw_plan(canvas: Image.Image, draw, entry: dict) -> bool:
     if not rotation:
         # بدون چرخش همان رسم مستقیم قبلی است؛ خروجی بیت‌به‌بیت پایدار می‌ماند.
         start_y = center_y - block_height / 2
-        for index, line in enumerate(shaped):
+        for index, line in enumerate(wrapped):
             ink_left, ink_top, ink_width, ink_height = metrics[index]
             target_left = center_x - ink_width / 2
             target_top = start_y + index * line_height + (line_height - ink_height) / 2
-            draw.text((target_left - ink_left, target_top - ink_top), line,
-                      font=font, fill=color)
+            draw_text(draw, (target_left - ink_left, target_top - ink_top), line, font, color)
         return True
 
     # چرخش: متن روی لایهٔ شفاف کشیده و بعد چرخانده و در مرکز چسبانده می‌شود.
@@ -516,12 +563,12 @@ def _draw_plan(canvas: Image.Image, draw, entry: dict) -> bool:
     layer_height = int(math.ceil(block_height)) + 8
     layer = Image.new("RGBA", (max(1, layer_width), max(1, layer_height)), (0, 0, 0, 0))
     layer_draw = ImageDraw.Draw(layer)
-    for index, line in enumerate(shaped):
+    for index, line in enumerate(wrapped):
         ink_left, ink_top, ink_width, ink_height = metrics[index]
         target_left = (layer_width - ink_width) / 2
         target_top = 4 + index * line_height + (line_height - ink_height) / 2
-        layer_draw.text((target_left - ink_left, target_top - ink_top), line,
-                        font=font, fill=color + (255,))
+        draw_text(layer_draw, (target_left - ink_left, target_top - ink_top), line,
+                  font, color + (255,))
     rotated = layer.rotate(-rotation, expand=True, resample=Image.BICUBIC)
     canvas.paste(rotated, (int(round(center_x - rotated.width / 2)),
                            int(round(center_y - rotated.height / 2))), rotated)

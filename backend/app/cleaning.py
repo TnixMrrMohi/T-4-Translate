@@ -549,6 +549,36 @@ def _nearest_fill(cv2, np, region, mask, blur: float):
     return out
 
 
+def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
+    """اگر مدل تشخیص متن نصب باشد، فقط جای خودِ حروف ماسک می‌شود.
+
+    ماسکِ درشتِ کادر (روش پیش‌فرض) کل ناحیه را به مدل می‌دهد؛ با ماسکِ نازکِ حروف،
+    خط و بافتِ نقاشیِ دورِ نوشته سالم می‌ماند. اگر مدل نبود یا در کادری چیزی ندید،
+    همان ماسک‌های پیش‌فرض برمی‌گردد تا نتیجه هرگز بدتر از قبل نشود.
+    """
+    try:
+        from . import textdet
+
+        if not textdet.available():
+            return fallback
+        found = textdet.masks(image)
+    except Exception:  # noqa: BLE001
+        return fallback
+    glyphs = (found or {}).get('text')
+    if glyphs is None or not bool(glyphs.any()):
+        return fallback
+    grown = cv2.dilate(glyphs.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
+    masks = []
+    for x0, y0, x1, y1 in boxes:
+        patch = grown[y0:y1, x0:x1]
+        if int(patch.sum()) < 8:
+            continue  # مدل در این کادر متن ندید؛ روش قبلی بهتر است
+        region = np.zeros_like(grown)
+        region[y0:y1, x0:x1] = patch
+        masks.append(region.astype(bool))
+    return masks or fallback
+
+
 def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
                 only: set[int] | None = None, force: bool = False,
                 extra: set[int] | None = None,
@@ -635,7 +665,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
             from . import inpaint
 
             if inpaint.available():
-                refined = inpaint.refine(image, result, hard_masks)
+                refined = inpaint.refine(image, result, _smart_masks(np, cv2, image, boxes, hard_masks))
                 if refined is not None:
                     result = refined
         except Exception:  # noqa: BLE001 - نبودِ مدل نباید پاک‌سازی را بشکند
