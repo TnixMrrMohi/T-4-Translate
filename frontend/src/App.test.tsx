@@ -100,6 +100,8 @@ const jobItem = {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  // پیوند کار نباید بین تست‌ها باقی بماند.
+  window.history.replaceState({}, '', '/');
   // اگر کد به دیالوگ بومی مرورگر برگردد، تست باید fail شود.
   vi.spyOn(window, 'confirm').mockImplementation(() => {
     throw new Error('window.confirm نباید استفاده شود');
@@ -635,5 +637,20 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
     imageButton.focus();
     await user.keyboard('{Enter}');
     expect(screen.getByText(/عرض کامل صفحه —/)).toBeInTheDocument();
+  });
+});
+
+describe('پیوند مستقیم به کار', () => {
+  it('با ?job=<id> همان کار باز می‌شود، حتی اگر چیزی در localStorage نباشد', async () => {
+    localStorage.clear();
+    window.history.replaceState({}, '', `/?job=${JOB_ID}`);
+    const {calls} = mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+    });
+    render(<App />);
+
+    expect(await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'})).toBeInTheDocument();
+    expect(calls.some(call => call.url === `/api/jobs/${JOB_ID}`)).toBe(true);
   });
 });

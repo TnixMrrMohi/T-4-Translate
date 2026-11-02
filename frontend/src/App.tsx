@@ -501,7 +501,10 @@ export function App() {
       .then(t => setStatus(t === 'ok' ? 'سرویس آماده است' : 'پاسخ سرویس نامعتبر است'))
       .catch(e => {if (e.name !== 'AbortError') setStatus('ارتباط با سرویس برقرار نشد');});
     
-    const last = localStorage.getItem(key);
+    // پیوند مستقیم به یک کار: `?job=<id>` بر آخرین کار ذخیره‌شده اولویت دارد
+    // (برای بازکردن سریع همان صفحه، بدون جست‌وجو در فهرست).
+    const fromUrl = new URLSearchParams(window.location.search).get('job');
+    const last = fromUrl && /^[a-f0-9]{32}$/.test(fromUrl) ? fromUrl : localStorage.getItem(key);
     if (last && /^[a-f0-9]{32}$/.test(last)) {
       fetch(`/api/jobs/${last}`, {signal: controller.signal}).then(async r => {
         if (r.status === 404) {localStorage.removeItem(key); return;}
