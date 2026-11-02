@@ -295,7 +295,9 @@ def _normalize_release(payload: dict) -> dict:
             continue
         assets[name] = {
             "size": int(asset.get("size") or 0),
+            # آدرس مرورگری برای مخزن عمومی؛ آدرس API برای مخزن خصوصی (با توکن).
             "url": asset.get("browser_download_url") or asset.get("url"),
+            "api": asset.get("url") or None,
             "digest": asset.get("digest"),
         }
     tag = str(payload.get("tag_name") or "").strip()
@@ -453,6 +455,44 @@ def _safe_extract(archive: Path, destination: Path) -> None:
 def _fetch(url: str, destination: Path, headers: dict, on_bytes=None) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     received = 0
+    try:
+        return _fetch_once(url, destination, headers, on_bytes)
+    except Exception as exc:  # noqa: BLE001
+        code = getattr(exc, "code", None)
+        if isinstance(code, int):
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", "replace")[:400]  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                body = ""
+            raise UpdateError(_error_text(code, body)) from exc
+        raise UpdateError("اتصال به گیت‌هاب برای دریافت آپدیت برقرار نشد.") from exc
+
+
+def _fetch_asset(asset: dict, destination: Path, headers: dict, name: str,
+                 on_bytes=None) -> int:
+    """دریافت یک دارایی ریلیز؛ اگر آدرس مرورگری جواب نداد، از آدرس API استفاده می‌شود.
+
+    در مخزن خصوصی، `browser_download_url` بدون احراز هویت ۴۰۴ می‌دهد؛ آدرس API با
+    توکن و `Accept: application/octet-stream` همان فایل را می‌دهد.
+    """
+    attempts = [asset.get("url"), asset.get("api")]
+    last_error: UpdateError | None = None
+    for index, url in enumerate(attempts):
+        if not url:
+            continue
+        extra = {"Accept": "application/octet-stream"} if index else {}
+        try:
+            return _fetch(url, destination, {**headers, **extra}, on_bytes)
+        except UpdateError as exc:
+            last_error = exc
+            continue
+    raise UpdateError(f"دریافت «{name}» ناموفق بود: "
+                      f"{last_error or 'آدرسی برای این فایل در ریلیز نبود.'}")
+
+
+def _fetch_once(url: str, destination: Path, headers: dict, on_bytes=None) -> int:
+    received = 0
     with _open(url, headers) as response, destination.open("wb") as handle:
         length = 0
         try:
@@ -502,7 +542,7 @@ def download() -> dict:
             raise UpdateError("این ریلیز فهرست فایل‌ها (update-manifest.json) ندارد؛ "
                               "برای به‌روزرسانی، بستهٔ کامل را از صفحهٔ انتشار بگیرید.")
         manifest_path = archive_dir / MANIFEST_ASSET
-        _fetch(manifest_asset["url"], manifest_path, headers)
+        _fetch_asset(manifest_asset, manifest_path, headers, MANIFEST_ASSET)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if not isinstance(manifest, dict):
             raise UpdateError("فهرست فایل‌های آپدیت خوانده نشد.")
@@ -530,7 +570,8 @@ def download() -> dict:
             if delta_asset.get("url"):
                 delta_path = archive_dir / delta_name
                 _set_download(message="در حال دانلود بستهٔ تغییرات…")
-                _fetch(delta_asset["url"], delta_path, headers, _progress_callback())
+                _fetch_asset(delta_asset, delta_path, headers, delta_name,
+                             _progress_callback())
                 _safe_extract(delta_path, stage_dir())
                 delta_used = True
                 staged = {item.relative_to(stage_dir()).as_posix()
@@ -544,7 +585,7 @@ def download() -> dict:
                 raise UpdateError("بستهٔ کاملی برای تکمیل آپدیت در این ریلیز نیست.")
             full_path = archive_dir / full
             _set_download(message="در حال دانلود فایل‌های باقی‌مانده…")
-            _fetch(assets[full]["url"], full_path, headers, _progress_callback())
+            _fetch_asset(assets[full], full_path, headers, full, _progress_callback())
             if remaining:
                 partial = stage_dir() / "__full__"
                 _safe_extract(full_path, partial)
@@ -578,10 +619,10 @@ def download() -> dict:
     except Exception as exc:  # noqa: BLE001
         _set_download(running=False, phase="error",
                       error=str(exc) if isinstance(exc, UpdateError)
-                      else "دانلود آپدیت ناموفق بود.")
+                      else f"دانلود آپدیت ناموفق بود ({type(exc).__name__}).")
         if isinstance(exc, UpdateError):
             raise
-        raise UpdateError("دانلود آپدیت ناموفق بود.") from exc
+        raise UpdateError(f"دانلود آپدیت ناموفق بود ({type(exc).__name__}).") from exc
     finally:
         _set_download(running=False)
 

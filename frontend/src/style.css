@@ -32,29 +32,32 @@
 .preview-card figcaption{color:#a8b9bb;font-size:13px;margin-top:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .preview-card figcaption a{color:#00ffcc}
 
-.modal-backdrop{position:fixed;inset:0;z-index:100;background:#000000e6;display:flex;flex-direction:column;padding:12px}
+/* لایهٔ مودال همیشه روی <body> پورتال می‌شود؛ z-index بالا و بستر مستقل تا هیچ
+   عنصری از کارت‌های مرحله روی تصویر نیفتد. */
+.modal-backdrop{position:fixed;inset:0;z-index:1000;isolation:isolate;background:#000000e6;display:flex;flex-direction:column;padding:12px}
 .modal-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between;color:#eef9f4;padding:4px 4px 10px}
 .modal-bar .grow{flex:1;min-width:180px;font-size:14px}
 .modal-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .modal-actions button,.modal-actions a{font:inherit;font-size:13px;font-weight:bold;padding:8px 12px;border-radius:8px;background:#123;color:#9bf3cc;border:1px solid #00ffcc60;cursor:pointer;text-decoration:none}
 .modal-actions button:disabled{opacity:.45;cursor:not-allowed}
-.modal-stage{flex:1;overflow:auto;display:flex;justify-content:center;align-items:flex-start;background:#050505;border:1px solid #00ffcc30;border-radius:12px;padding:8px}
+/* direction:ltr تا scrollLeft در حالت راست‌به‌چپ علامت/جهت عوض نکند؛ محتوای
+   صحنه تصویر است و متنی ندارد که جهت بگیرد. حساب پیمایش روی همین پایه است. */
+.modal-stage{flex:1;overflow:auto;direction:ltr;display:flex;justify-content:center;align-items:flex-start;background:#050505;border:1px solid #00ffcc30;border-radius:12px;padding:8px}
 .modal-stage:not(.fit){display:block}
 .modal-stage img{display:block;margin:0 auto;background:#fff}
 .modal-stage.fit{overflow:hidden;align-items:center}
 .modal-stage.fit img{max-width:100%;max-height:100%;object-fit:contain;background:transparent}
 .modal-zoom{color:#9bf3cc;font-size:13px;min-width:52px;text-align:center}
+.modal-focus-badge{display:inline-block;background:#ffce6b;color:#20180a;border-radius:6px;padding:1px 8px;font-size:12px;margin-inline-end:8px}
 /* --- کلیک روی تصویر: تناسب صفحه ⇄ عرض کامل --- */
 .modal-hint{color:#7d9294;font-size:12.5px;margin:0 2px 8px}
 .modal-image{position:relative;display:flex;justify-content:center;align-items:flex-start;width:100%;cursor:zoom-in;border-radius:10px;outline:none}
 .modal-image:hover{box-shadow:inset 0 0 0 1px #00ffcc55}
 .modal-image:focus-visible{box-shadow:inset 0 0 0 2px #00ffcc}
 .modal-stage.fit .modal-image{height:100%;align-items:center;overflow:hidden}
-.modal-stage.width .modal-image,.modal-stage.width .modal-image img{cursor:zoom-out}
-.modal-stage.width .modal-image{align-items:flex-start}
 
 /* --- دیالوگ کاستوم (جای confirm/alert مرورگر) --- */
-.dialog-backdrop{position:fixed;inset:0;z-index:200;background:#000000cc;display:flex;align-items:center;justify-content:center;padding:20px}
+.dialog-backdrop{position:fixed;inset:0;z-index:1200;background:#000000cc;display:flex;align-items:center;justify-content:center;padding:20px}
 .dialog{width:100%;max-width:440px;background:#0b171d;border:1px solid #00ffcc55;border-radius:14px;padding:20px;box-shadow:0 20px 60px #000000b3;color:#eef9f4;text-align:right;direction:rtl}
 .dialog.is-danger{border-color:#ff6b6b88}
 .dialog h3{margin:0 0 10px;font-size:17px;color:#eef9f4}
@@ -270,7 +273,15 @@
 .area-row{display:flex;align-items:center;gap:10px;background:#0b171d;border:1px solid #ffffff1f;border-radius:10px;padding:8px 12px;cursor:pointer;font-size:13px;color:#e7f2ef;transition:border-color .15s,background .15s}
 .area-row:hover{border-color:#00ffcc55}
 .area-row.is-picked{border-color:#00ffcc;background:#0e2426}
+.area-row.is-focused{border-color:#ffce6b;background:#241f10;box-shadow:0 0 0 1px #ffce6b66 inset}
+.area-row.is-focused .area-number{background:#ffce6b;color:#20180a}
 .area-row input{width:16px;height:16px;accent-color:#00ffcc;flex:0 0 auto;cursor:pointer}
+/* بدنهٔ ردیف: کلیک روی شماره/متن، پیش‌نمایش را به همان ناحیه می‌برد. */
+.area-open{display:flex;align-items:center;gap:10px;flex:1 1 auto;min-width:0;font:inherit;color:inherit;background:none;border:0;padding:2px 0;cursor:zoom-in;text-align:start}
+.area-open:focus-visible{outline:2px solid #00ffcc;outline-offset:2px;border-radius:6px}
+.area-open::after{content:'نمایش ↑';font-size:11px;color:#7d9294;flex:0 0 auto;opacity:0;transition:opacity .15s}
+.area-row:hover .area-open::after,.area-row.is-focused .area-open::after{opacity:1}
+.area-row.is-focused .area-open::after{color:#ffce6b}
 .area-number{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;border-radius:50%;background:#16262b;color:#9bf3cc;font-size:12px;font-weight:bold;flex:0 0 auto}
 .area-row.is-picked .area-number{background:#00ffcc;color:#04120f}
 .area-kind{color:#8fb8b0;font-size:12px;flex:0 0 auto}

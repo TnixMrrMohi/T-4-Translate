@@ -1,7 +1,7 @@
 import {describe, expect, it, vi, beforeEach} from 'vitest';
 import {fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import {App} from './App';
+import {advanceProgress, App, focusAreaView, PROGRESS_CEILING} from './App';
 
 type Handler = (init?: RequestInit) => Response | undefined;
 
@@ -48,6 +48,8 @@ function mockApi(options: {
   updateAction?: (path: string) => unknown | undefined;
   /** تنظیم‌های آپدیت. */
   updateSettings?: unknown;
+  /** پاسخ دانلود خروجی WebP (مرحلهٔ ۵). */
+  webp?: () => Response | undefined;
 } = {}) {
   const calls: {url: string; method: string; body?: unknown}[] = [];
   let ocrDone = false;
@@ -142,6 +144,13 @@ function mockApi(options: {
       if (method === 'DELETE') return json({jobId: JOB_ID, layout: {}, message: 'حالت خودکار'});
       return json(options.layout ?? {jobId: JOB_ID, width: 800, height: 600, blocks: [], layout: {}, fonts: []});
     }
+    if (url.includes('/render.webp')) {
+      const custom = options.webp?.();
+      if (custom) return custom;
+      // امضای WebP: RIFF….WEBP
+      const bytes = new Uint8Array([82, 73, 70, 70, 36, 0, 0, 0, 87, 69, 66, 80]);
+      return new Response(new Blob([bytes]), {status: 200, headers: {'Content-Type': 'image/webp'}});
+    }
     if (url.includes('/clean-areas')) {
       return json(options.cleanAreas ?? {jobId: JOB_ID, areas: [], blockCount: 0, cleaned: false});
     }
@@ -209,6 +218,9 @@ describe('فهرست کارها و حذف', () => {
     await user.click(await screen.findByRole('button', {name: /^حذف کار/}));
     const dialog = await screen.findByRole('alertdialog');
     expect(within(dialog).getByText('حذف کار')).toBeInTheDocument();
+    // دیالوگ هم مثل بقیهٔ لایه‌ها روی body پورتال می‌شود، نه داخل کارت‌ها.
+    expect(dialog.closest('.wizard-card')).toBeNull();
+    expect(dialog.closest('.dialog-backdrop')?.parentElement).toBe(document.body);
     await user.click(within(dialog).getByRole('button', {name: 'نگه دار'}));
 
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
@@ -376,6 +388,60 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     expect(screen.getByRole('button', {name: 'پردهٔ مقایسه'})).toHaveClass('is-active');
   });
 
+  it('مرحلهٔ ۵ دکمهٔ «دانلود WebP» دارد و خروجیِ تبدیل‌شده را ذخیره می‌کند', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const {calls} = mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+      clean: true,
+      render: true,
+    });
+    const createObjectURL = vi.fn(() => 'blob:t4-webp');
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', Object.assign(URL, {createObjectURL, revokeObjectURL}));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const user = userEvent.setup();
+    render(<App />);
+
+    const button = await screen.findByRole('button', {name: 'دانلود WebP'});
+    expect(screen.getByText(/فرمت/)).toHaveTextContent('WebP');
+    await user.click(button);
+
+    await waitFor(() => {
+      const download = calls.find(call => call.url.includes('/render.webp'));
+      expect(download).toBeTruthy();
+      expect(download?.url).toContain('quality=90');
+    });
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    expect(click).toHaveBeenCalled();
+    expect(await screen.findByText(/خروجی WebP ساخته و دانلود شد/)).toBeInTheDocument();
+  });
+
+  it('اگر ساخت WebP ناموفق باشد، پیام روشن می‌آید و چیزی دانلود نمی‌شود', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+      clean: true,
+      render: true,
+      webp: () => json({detail: 'تبدیل خروجی به WebP ناموفق بود.'}, 500),
+    });
+    const createObjectURL = vi.fn(() => 'blob:t4-webp');
+    vi.stubGlobal('URL', Object.assign(URL, {createObjectURL, revokeObjectURL: vi.fn()}));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', {name: 'دانلود WebP'}));
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText('تبدیل خروجی به WebP ناموفق بود.')).toBeInTheDocument();
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(click).not.toHaveBeenCalled();
+  });
+
   it('پردهٔ مقایسه با صفحه‌کلید کار می‌کند و کنترل‌های اضافی حذف شده‌اند', async () => {
     localStorage.setItem('t4-last-job', JOB_ID);
     mockApi({
@@ -454,6 +520,25 @@ describe('کپی متن و پرامپت در مرحلهٔ ترجمه', () => {
       expect(copied).toContain('ترجمه کن');
       expect(copied).toContain('شماره‌ها را دقیقاً حفظ کن');
       expect(copied.trimEnd().endsWith('[1] Hello there\n[2] Second line')).toBe(true);
+    });
+  });
+
+  it('پرامپت صریح می‌گوید حروف و کلمات عربی به‌کار نروند', async () => {
+    const user = await openTranslationStep();
+    await user.click(screen.getByRole('button', {name: 'کپی با پرامپت'}));
+
+    await waitFor(async () => {
+      const copied = await navigator.clipboard.readText();
+      // حروف عربی به‌عنوان نمونه آمده و معادل فارسیِ آن‌ها خواسته شده است.
+      expect(copied).toContain('حروف و شکل‌های عربی');
+      for (const letter of ['ي', 'ى', 'ك', 'ة', 'ۀ', 'أ', 'إ', 'ؤ', 'ئ']) {
+        expect(copied).toContain(`«${letter}»`);
+      }
+      expect(copied).toContain('«ی»، «ک»، «ه»، «ا» و «و»');
+      // و قاعدهٔ واژه‌های عربی با چند نمونه.
+      expect(copied).toContain('واژه‌ها و ترکیب‌های عربی');
+      expect(copied).toContain('«می‌باشد» ← «است»');
+      expect(copied).toContain('«فوراً» ← «بی‌درنگ»');
     });
   });
 
@@ -688,43 +773,140 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
     return user;
   }
 
-  it('کلیک روی تصویر، عرض آن را به عرض صفحه می‌برد و کلیک دوم برمی‌گرداند', async () => {
+  it('کلیک روی تصویر زوم را پله‌پله بالا می‌برد و اولین پله ۵۰٪ است', async () => {
     const user = await openPreview();
 
-    const imageButton = screen.getByRole('button', {name: 'تصویر: نمایش به عرض صفحه'});
+    const imageButton = screen.getByRole('button', {name: 'تصویر: زوم پله‌پله از ۵۰٪'});
     const image = within(imageButton).getByRole('img', {name: ALT});
     // پیش‌فرض: تناسب صفحه (بدون عرض ثابت).
-    expect(image).not.toHaveStyle({width: '100%'});
+    expect(image).not.toHaveStyle({width: '50%'});
     expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
+
+    // پلهٔ اول ۵۰٪ است، نه پرش مستقیم به ۱۰۰٪.
+    await user.click(imageButton);
+    expect(image).toHaveStyle({width: '50%'});
+    expect(screen.getByText('50٪')).toBeInTheDocument();
+
+    await user.click(imageButton);
+    expect(image).toHaveStyle({width: '75%'});
+    expect(screen.getByText('75٪')).toBeInTheDocument();
 
     await user.click(imageButton);
     expect(image).toHaveStyle({width: '100%'});
-    expect(screen.getByText(/عرض کامل صفحه —/)).toBeInTheDocument();
+    expect(screen.getByText('100٪')).toBeInTheDocument();
     expect(screen.getByRole('button', {name: 'عرض کامل'})).toBeDisabled();
 
-    await user.click(screen.getByRole('button', {name: 'تصویر: برگشت به تناسب صفحه'}));
-    expect(image).not.toHaveStyle({width: '100%'});
-    expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
-    expect(screen.getByRole('button', {name: 'عرض کامل'})).toBeEnabled();
-  });
-
-  it('کلیک روی تصویر پس از بزرگ‌نمایی، ابتدا به عرض کامل برمی‌گردد', async () => {
-    const user = await openPreview();
-    await user.click(screen.getByRole('button', {name: 'بزرگ‌تر'}));
+    await user.click(imageButton);
+    expect(image).toHaveStyle({width: '125%'});
     expect(screen.getByText('125٪')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', {name: 'تصویر: نمایش به عرض صفحه'}));
-    expect(screen.getByText(/عرض کامل صفحه —/)).toBeInTheDocument();
-    expect(within(screen.getByRole('button', {name: 'تصویر: برگشت به تناسب صفحه'}))
-      .getByRole('img')).toHaveStyle({width: '100%'});
   });
 
-  it('با صفحه‌کلید (Enter) هم عرض تصویر عوض می‌شود', async () => {
+  it('دکمهٔ «−» یک پله پایین و از پلهٔ اول به تناسب صفحه برمی‌گردد', async () => {
     const user = await openPreview();
-    const imageButton = screen.getByRole('button', {name: 'تصویر: نمایش به عرض صفحه'});
+    const smaller = screen.getByRole('button', {name: 'کوچک‌تر'});
+    // در تناسب صفحه، پله‌ای برای برگشت نیست.
+    expect(smaller).toBeDisabled();
+
+    await user.click(screen.getByRole('button', {name: 'بزرگ‌تر'}));
+    expect(screen.getByText('50٪')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: 'بزرگ‌تر'}));
+    expect(screen.getByText('75٪')).toBeInTheDocument();
+
+    await user.click(smaller);
+    expect(screen.getByText('50٪')).toBeInTheDocument();
+    await user.click(smaller);
+    expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'کوچک‌تر'})).toBeDisabled();
+  });
+
+  it('از بالاترین پله (۴۰۰٪) کلیک بعدی به تناسب صفحه برمی‌گردد', async () => {
+    const user = await openPreview();
+    for (let step = 0; step < 15; step += 1) {
+      await user.click(screen.getByRole('button', {name: /تصویر: (زوم پله‌پله از ۵۰٪|پلهٔ بعدی زوم)/}));
+    }
+    expect(screen.getByText('400٪')).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'بزرگ‌تر'})).toBeDisabled();
+    expect(screen.getByText(/بالاترین پله \(۴۰۰٪\)/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', {name: 'تصویر: پلهٔ بعدی زوم'}));
+    expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
+  });
+
+  it('مودال بیرون از ستون چسبان باز می‌شود تا بندانگشتی روی آن نیفتد', async () => {
+    const user = await openPreview();
+    const dialog = screen.getByRole('dialog');
+    // ریشهٔ مشکل: ستون راست position:sticky است و بستر خودش را می‌سازد؛ مودالی که
+    // داخلش رندر شود با z-index بالا هم زیر کارت مرحله می‌ماند و بندانگشتی رویش می‌افتد.
+    expect(dialog.closest('.sidebar')).toBeNull();
+    expect(dialog.parentElement).toBe(document.body);
+    expect(dialog).toHaveClass('modal-backdrop');
+
+    await user.click(within(dialog).getByRole('button', {name: 'بستن ✕'}));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // بستن مودال چیزی را در ستون راست جا نمی‌گذارد.
+    expect(document.body.querySelectorAll('.modal-backdrop')).toHaveLength(0);
+  });
+
+  it('در مرحله ۲ نوارهای کارت روی مودال نمی‌افتند (دکمه‌ها بیرون از لایه‌اند)', async () => {
+    const user = await openPreview();
+    const dialog = screen.getByRole('dialog');
+
+    // مودال فرزند مستقیم body است و آخرین عنصر آن؛ پس از هر چیزی که در #root است
+    // بالاتر می‌نشیند (ریشهٔ گزارش: دکمه‌های «مرحلهٔ قبل» و «اجرای مجدد OCR» و نوار
+    // «جایگزینی/حذف کامل» روی تصویر دیده می‌شدند).
+    expect(dialog.parentElement).toBe(document.body);
+    expect(document.body.lastElementChild).toBe(dialog);
+    expect(dialog.closest('.sidebar')).toBeNull();
+    expect(dialog.closest('.workspace')).toBeNull();
+    expect(dialog.closest('.wizard-card')).toBeNull();
+
+    // همهٔ کنترل‌های کارت — از جمله «کپی متن» و «کپی با پرامپت» — بیرون از لایه‌اند.
+    for (const name of ['مرحلهٔ قبل', 'اجرای دوبارهٔ OCR', 'حذف کامل',
+                        'کپی متن', 'کپی با پرامپت']) {
+      const button = screen.getByRole('button', {name});
+      expect(dialog.contains(button)).toBe(false);
+      expect(button.closest('.wizard-card')).not.toBeNull();
+    }
+    expect(screen.getByRole('button', {name: /جایگزینی با/})).toBeInTheDocument();
+
+    // هیچ لایه‌ای در کل صفحه داخل کارت یا ستون رندر نمی‌شود؛ قاعده برای همهٔ مودال‌ها.
+    const overlays = Array.from(document.querySelectorAll('.modal-backdrop'));
+    expect(overlays).toHaveLength(1);
+    for (const overlay of overlays) {
+      expect(overlay.parentElement).toBe(document.body);
+    }
+
+    // بستن مودال، کارت و دکمه‌هایش را دست‌نخورده برمی‌گرداند.
+    await user.click(within(dialog).getByRole('button', {name: 'بستن ✕'}));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'اجرای دوبارهٔ OCR'})).toBeInTheDocument();
+  });
+
+  it('در طول باز بودن لایه، محتوای پشت آن inert و از دید صفحه‌خوان پنهان است', async () => {
+    const root = document.createElement('div');
+    root.id = 'root';
+    document.body.appendChild(root);   // همان ریشه‌ای که اپ واقعی داخلش رندر می‌شود
+    try {
+      const user = await openPreview();
+      expect(root).toHaveAttribute('inert');
+      expect(root).toHaveAttribute('aria-hidden', 'true');
+
+      await user.click(screen.getByRole('button', {name: 'بستن ✕'}));
+      expect(root).not.toHaveAttribute('inert');
+      expect(root).not.toHaveAttribute('aria-hidden');
+    } finally {
+      root.remove();
+    }
+  });
+
+  it('با صفحه‌کلید (Enter) هم یک پله زوم می‌شود', async () => {
+    const user = await openPreview();
+    const imageButton = screen.getByRole('button', {name: 'تصویر: زوم پله‌پله از ۵۰٪'});
     imageButton.focus();
     await user.keyboard('{Enter}');
-    expect(screen.getByText(/عرض کامل صفحه —/)).toBeInTheDocument();
+    expect(screen.getByText('50٪')).toBeInTheDocument();
+    await user.keyboard('{Enter}');
+    expect(screen.getByText('75٪')).toBeInTheDocument();
   });
 });
 
@@ -940,6 +1122,52 @@ describe('آیکون سطل زباله در مرحلهٔ ۱', () => {
   });
 });
 
+describe('محاسبهٔ پله‌های نوار پیشرفت', () => {
+  const start = {fraction: 0.02, at: 1_000, perSecond: 0};
+
+  it('بدون گزارش سرور، نوار با گذشت زمان به ۹۹٪ نمی‌رسد', () => {
+    // ریشهٔ شکایت: تخمین زمانیِ قبلی در ۱۶ ثانیه به ۹۶٪ و بعد ۹۹٪ می‌رسید و همان‌جا
+    // می‌ماند. حالا بدون پیشرفت واقعی، نوار فقط تا ۱۲٪ (مرحلهٔ بارگذاری مدل) می‌رود.
+    let state = start;
+    let fraction = 0.02;
+    for (let second = 1; second <= 120; second += 1) {
+      const next = advanceProgress(state, 0.02, 1_000 + second * 1000);
+      state = next.pace;
+      fraction = next.fraction;
+    }
+    expect(fraction).toBeLessThanOrEqual(0.12);
+    expect(fraction).toBeGreaterThan(0.02);
+  });
+
+  it('بین دو گزارش سرور، نوار با سرعت واقعیِ مشاهده‌شده جلو می‌رود', () => {
+    // نوار اول در ثانیهٔ ۴ تمام شد: ۰٫۰۶ → ۰٫۲۰ یعنی ۰٫۰۳۵ در ثانیه.
+    let {pace} = advanceProgress(start, 0.06, 4_000);
+    ({pace} = advanceProgress(pace, 0.20, 8_000));
+    // ۴ ثانیه بی‌خبری: نباید بپرد، ولی باید آرام جلو رفته باشد.
+    const {fraction} = advanceProgress(pace, 0.20, 12_000);
+    expect(fraction).toBeGreaterThan(0.20);
+    expect(fraction).toBeLessThan(0.40);
+  });
+
+  it('عدد سرور ملاک است و از ۹۴٪ جز با گزارش خودِ سرور جلوتر نمی‌رود', () => {
+    let {pace} = advanceProgress(start, 0.60, 5_000);
+    ({pace} = advanceProgress(pace, 0.60, 5_000 + 30_000));
+    const projected = advanceProgress(pace, 0.60, 5_000 + 60_000);
+    expect(projected.fraction).toBeLessThanOrEqual(PROGRESS_CEILING);
+    // در پایانِ واقعی، عدد سرور (۰٫۹۹) نمایش داده می‌شود.
+    const done = advanceProgress(projected.pace, 0.99, 5_000 + 61_000);
+    expect(done.fraction).toBeCloseTo(0.99, 5);
+  });
+
+  it('مقدار نوار هرگز عقب نمی‌رود', () => {
+    let {pace} = advanceProgress(start, 0.35, 3_000);
+    const first = advanceProgress(pace, 0.35, 9_000).fraction;
+    expect(first).toBeGreaterThanOrEqual(0.35);
+    const back = advanceProgress(pace, 0.10, 9_500);
+    expect(back.fraction).toBeGreaterThanOrEqual(0.35);
+  });
+});
+
 describe('نوار پیشرفت تشخیص خودکار متن', () => {
   const SOURCE = {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]};
 
@@ -976,7 +1204,7 @@ describe('نوار پیشرفت تشخیص خودکار متن', () => {
     expect(await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'})).toBeInTheDocument();
   });
 
-  it('بدون پاسخ سرور، نوار با گذشت زمان خودش پر می‌شود (تخمین)', async () => {
+  it('بدون پاسخ سرور، نوار فقط آرام و محدود جلو می‌رود و به ۹۹٪ نمی‌رسد', async () => {
     const hold = deferred();
     localStorage.setItem('t4-last-job', JOB_ID);
     mockApi({
@@ -991,8 +1219,9 @@ describe('نوار پیشرفت تشخیص خودکار متن', () => {
 
     const bar = await screen.findByRole('progressbar', {name: 'پیشرفت تشخیص خودکار متن'});
     await waitFor(() => expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThan(0));
-    // نوار پیش از پایانِ واقعی پر نمی‌شود (سقف ۹۹٪).
-    expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(100);
+    // بدون پیشرفت واقعی، تخمین زمانی نوار را بالا نمی‌برد (سقف مرحلهٔ بارگذاری ۱۲٪).
+    await new Promise(resolve => window.setTimeout(resolve, 600));
+    expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(15);
     hold.resolve();
     await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument(), {timeout: 3000});
   });
@@ -1267,6 +1496,64 @@ describe('ناحیه‌های پاک‌سازی در مرحلهٔ ۳', () => {
     await openCleaning();
     expect(screen.getByRole('button', {name: 'پاک‌سازی مجدد ناحیه‌های انتخاب‌شده'})).toBeDisabled();
   });
+
+  it('کلیک روی ناحیه، پیش‌نمایش را باز و بلافاصله روی همان ناحیه زوم می‌کند', async () => {
+    const {user} = await openCleaning();
+
+    await user.click(screen.getByRole('button', {name: 'نمایش ناحیهٔ ۲ روی پیش‌نمایش'}));
+
+    const dialog = await screen.findByRole('dialog', {name: 'ناحیه‌های پاک‌سازی با شماره'});
+    // برچسب روشن می‌گوید کدام ناحیه دیده می‌شود.
+    expect(within(dialog).getByText('ناحیهٔ ۲')).toBeInTheDocument();
+    // از حالت «تناسب صفحه» بیرون آمده و زوم عددی دارد.
+    const stage = dialog.querySelector('.modal-stage');
+    expect(stage).not.toBeNull();
+    expect(stage).not.toHaveClass('fit');
+    expect(dialog.querySelector('.modal-zoom')?.textContent).toMatch(/٪$/);
+    // خود ردیف هم نشانه‌گذاری می‌شود.
+    expect(screen.getByRole('button', {name: 'نمایش ناحیهٔ ۲ روی پیش‌نمایش'}).closest('.area-row'))
+      .toHaveClass('is-focused');
+  });
+
+  it('انتخاب با چک‌باکس همچنان فقط انتخاب است و پیش‌نمایش را باز نمی‌کند', async () => {
+    const {user} = await openCleaning();
+    await user.click(screen.getByRole('checkbox', {name: 'ناحیهٔ ۱'}));
+    expect(screen.getByRole('checkbox', {name: 'ناحیهٔ ۱'})).toBeChecked();
+    expect(screen.queryByRole('dialog', {name: 'ناحیه‌های پاک‌سازی با شماره'})).not.toBeInTheDocument();
+  });
+});
+
+describe('focusAreaView — زوم و پیمایش روی یک ناحیه', () => {
+  it('ناحیهٔ کوچک را بزرگ می‌کند و مرکزش را وسط صحنه می‌آورد', () => {
+    const view = focusAreaView({
+      stageWidth: 1000, stageHeight: 800, pageWidth: 1000, pageHeight: 2000,
+      box: [400, 1400, 600, 1500],
+    });
+    expect(view.zoom).toBe(4);            // سقف زوم
+    expect(view.scrollLeft).toBe(1500);   // مرکز افقی ۵۰۰ × ۴ − ۵۰۰
+    expect(view.scrollTop).toBe(5400);    // مرکز عمودی ۱۴۵۰ × ۴ − ۴۰۰
+  });
+
+  it('برای ناحیهٔ بزرگ از کف زوم پایین‌تر نمی‌رود', () => {
+    const view = focusAreaView({
+      stageWidth: 1000, stageHeight: 800, pageWidth: 1000, pageHeight: 2000,
+      box: [0, 0, 1000, 2000],
+    });
+    expect(view.zoom).toBe(0.5);
+    expect(view.scrollTop).toBeGreaterThanOrEqual(0);
+    expect(view.scrollLeft).toBeGreaterThanOrEqual(0);
+  });
+
+  it('مختصات جابه‌جا (x2<x1) را هم می‌فهمد و اندازهٔ صفرِ صحنه را امن برمی‌گرداند', () => {
+    const flipped = focusAreaView({
+      stageWidth: 1000, stageHeight: 800, pageWidth: 1000, pageHeight: 2000,
+      box: [600, 1500, 400, 1400],
+    });
+    expect(flipped).toEqual({zoom: 4, scrollTop: 5400, scrollLeft: 1500});
+    expect(focusAreaView({
+      stageWidth: 0, stageHeight: 0, pageWidth: 1000, pageHeight: 2000, box: [0, 0, 10, 10],
+    })).toEqual({zoom: 1, scrollTop: 0, scrollLeft: 0});
+  });
 });
 
 describe('آماده نبودن موتور OCR', () => {
@@ -1415,6 +1702,8 @@ describe('ویرایش تک‌تک متن‌های درج‌شده (چیدمان
     const {user} = await openEditor();
     await user.click(await screen.findByRole('button', {name: 'ویرایش در نمایش بزرگ'}));
     const dialog = await screen.findByRole('dialog', {name: 'ویرایش بزرگ چیدمان متن‌ها'});
+    // ویرایشگر بزرگ هم پورتال است: کارت مرحله و دکمه‌هایش روی آن نمی‌افتند.
+    expect(dialog.parentElement).toBe(document.body);
     expect(within(dialog).getByText(/ویرایش چیدمان متن‌ها/)).toBeInTheDocument();
     fireEvent.keyDown(window, {key: 'Escape'});
     await waitFor(() => expect(screen.queryByRole('dialog', {name: 'ویرایش بزرگ چیدمان متن‌ها'})).not.toBeInTheDocument());

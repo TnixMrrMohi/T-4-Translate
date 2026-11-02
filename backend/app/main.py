@@ -754,8 +754,8 @@ async def render_job(job_id: str) -> dict:
                 "message": "ترجمهٔ فارسی روی پیش‌نمایش قرار گرفت؛ این خروجی هنوز آزمایشی است."}
 
 
-@app.get("/api/jobs/{job_id}/render")
-def get_render(job_id: str):
+def _fresh_render(job_id: str) -> Path:
+    """مسیر خروجی نهایی، فقط اگر با ترجمه و چیدمانِ فعلی هم‌خوان باشد."""
     workspace = workspace_for(job_id)
     path = workspace / "render.png"
     if not path.is_file():
@@ -768,7 +768,60 @@ def get_render(job_id: str):
         raise HTTPException(409, "ترجمه یا پاک‌سازی تغییر کرده است؛ دوباره نمایش را اجرا کنید.")
     if not _render_layout_matches(workspace):
         raise HTTPException(409, "چیدمان متن تغییر کرده است؛ دوباره نمایش را اجرا کنید.")
+    return path
+
+
+@app.get("/api/jobs/{job_id}/render")
+def get_render(job_id: str):
+    path = _fresh_render(job_id)
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+WEBP_QUALITY_MIN = 60
+WEBP_QUALITY_MAX = 95
+WEBP_QUALITY_DEFAULT = 90
+
+
+def _write_webp(source: Path, target: Path, quality: int) -> None:
+    """خروجی نهایی (PNG) را به WebP تبدیل و اتمی ذخیره می‌کند."""
+    with Image.open(source) as opened:
+        image = opened.convert("RGB")
+        tmp = target.with_name(target.name + ".tmp")
+        try:
+            image.save(tmp, format="WEBP", quality=quality, method=6)
+            os.replace(tmp, target)
+        finally:
+            image.close()
+            if tmp.exists():
+                tmp.unlink()
+
+
+@app.get("/api/jobs/{job_id}/render.webp")
+async def download_render_webp(job_id: str, quality: int = WEBP_QUALITY_DEFAULT):
+    """همان خروجی نهایی، تبدیل‌شده به WebP و آمادهٔ دانلود (نه نمایش در مرورگر)."""
+    path = _fresh_render(job_id)
+    quality = max(WEBP_QUALITY_MIN, min(WEBP_QUALITY_MAX, quality))
+    workspace = workspace_for(job_id)
+    image_path = workspace / f"render-{quality}.webp"
+    meta_path = workspace / f"render-{quality}.json"
+    stat = path.stat()
+    stamp = {"size": stat.st_size, "mtimeNs": stat.st_mtime_ns, "quality": quality}
+    try:
+        cached = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        cached = None
+    if cached != stamp or not image_path.is_file():
+        try:
+            await run_native_safely(_write_webp, path, image_path, quality)
+        except Exception:
+            raise HTTPException(500, "تبدیل خروجی به WebP ناموفق بود.") from None
+        meta_tmp = meta_path.with_name(meta_path.name + ".tmp")
+        meta_tmp.write_text(json.dumps(stamp), encoding="utf-8")
+        os.replace(meta_tmp, meta_path)
+    return FileResponse(
+        image_path, media_type="image/webp",
+        headers={"Cache-Control": "no-store",
+                 "Content-Disposition": f'attachment; filename="t4-{job_id}.webp"'})
 
 
 class LayoutInput(BaseModel):

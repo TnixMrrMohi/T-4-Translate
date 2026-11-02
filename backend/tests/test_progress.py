@@ -62,6 +62,44 @@ def test_recognize_reports_increasing_progress(monkeypatch, tmp_path):
     assert {'start', 'strips', 'save'} <= {stage for _, stage in seen}
 
 
+def test_progress_is_spread_over_strips_and_reserves_99(monkeypatch, tmp_path):
+    """پیشرفت باید پله‌پله با هر نوار جلو برود و ۹۹٪ برای پایان بماند."""
+    from PIL import Image as PILImage
+
+    page = tmp_path / 'tall.png'
+    PILImage.new('RGB', (200, 4000), 'white').save(page)
+    monkeypatch.setattr(ocr, '_read', lambda image:
+                        [([[10, 20], [90, 20], [90, 40], [10, 40]], 'line', 0.9)])
+    seen: list[tuple[float, str]] = []
+    ocr.recognize(page, lambda fraction, stage: seen.append((fraction, stage)))
+
+    strip_values = [fraction for fraction, stage in seen if stage in ('model', 'strips')]
+    assert len(strip_values) >= 4                 # چند پلهٔ واقعی، نه یک پرش
+    assert max(strip_values) <= 0.94 + 1e-9       # خواندن نوارها از ۹۴٪ جلوتر نمی‌رود
+    assert seen[-1][0] == 0.99 and seen[-1][1] == 'save'
+    assert 'merge' in {stage for _, stage in seen}
+    # پله‌ها یکنواخت‌اند؛ نوار در میانه گیر نمی‌کند.
+    steps = [second - first for first, second in zip(strip_values, strip_values[1:])]
+    assert max(steps) - min(steps) < 0.12
+
+
+def test_short_page_reports_strips_before_save(monkeypatch, tmp_path):
+    from PIL import Image as PILImage
+
+    page = tmp_path / 'short.png'
+    PILImage.new('RGB', (300, 400), 'white').save(page)
+    monkeypatch.setattr(ocr, '_read', lambda image:
+                        [([[5, 5], [95, 5], [95, 35], [5, 35]], 'only', 0.8)])
+    seen: list[tuple[float, str]] = []
+    ocr.recognize(page, lambda fraction, stage: seen.append((fraction, stage)))
+    assert seen[0] == (0.02, 'start')
+    fractions = [fraction for fraction, _ in seen]
+    assert fractions == sorted(fractions)
+    # صفحهٔ کوتاه هم پیش از ۹۹٪ یک پلهٔ واقعی دارد.
+    assert [stage for _, stage in seen] == ['start', 'model', 'strips', 'merge', 'save']
+    assert seen[2][0] == 0.94 and seen[-1][0] == 0.99
+
+
 def test_broken_reporter_does_not_break_ocr(monkeypatch, tmp_path):
     from PIL import Image as PILImage
 

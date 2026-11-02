@@ -125,12 +125,17 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
         except Exception:  # گزارش پیشرفت فقط تزئینی است
             pass
 
+    # درصدها طوری تقسیم شده‌اند که ۹۹٪ فقط برای لحظهٔ ذخیره بماند: خواندن نوارها تا
+    # ۹۴٪، یکی‌سازی خطوط ۹۷٪ و ذخیره ۹۹٪. قبلاً خواندن به ۹۹٪ می‌رسید و کاربر بقیهٔ
+    # کار را پشتِ همان ۹۹٪ می‌دید.
     report(0.02, 'start')
     with Image.open(path) as source:
         width, height = source.size
         if height <= STRIP_HEIGHT + STRIP_OVERLAP:
             report(0.08, 'model')  # نخستین فراخوانی، مدل را در حافظه بار می‌کند
             result = _shift(_read(str(path)), 0)
+            report(0.94, 'strips')
+            report(0.97, 'merge')
             report(0.99, 'save')
             return result
         total = _strips(height)
@@ -139,12 +144,15 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
         index = 0
         while top < height:
             bottom = min(height, top + STRIP_HEIGHT)
-            report(0.08 + 0.86 * index / total, 'model' if index == 0 else 'strips')
+            if index == 0:
+                # فقط یک بار، پیش از خواندن نوار اول: مدل در همین فراخوانی بارگذاری
+                # می‌شود و برچسب مرحله باید همین را بگوید.
+                report(0.06, 'model')
             with Image.open(path) as strip_source:
                 strip = np.array(strip_source.convert('RGB').crop((0, top, width, bottom)))
             result.extend(_shift(_read(strip), top))
             index += 1
-            report(0.08 + 0.86 * index / total, 'strips')
+            report(0.06 + 0.88 * index / total, 'strips')
             if bottom >= height:
                 break
             top = bottom - STRIP_OVERLAP

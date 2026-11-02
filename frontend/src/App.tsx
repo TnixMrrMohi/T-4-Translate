@@ -1,4 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
+import {createPortal} from 'react-dom';
 import {CompareSlider} from './CompareSlider';
 import {TextLayoutEditor} from './TextLayoutEditor';
 import {UpdatePanel} from './UpdatePanel';
@@ -100,6 +101,10 @@ const TRANSLATION_PROMPT = [
   '  ترجمه را با همان لحن بنویس: انتخاب واژه، شدت جمله و نشانه‌گذاری (!، …، ؟) باید با آن لحن بخواند.',
   '- پرانتز لحن را در پاسخ تکرار نکن؛ فقط [شماره] و ترجمهٔ فارسی.',
   '- اگر چند بالن پشت سر هم مکالمه‌اند، لحن هرکدام جدا رعایت شود و دیالوگ بین آن‌ها طبیعی بماند.',
+  '- فارسیِ امروزی بنویس؛ از حروف و شکل‌های عربی — «ي»، «ى»، «ك»، «ة»، «ۀ»، «أ»، «إ»، «ؤ»، «ئ» — استفاده نکن',
+  '  و به‌جای آن‌ها «ی»، «ک»، «ه»، «ا» و «و» بنویس (مثلاً «كتاب» ← «کتاب»، «خانۀ من» ← «خانه‌ی من»).',
+  '- واژه‌ها و ترکیب‌های عربی را با معادل فارسی عوض کن (مثلاً «می‌باشد» ← «است»، «لذا» ← «پس»، «لکن» ← «ولی»،',
+  '  «فوراً» ← «بی‌درنگ»)، مگر واژه‌ای در فارسی جاافتاده باشد و معادل رایج نداشته باشد.',
   '- فقط ترجمه را برگردان؛ مقدمه، توضیح یا جمع‌بندی اضافه نکن.',
   '- اگر قطعه‌ای ناخوانا بود، همان متن انگلیسی را با شمارهٔ خودش نگه دار.',
   '',
@@ -107,6 +112,18 @@ const TRANSLATION_PROMPT = [
 ].join('\n');
 
 const TOAST_MS = 2500;
+
+/** کیفیت تبدیل خروجی به WebP؛ همان چیزی که سرور هم پیش‌فرض می‌گیرد. */
+const WEBP_QUALITY = 90;
+
+/** حجم فایل با یک رقم اعشار و رقم‌های فارسی (برای پیام دانلود). */
+function formatFileSize(bytes: number): string {
+  const kilobytes = bytes / 1024;
+  const label = kilobytes >= 1024
+    ? `${(kilobytes / 1024).toFixed(1)} مگابایت`
+    : `${Math.max(1, Math.round(kilobytes)).toLocaleString('fa-IR')} کیلوبایت`;
+  return label.replace(/\d/g, digit => '۰۱۲۳۴۵۶۷۸۹'[Number(digit)]);
+}
 
 /** کپی در کلیپ‌بورد با روش جایگزین برای محیط‌های بدون Clipboard API. */
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -144,10 +161,58 @@ type PreviewProps = {
   downloadName?: string;
   /** نسبت ارتفاع به عرض صفحه؛ برای صفحات بلند (وب‌تون) حالت پیش‌فرض تغییر می‌کند. */
   aspect?: number;
+  /** اندازهٔ صفحهٔ اصلی (پیکسل)؛ برای پرش دقیق به یک ناحیه لازم است. */
+  pageWidth?: number;
+  pageHeight?: number;
+  /** درخواست «برو سراغ این ناحیه»؛ با هر کلیک nonce عوض می‌شود. */
+  focusRequest?: AreaFocus | null;
 };
 
-const MIN_ZOOM = 0.25;
+/** درخواست تمرکز روی یک ناحیهٔ صفحه (مثلاً یک ناحیهٔ پاک‌سازی). */
+type AreaFocus = {box: number[]; label: string; nonce: number};
+
+/**
+ * زوم و مقدار پیمایش لازم تا یک ناحیهٔ مشخص دقیقاً وسط مودال دیده شود.
+ *
+ * تصویر در حالت «عرض کامل/زوم» با عرض `zoom × عرض صحنه` نشان داده می‌شود؛ ناحیه
+ * حدود ۵۵٪ ارتفاع و ۸۰٪ عرض صحنه را پر می‌کند تا هم دیده شود و هم زمینه‌اش بماند.
+ */
+export function focusAreaView({stageWidth, stageHeight, pageWidth, pageHeight, box,
+                               minZoom = 0.5, maxZoom = 4}: {
+  stageWidth: number; stageHeight: number; pageWidth: number; pageHeight: number; box: number[];
+  minZoom?: number; maxZoom?: number;
+}): {zoom: number; scrollTop: number; scrollLeft: number} {
+  const width = Math.max(1, pageWidth);
+  const height = Math.max(1, pageHeight);
+  const boxWidth = Math.max(1, Math.abs(box[2] - box[0]));
+  const boxHeight = Math.max(1, Math.abs(box[3] - box[1]));
+  if (stageWidth <= 0 || stageHeight <= 0) return {zoom: 1, scrollTop: 0, scrollLeft: 0};
+
+  const byHeight = (0.55 * stageHeight * width) / (boxHeight * stageWidth);
+  const byWidth = (0.8 * width) / boxWidth;
+  const zoom = Math.max(minZoom, Math.min(maxZoom, Math.round(Math.min(byHeight, byWidth) * 100) / 100));
+  const scale = (zoom * stageWidth) / width;   // پیکسل نمایش به ازای هر پیکسل صفحه
+  const centerX = ((box[0] + box[2]) / 2) * scale;
+  const centerY = ((box[1] + box[3]) / 2) * scale;
+  return {
+    zoom,
+    scrollTop: Math.max(0, Math.round(centerY - stageHeight / 2)),
+    scrollLeft: Math.max(0, Math.round(centerX - stageWidth / 2)),
+  };
+}
+
 const MAX_ZOOM = 4;
+const ZOOM_STEP = 0.25;
+/** اولین پلهٔ زوم ۵۰٪ است و بعد هر پله ۲۵٪ بالا می‌رود: ۵۰، ۷۵، ۱۰۰، … ۴۰۰. */
+const FIRST_ZOOM = 0.5;
+const ZOOM_LADDER: number[] = (() => {
+  const steps: number[] = [];
+  for (let value = FIRST_ZOOM; value <= MAX_ZOOM + 1e-9; value += ZOOM_STEP) {
+    steps.push(Math.round(value * 100) / 100);
+  }
+  return steps;
+})();
+const LAST_ZOOM = ZOOM_LADDER[ZOOM_LADDER.length - 1];
 
 /** نسبت استاندارد قاب پیش‌نمایش؛ همهٔ صفحه‌ها (هر عرض/ارتفاعی) در همین قاب یک‌اندازه دیده می‌شوند. */
 const PREVIEW_RATIO = '3 / 4';
@@ -166,6 +231,45 @@ const PROGRESS_STAGES: Record<string, string> = {
 
 /** پیشرفت یک کار؛ کسر ۰ تا ۱ و نام مرحله (همان چیزی که سرور می‌دهد). */
 type Progress = {fraction: number; stage: string; running?: boolean; finished?: boolean; error?: string | null};
+
+/** سقف پیش‌بینی بین دو پاسخ سرور؛ پیش از پایانِ واقعی هرگز ۹۹٪ نشان داده نمی‌شود. */
+export const PROGRESS_CEILING = 0.94;
+/** پیش از اندازه‌گیری سرعت واقعی (مرحلهٔ بارگذاری مدل) نوار فقط آرام حرکت می‌کند. */
+const WARMUP_PACE = 0.0035;   // ≈ ۰٫۳۵٪ در ثانیه
+const WARMUP_CEILING = 0.12;
+
+/** سرعت مشاهده‌شدهٔ پیشرفت و آخرین نقطهٔ واقعی؛ برای پر کردن فاصلهٔ بین دو پاسخ سرور. */
+export type ProgressPace = {fraction: number; at: number; perSecond: number};
+
+/**
+ * پیشرفت بعدی نوار را از «سرعت واقعیِ مشاهده‌شده» حساب می‌کند، نه از یک تخمین زمانیِ
+ * ثابت. قبلاً یک تخمین زمانی با شیب تند، نوار را در ۱۶ ثانیه به ۹۶٪ و بعد ۹۹٪ می‌برد و
+ * بقیهٔ کار (که ممکن است دقیقه‌ها طول بکشد) پشتِ همان ۹۹٪ می‌ماند. حالا:
+ *   - عدد سرور همیشه ملاک است؛
+ *   - بین دو گزارش سرور، نوار با همان سرعتی که تا حالا واقعاً جلو رفته پر می‌شود؛
+ *   - تا وقتی سرور خودش نزدیک پایان را نگفته، نوار از ۹۴٪ جلوتر نمی‌رود.
+ */
+export function advanceProgress(pace: ProgressPace, serverFraction: number, now: number):
+  {pace: ProgressPace; fraction: number} {
+  const next: ProgressPace = {...pace};
+  if (serverFraction > next.fraction + 1e-6) {
+    const seconds = Math.max(0.3, (now - next.at) / 1000);
+    const speed = (serverFraction - next.fraction) / seconds;
+    // میانگین وزنی با سرعت قبلی: یک نوار کند یا تند، نوار را پرشی نمی‌کند.
+    next.perSecond = next.perSecond > 0 ? next.perSecond * 0.4 + speed * 0.6 : speed;
+    next.fraction = serverFraction;
+    next.at = now;
+  }
+  // فاصلهٔ بی‌خبری حداکثر ۱۲ ثانیه با همان سرعت پر می‌شود؛ بعد از آن متوقف می‌ماند
+  // تا نوار جلوتر از واقعیت نرود.
+  const idle = Math.min(Math.max(0, (now - next.at) / 1000), 12);
+  const warming = next.perSecond <= 0;  // هنوز هیچ نوار کاملی خوانده نشده است
+  const rate = warming ? WARMUP_PACE : next.perSecond;
+  const ceiling = warming ? WARMUP_CEILING : PROGRESS_CEILING;
+  const projected = Math.min(ceiling, next.fraction + rate * idle * 0.8);
+  const fraction = Math.min(0.99, Math.max(next.fraction, serverFraction, projected));
+  return {pace: next, fraction};
+}
 
 /** نوار پیشرفتِ تشخیص خودکار متن؛ جای متن ساده را می‌گیرد و تا ۱۰۰٪ پر می‌شود. */
 function ProgressBar({progress}: {progress: Progress}) {
@@ -193,27 +297,159 @@ function ProgressBar({progress}: {progress: Progress}) {
   );
 }
 
+// شمار لایه‌های باز؛ تا وقتی حتی یکی باز است، محتوای اپ پشت آن غیرفعال می‌ماند.
+let activeOverlays = 0;
+
+/**
+ * در طول باز بودن لایه، ریشهٔ اپ `inert` و از دید صفحه‌خوان پنهان می‌شود؛ پس هیچ
+ * دکمه‌ای از کارت مرحله‌ها نه فوکوس می‌گیرد و نه کلیک می‌شود. (رنگ‌آمیزی هم با
+ * پورتال حل شده است؛ این لایهٔ دومِ محافظت است.)
+ */
+function useOverlayIsolation() {
+  useEffect(() => {
+    const root = document.getElementById('root');
+    activeOverlays += 1;
+    if (root && activeOverlays === 1) {
+      root.setAttribute('inert', '');
+      root.setAttribute('aria-hidden', 'true');
+    }
+    return () => {
+      activeOverlays = Math.max(0, activeOverlays - 1);
+      if (root && activeOverlays === 0) {
+        root.removeAttribute('inert');
+        root.removeAttribute('aria-hidden');
+      }
+    };
+  }, []);
+}
+
+/**
+ * لایهٔ تمام‌صفحه (مودال) همیشه با پورتال مستقیم روی <body> رندر می‌شود.
+ *
+ * دلیل: ستون راست `position: sticky` است و هر عنصر sticky/fixed خودش بستر
+ * انباشتگی (stacking context) می‌سازد. مودالی که داخل ستون یا کارت رندر شود،
+ * حتی با z-index بالا، از بستر خودش بیرون نمی‌آید و عناصر بعدیِ DOM (کارت مرحله
+ * و نوار دکمه‌هایش) روی تصویر می‌افتند. پورتال این کلاس از خطا را حذف می‌کند.
+ */
+function Overlay({label, onBackdropClick, className = 'modal-backdrop', children}: {
+  label: string;
+  onBackdropClick?: () => void;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  useOverlayIsolation();
+  return createPortal(
+    <div
+      className={className}
+      data-overlay="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      onClick={event => {if (event.target === event.currentTarget) onBackdropClick?.();}}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 /** بندانگشتی ثابت‌اندازه؛ تصویر کامل (حتی ۱۵۰۰۰ پیکسل) فقط در مودال نمایش داده می‌شود. */
-function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1}: PreviewProps) {
+function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1,
+                        pageWidth = 0, pageHeight = 0, focusRequest = null}: PreviewProps) {
   const [open, setOpen] = useState(false);
   const [fit, setFit] = useState(true);
   const [zoom, setZoom] = useState(1);
+  // نام ناحیه‌ای که همین حالا در حال نمایش است (تا وقتی کاربر خودش زوم را عوض کند).
+  const [focusedLabel, setFocusedLabel] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const thumbRef = useRef<HTMLButtonElement>(null);
-  const close = () => {setOpen(false); thumbRef.current?.focus();};
+  const stageRef = useRef<HTMLDivElement>(null);
+  // فوکوس پس از بسته‌شدن لایه برمی‌گردد؛ کمی بعد، چون تا برداشتن inert از ریشه
+  // فوکوس روی محتوای پشتِ لایه نادیده گرفته می‌شود.
+  const close = () => {
+    setOpen(false);
+    setFocusedLabel(null);
+    scrollTarget.current = null;
+    window.setTimeout(() => thumbRef.current?.focus(), 0);
+  };
   // پیش‌نمایش همیشه کل صفحه را نشان می‌دهد (حتی صفحهٔ ۱۵۰۰۰ پیکسلی که باریک می‌شود)
   // و برای دیدن جزئیات، مودال با زوم و «عرض کامل» باز می‌شود.
   const tall = aspect > 2.5;
-  const openModal = () => {setOpen(true); setFit(true); setZoom(1);};
+  const openModal = () => {setOpen(true); setFit(true); setZoom(1); setFocusedLabel(null); scrollTarget.current = null;};
 
-  // «عرض کامل» یعنی تصویر به اندازهٔ عرض صفحه (۱۰۰٪ قاب) دیده شود.
-  const widthMode = !fit && zoom === 1;
-  /** کلیک روی خود تصویر: بین «تناسب صفحه» و «عرض کامل» جابه‌جا می‌کند. */
-  const toggleWidth = () => {
-    if (widthMode) {setFit(true); setZoom(1);}
-    else {setFit(false); setZoom(1);}
+  // «برو سراغ این ناحیه»: با هر کلیک روی یک ناحیه، مودال باز می‌شود و بلافاصله
+  // روی همان ناحیه زوم و پیمایش می‌شود تا معلوم باشد کدام ناحیه است.
+  const pendingFocus = useRef<AreaFocus | null>(null);
+  // نقطهٔ مقصد پیمایش تا وقتی تصویر کامل بار آمده و ارتفاعش معلوم شده باشد.
+  const scrollTarget = useRef<{top: number; left: number} | null>(null);
+  const applyScrollTarget = () => {
+    const target = scrollTarget.current;
+    const stage = stageRef.current;
+    if (!target || !stage) return;
+    stage.scrollTop = target.top;
+    stage.scrollLeft = target.left;
   };
-  const toggleLabel = widthMode ? 'تصویر: برگشت به تناسب صفحه' : 'تصویر: نمایش به عرض صفحه';
+  useEffect(() => {
+    if (!focusRequest) return;
+    pendingFocus.current = focusRequest;
+    setOpen(true);
+    setFit(false);
+    setZoom(FIRST_ZOOM);
+    setFocusedLabel(focusRequest.label);
+  }, [focusRequest?.nonce]);
+
+  // اندازه‌های صحنه فقط بعد از باز شدن لایه واقعی‌اند؛ پس زوم/پیمایش اینجا حساب
+  // می‌شود و بعد با یک فریم صبر، صحنه روی همان نقطه می‌نشیند.
+  useEffect(() => {
+    const request = pendingFocus.current;
+    if (!open || !request) return;
+    pendingFocus.current = null;
+    const stage = stageRef.current;
+    const view = focusAreaView({
+      stageWidth: Math.max(0, (stage?.clientWidth ?? 0) - 16),   // ۸ پیکسل حاشیهٔ دو طرف
+      stageHeight: Math.max(0, (stage?.clientHeight ?? 0) - 16),
+      pageWidth: pageWidth || 1,
+      pageHeight: pageHeight || 1,
+      box: request.box,
+      minZoom: FIRST_ZOOM,
+      maxZoom: MAX_ZOOM,
+    });
+    setZoom(view.zoom);
+    scrollTarget.current = {top: view.scrollTop, left: view.scrollLeft};
+    const frame = window.requestAnimationFrame(() => {
+      applyScrollTarget();
+      // بار دوم: بعد از این‌که عرض جدید تصویر در چیدمان نشست.
+      window.requestAnimationFrame(applyScrollTarget);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, focusRequest?.nonce]);
+
+  // زوم پله‌پله: اولین پله ۵۰٪ و بعد هر پله ۲۵٪ بیشتر؛ از بالاترین پله به
+  // «تناسب صفحه» برمی‌گردد. «عرض کامل» هم پلهٔ ۱۰۰٪ است، نه پرش مستقیم.
+  const zoomed = !fit;
+  const zoomIn = () => {
+    setFocusedLabel(null);
+    scrollTarget.current = null;
+    if (fit) {setFit(false); setZoom(FIRST_ZOOM); return;}
+    const next = ZOOM_LADDER.find(step => step > zoom + 1e-9);
+    if (next !== undefined) setZoom(next);
+  };
+  const zoomOut = () => {
+    setFocusedLabel(null);
+    scrollTarget.current = null;
+    if (fit) return;
+    const previous = [...ZOOM_LADDER].reverse().find(step => step < zoom - 1e-9);
+    if (previous === undefined) {setFit(true); setZoom(1); return;} // پایان پله‌ها: تناسب صفحه
+    setZoom(previous);
+  };
+  /** کلیک روی خود تصویر: یک پله بزرگ‌تر؛ پس از ۴۰۰٪ به تناسب صفحه برمی‌گردد. */
+  const nextZoomStep = () => {
+    if (zoomed && zoom >= LAST_ZOOM - 1e-9) {setFit(true); setZoom(1); return;}
+    zoomIn();
+  };
+  const showWidth = () => {setFit(false); setZoom(1); setFocusedLabel(null); scrollTarget.current = null;};
+  const showFit = () => {setFit(true); setZoom(1); setFocusedLabel(null); scrollTarget.current = null;};
+  const toggleLabel = zoomed ? 'تصویر: پلهٔ بعدی زوم' : 'تصویر: زوم پله‌پله از ۵۰٪';
 
   // اگر بندانگشتی نیاید (۴۰۴/شبکه)، یک‌بار خودکار دوباره خواسته و بعد پیام روشن
   // نشان داده می‌شود؛ آیکون «عکس شکسته» مرورگر هرگز دیده نمی‌شود.
@@ -247,10 +483,10 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') close();
-      else if (event.key === '+' || event.key === '=') {setFit(false); setZoom(z => Math.min(MAX_ZOOM, +(z + 0.25).toFixed(2)));}
-      else if (event.key === '-') {setFit(false); setZoom(z => Math.max(MIN_ZOOM, +(z - 0.25).toFixed(2)));}
-      else if (event.key === '0') {setFit(true); setZoom(1);}
-      else if (event.key === 'w' || event.key === 'W') toggleWidth();
+      else if (event.key === '+' || event.key === '=') zoomIn();
+      else if (event.key === '-') zoomOut();
+      else if (event.key === '0') showFit();
+      else if (event.key === 'w' || event.key === 'W') (zoomed && zoom === 1 ? showFit() : showWidth());
     };
     window.addEventListener('keydown', onKey);
     return () => {window.removeEventListener('keydown', onKey); document.body.style.overflow = previous;};
@@ -294,42 +530,41 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
       </figure>
 
       {open && (
-        <div
-          className="modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-label={alt}
-          onClick={event => {if (event.target === event.currentTarget) close();}}
-        >
+        <Overlay label={alt} onBackdropClick={close}>
           <div className="modal-bar">
-            <span className="grow">{alt} <span style={{color: '#7d9294', fontSize: '12px'}}>(Esc برای بستن)</span></span>
+            <span className="grow">
+              {focusedLabel ? <b className="modal-focus-badge">{focusedLabel}</b> : null}
+              {alt} <span style={{color: '#7d9294', fontSize: '12px'}}>(Esc برای بستن)</span>
+            </span>
             <span className="modal-actions">
-              <button type="button" onClick={() => {setFit(false); setZoom(z => Math.max(MIN_ZOOM, +(z - 0.25).toFixed(2)));}} disabled={!fit && zoom <= MIN_ZOOM} aria-label="کوچک‌تر">−</button>
+              <button type="button" onClick={zoomOut} disabled={!zoomed} aria-label="کوچک‌تر">−</button>
               <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
-              <button type="button" onClick={() => {setFit(false); setZoom(z => Math.min(MAX_ZOOM, +(z + 0.25).toFixed(2)));}} disabled={!fit && zoom >= MAX_ZOOM} aria-label="بزرگ‌تر">+</button>
-              <button type="button" onClick={() => {setFit(false); setZoom(1);}} disabled={widthMode}>عرض کامل</button>
-              <button type="button" onClick={() => {setFit(true); setZoom(1);}} disabled={fit}>تناسب صفحه</button>
+              <button type="button" onClick={zoomIn} disabled={zoomed && zoom >= LAST_ZOOM} aria-label="بزرگ‌تر">+</button>
+              <button type="button" onClick={showWidth} disabled={zoomed && zoom === 1}>عرض کامل</button>
+              <button type="button" onClick={showFit} disabled={fit}>تناسب صفحه</button>
               <a href={fullUrl} download={downloadName ?? `${kind}.png`}>دانلود</a>
               <button type="button" ref={closeRef} onClick={close}>بستن ✕</button>
             </span>
           </div>
           {tall && <p style={{color: '#f2c14e', fontSize: '13px', margin: '0 0 8px'}}>این صفحه بلند است؛ کل صفحه نمایش داده می‌شود. برای خواندن متن روی «+» بزنید یا روی تصویر کلیک کنید تا به عرض صفحه در بیاید.</p>}
           <p className="modal-hint" aria-live="polite">
-            {widthMode
-              ? 'عرض کامل صفحه — برای برگشت به تناسب صفحه، روی تصویر کلیک کنید'
-              : 'تناسب صفحه — برای عرض کامل، روی تصویر کلیک کنید'}
+            {!zoomed
+              ? 'تناسب صفحه — روی تصویر کلیک کنید تا زوم پله‌پله از ۵۰٪ شروع شود (هر پله ۲۵٪)'
+              : zoom >= LAST_ZOOM
+                ? 'بالاترین پله (۴۰۰٪) — کلیک بعدی به تناسب صفحه برمی‌گردد'
+                : `${Math.round(zoom * 100)}٪ — کلیک روی تصویر: یک پله بالاتر`}
           </p>
-          <div className={`modal-stage${fit ? ' fit' : ''}${widthMode ? ' width' : ''}`}>
+          <div className={`modal-stage${fit ? ' fit' : ''}`} ref={stageRef}>
             {/* کلیک روی تصویر عرض را به عرض صفحه می‌برد و کلیک دوم برمی‌گرداند. */}
             <div
               className="modal-image"
               role="button"
               tabIndex={0}
               aria-label={toggleLabel}
-              title={widthMode ? 'کلیک: تناسب صفحه' : 'کلیک: عرض کامل صفحه'}
-              onClick={toggleWidth}
+              title={zoomed && zoom >= LAST_ZOOM ? 'کلیک: برگشت به تناسب صفحه' : 'کلیک: یک پله زوم بیشتر'}
+              onClick={nextZoomStep}
               onKeyDown={event => {
-                if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); toggleWidth();}
+                if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); nextZoomStep();}
               }}
             >
               <img
@@ -339,11 +574,13 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
                 onLoad={() => {
                   // نسخهٔ کامل ساخته شد؛ بندانگشتی هم دوباره خواسته می‌شود.
                   if (thumbFailed) {setThumbFailed(false); setThumbRetry(value => value + 1);}
+                  // ارتفاع واقعی تصویر تازه معلوم شده؛ پیمایش ناحیه دوباره می‌نشیند.
+                  applyScrollTarget();
                 }}
               />
             </div>
           </div>
-        </div>
+        </Overlay>
       )}
     </>
   );
@@ -364,6 +601,7 @@ type DialogState = {
 function Dialog({request, onClose}: {request: DialogState; onClose: (ok: boolean) => void}) {
   const okRef = useRef<HTMLButtonElement>(null);
   const confirmKind = request.kind === 'confirm';
+  useOverlayIsolation();
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -386,7 +624,7 @@ function Dialog({request, onClose}: {request: DialogState; onClose: (ok: boolean
     else if (!event.shiftKey && document.activeElement === last) {event.preventDefault(); first.focus();}
   };
 
-  return (
+  return createPortal((
     <div
       className="dialog-backdrop"
       onClick={event => {if (event.target === event.currentTarget) onClose(false);}}
@@ -418,7 +656,7 @@ function Dialog({request, onClose}: {request: DialogState; onClose: (ok: boolean
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 export function App() {
@@ -443,9 +681,13 @@ export function App() {
   // شمارهٔ نسخهٔ هر پیش‌نمایش؛ با هر بازسازی زیاد می‌شود تا کش بندانگشتی و تصویر دور زده شود.
   const [cleanVersion, setCleanVersion] = useState(0);
   const [cleanAreas, setCleanAreas] = useState<CleanArea[]>([]);
+  // «برو سراغ این ناحیه»: با هر کلیک روی یک ناحیه، preview روی همان ناحیه می‌رود.
+  const [areaFocus, setAreaFocus] = useState<AreaFocus | null>(null);
   const [areaPick, setAreaPick] = useState<number[]>([]);
   const [areasBusy, setAreasBusy] = useState(false);
   const [renderVersion, setRenderVersion] = useState(0);
+  // ساخت و دانلود خروجی WebP در مرحلهٔ ۵ (تبدیل سمت سرور انجام می‌شود).
+  const [webpBusy, setWebpBusy] = useState(false);
   // چیدمان دستی متن‌ها (فونت/اندازه/موقعیت/چرخش هر متن) در مرحلهٔ ۴.
   const [layoutDoc, setLayoutDoc] = useState<LayoutDoc | null>(null);
   const [layoutBusy, setLayoutBusy] = useState(false);
@@ -467,6 +709,8 @@ export function App() {
   const progressTimer = useRef<number | null>(null);
   const progressHideTimer = useRef<number | null>(null);
   const progressActive = useRef(false);
+  // سرعت واقعیِ مشاهده‌شدهٔ پیشرفت؛ برای پر کردن فاصلهٔ بین دو پاسخ سرور.
+  const progressPace = useRef<ProgressPace>({fraction: 0.02, at: 0, perSecond: 0});
 
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const dialogResolve = useRef<((ok: boolean) => void) | null>(null);
@@ -819,6 +1063,41 @@ export function App() {
     await runOcr(2);
   }
 
+  /** خروجی نهایی را از سرور به WebP می‌گیرد و همان لحظه دانلود می‌کند. */
+  async function downloadWebp() {
+    if (!job) return;
+    setWebpBusy(true);
+    try {
+      const response = await fetch(
+        `/api/jobs/${job.jobId}/render.webp?quality=${WEBP_QUALITY}&v=${renderVersion}`);
+      if (!response.ok) {
+        let detail = 'تبدیل خروجی به WebP ناموفق بود.';
+        try {
+          const body = await response.json();
+          if (typeof body?.detail === 'string') detail = body.detail;
+        } catch {
+          // پاسخ JSON نبود؛ همان پیام پیش‌فرض می‌ماند.
+        }
+        fail(detail);
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `t4-${job.jobId}.webp`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage(`خروجی WebP ساخته و دانلود شد (${formatFileSize(blob.size)}).`);
+    } catch {
+      fail('دانلود خروجی WebP ناموفق بود؛ اتصال به سرور محلی را بررسی کنید.');
+    } finally {
+      setWebpBusy(false);
+    }
+  }
+
   async function renderImage() {
     if (!job || busy || loadingData) return;
     setBusy(true); setMessage('در حال درج ترجمهٔ فارسی روی تصویر…');
@@ -896,6 +1175,17 @@ export function App() {
     } catch {
       /* فهرست ناحیه‌ها اختیاری است؛ پاک‌سازی کامل بدون آن هم کار می‌کند. */
     }
+  }
+
+  /** پرش فوری پیش‌نمایش به یک ناحیه تا دقیقاً معلوم شود کدام ناحیه است. */
+  function focusArea(area: CleanArea) {
+    const box = (area.area && area.area.length === 4 ? area.area : area.bbox) || [];
+    if (box.length !== 4) return;
+    setAreaFocus(previous => ({
+      box,
+      label: `ناحیهٔ ${area.number.toLocaleString('fa-IR')}`,
+      nonce: (previous?.nonce ?? 0) + 1,
+    }));
   }
 
   /** انتخاب/حذف یک ناحیه از فهرست. */
@@ -1091,7 +1381,7 @@ export function App() {
   function startProgress(jobId: string) {
     stopProgressTimers();
     progressActive.current = true;
-    const startedAt = Date.now();
+    progressPace.current = {fraction: 0.02, at: Date.now(), perSecond: 0};
     setOcrProgress({fraction: 0.02, stage: 'start', running: true});
     const poll = async () => {
       let server: Progress | null = null;
@@ -1102,14 +1392,15 @@ export function App() {
           if (typeof data.fraction === 'number') server = data as Progress;
         }
       } catch {
-        // سرور جواب نداد؛ تخمین زمانی نوار را جلو می‌برد.
+        // سرور جواب نداد؛ نوار روی همان مقدار (با حرکت آرام مرحلهٔ اول) می‌ماند.
       }
-      const seconds = (Date.now() - startedAt) / 1000;
-      // تخمین: سریع بالا می‌رود و آرام به ۹۶٪ می‌رسد تا پیش از پایانِ واقعی پر نشود.
-      const estimate = Math.min(0.96, 1 - Math.exp(-seconds / 5));
+      // عدد سرور ملاک است؛ بین دو گزارش، نوار با سرعتِ واقعیِ مشاهده‌شده پر می‌شود
+      // (نه با تخمین زمانیِ کور که زودتر از موعد به ۹۹٪ می‌رسید).
+      const advanced = advanceProgress(progressPace.current, server?.fraction ?? 0, Date.now());
+      progressPace.current = advanced.pace;
       setOcrProgress(previous => {
         if (!previous) return previous;
-        const fraction = Math.min(0.99, Math.max(previous.fraction, estimate, server?.fraction ?? 0));
+        const fraction = Math.min(0.99, Math.max(previous.fraction, advanced.fraction));
         const stage = server?.stage && server.stage !== 'idle' ? server.stage : previous.stage;
         return {fraction, stage, running: true};
       });
@@ -1255,6 +1546,9 @@ export function App() {
               aspect={job.height / job.width}
               alt="ناحیه‌های پاک‌سازی با شماره"
               downloadName={`t4-${job.jobId}-clean-areas.png`}
+              pageWidth={job.width}
+              pageHeight={job.height}
+              focusRequest={areaFocus}
               caption={<span>ناحیه‌های پاک‌سازی — شماره‌ها مثل فهرست کنار</span>}
             />
           )}
@@ -1564,9 +1858,10 @@ export function App() {
                       </p>
                       <div className="area-list" role="group" aria-label="ناحیه‌های پاک‌سازی">
                         {translatedAreas.map(area => (
-                          <label
+                          <div
                             key={area.number}
-                            className={`area-row${areaPick.includes(area.number) ? ' is-picked' : ''}`}
+                            className={`area-row${areaPick.includes(area.number) ? ' is-picked' : ''}`
+                              + `${areaFocus?.label === `ناحیهٔ ${area.number.toLocaleString('fa-IR')}` ? ' is-focused' : ''}`}
                           >
                             <input
                               type="checkbox"
@@ -1575,10 +1870,18 @@ export function App() {
                               disabled={busy || areasBusy}
                               aria-label={`ناحیهٔ ${area.number.toLocaleString('fa-IR')}`}
                             />
-                            <span className="area-number">{area.number.toLocaleString('fa-IR')}</span>
-                            <span className="area-kind">{area.kindLabel}</span>
-                            <span className="area-text" dir="rtl">{area.text}</span>
-                          </label>
+                            <button
+                              type="button"
+                              className="area-open"
+                              title="نمایش همین ناحیه روی پیش‌نمایش"
+                              aria-label={`نمایش ناحیهٔ ${area.number.toLocaleString('fa-IR')} روی پیش‌نمایش`}
+                              onClick={() => focusArea(area)}
+                            >
+                              <span className="area-number">{area.number.toLocaleString('fa-IR')}</span>
+                              <span className="area-kind">{area.kindLabel}</span>
+                              <span className="area-text" dir="rtl">{area.text}</span>
+                            </button>
+                          </div>
                         ))}
                       </div>
                       <div className="wizard-nav start">
@@ -1746,7 +2049,16 @@ export function App() {
                     cleanVersion={cleanVersion}
                   />
 
+                  <p className="wizard-help">
+                    خروجی نهایی با فرمت <b>WebP</b> ذخیره می‌شود: همان تصویر با حجم کم‌تر و کیفیت بالا،
+                    مناسب برای آپلود در وب‌تون.
+                  </p>
+
                   <div className="wizard-nav">
+                    <button type="button" className="ocr" disabled={busy || loadingData || webpBusy}
+                      onClick={() => void downloadWebp()}>
+                      {webpBusy ? 'در حال ساخت WebP…' : 'دانلود WebP'}
+                    </button>
                     <button type="button" className="ghost" onClick={() => goToStep(4)}>مرحلهٔ قبل (درج)</button>
                     <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void renderImage()}>درج دوبارهٔ ترجمه</button>
                     <button type="button" className="ghost" onClick={resetApp}>کار جدید</button>
@@ -1760,13 +2072,7 @@ export function App() {
       </div>
 
       {layoutModal && job && layoutDoc && (
-        <div
-          className="modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-label="ویرایش بزرگ چیدمان متن‌ها"
-          onClick={event => {if (event.target === event.currentTarget) setLayoutModal(false);}}
-        >
+        <Overlay label="ویرایش بزرگ چیدمان متن‌ها" onBackdropClick={() => setLayoutModal(false)}>
           <div className="modal-bar">
             <span className="grow">ویرایش چیدمان متن‌ها (Esc برای بستن)</span>
             <span className="modal-actions">
@@ -1786,7 +2092,7 @@ export function App() {
               disabled={layoutBusy || busy || loadingData}
             />
           </div>
-        </div>
+        </Overlay>
       )}
 
       {dialog && <Dialog request={dialog} onClose={closeDialog} />}
