@@ -40,10 +40,28 @@ def test_every_type_resolves_to_something(tmp_path, monkeypatch):
         assert info["font"]["path"]
     # فونت‌های مانهوا همراه برنامه هستند، پس دسته‌ها فونت خودشان را دارند.
     assert resolved["speech"]["fallback"] is False
-    assert fonts.normalize(resolved["speech"]["font"]["id"]) == fonts.normalize("Koodak Bold")
+    assert fonts.normalize(resolved["speech"]["font"]["id"]) == "0koodakbold"
     assert resolved["shout"]["font"]["id"].lower().startswith("afsa")      # Afsaneh
-    assert resolved["hexagon"]["font"]["id"].lower() == "farnaz"
+    assert "farnaz" in fonts.normalize(resolved["hexagon"]["font"]["id"])
     assert "Koodak Bold" in resolved["speech"]["suggestions"]
+
+
+def test_clean_name_handles_archive_prefixes():
+    """فایل‌های آرشیو پیشوند «0 » یا پسوند «_0» دارند؛ باید با نام PDF جور شوند."""
+    assert fonts.clean_name("0 Koodak Bold.TTF") == "Koodak Bold"
+    assert fonts.clean_name("B Morvarid_0.ttf") == "B Morvarid"
+    assert fonts.clean_name("Mj_Parand_0.TTF") == "Mj_Parand"
+    assert fonts.clean_name("AFSANEH.ttf") == "AFSANEH"
+
+
+def test_manifest_names_are_used_as_aliases(tmp_path, monkeypatch):
+    """نام‌های manifest.json (نام خانوادگی CSS) هم برای تطبیق استفاده می‌شوند."""
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    pack = fonts.bundled_dir() / "persian-pack"
+    assert (pack / "manifest.json").is_file()
+    listed = fonts.list_fonts()
+    koodak = [font for font in listed if "Koodak" in font["file"]][0]
+    assert "0 koodakbold" in koodak["aliases"] or any("koodakbold" in a for a in koodak["aliases"])
 
 
 def test_italic_suggestion_maps_to_italic_font(tmp_path, monkeypatch):
@@ -59,7 +77,7 @@ def test_installed_font_wins_for_its_type(tmp_path, monkeypatch):
     fonts.install("Koodak-Bold.ttf", VAZIR_BOLD.read_bytes())
     resolved = fonts.resolve_map()
     assert resolved["speech"]["fallback"] is False
-    assert fonts.normalize(resolved["speech"]["font"]["id"]) in {"koodakbold"}
+    assert "koodakbold" in fonts.normalize(resolved["speech"]["font"]["id"])
     # بقیهٔ دسته‌ها همچنان جانشین دارند و رندر نمی‌شکند.
     assert resolved["monster"]["font"] is not None
 

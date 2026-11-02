@@ -69,6 +69,19 @@ def normalize(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
+def clean_name(name: str) -> str:
+    """نام فایل/فونت را از پیشوند شماره و پسوند تکرار آرشیو پاک می‌کند.
+
+    در آرشیو اصلی، بعضی فایل‌ها «0 » یا «_0» دارند (نتیجهٔ استخراج RAR)؛
+    «0 Koodak Bold.TTF» و «B Morvarid_0.ttf» باید با «Koodak Bold» و «B Morvarid»
+    جور دربیایند.
+    """
+    text = Path(name).stem if Path(name).suffix else name
+    text = re.sub(r"^\s*\d+\s+", "", text)      # «0 Koodak Bold»
+    text = re.sub(r"_\d+$", "", text)            # «B Morvarid_0»
+    return text.strip()
+
+
 def _font_family(path: Path) -> tuple[str, str]:
     try:
         font = ImageFont.truetype(str(path), 12)
@@ -80,6 +93,9 @@ def _font_family(path: Path) -> tuple[str, str]:
 
 def _record(path: Path, bundled: bool) -> dict:
     family, style = _font_family(path)
+    clean = clean_name(path.name)
+    aliases = {normalize(family), normalize(clean), normalize(f"{family}{style}"),
+               normalize(f"{clean}{style}")}
     return {
         "id": path.stem,
         "name": f"{family} {style}".strip(),
@@ -88,8 +104,33 @@ def _record(path: Path, bundled: bool) -> dict:
         "file": path.name,
         "bundled": bundled,
         "path": str(path),
-        "aliases": sorted({normalize(family), normalize(path.stem), normalize(f"{family}{style}")}),
+        # نام خانوادگی در CSS همراه برنامه (persian-fonts.css) از نام فایل می‌آید.
+        "cssFamily": path.stem,
+        "aliases": sorted(alias for alias in aliases if alias),
     }
+
+
+def _manifest_aliases(directory: Path) -> dict[str, set[str]]:
+    """از manifest.json هر بستهٔ فونت، نام خانوادگی/CSS هر فایل را می‌خوانیم."""
+    import json
+
+    mapping: dict[str, set[str]] = {}
+    path = directory / "manifest.json"
+    if not path.is_file():
+        return mapping
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return mapping
+    if not isinstance(entries, list):
+        return mapping
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("file"):
+            continue
+        names = {entry.get("family") or "", Path(entry["file"]).stem}
+        mapping.setdefault(Path(entry["file"]).name, set()).update(
+            normalize(name) for name in names if name)
+    return mapping
 
 
 def list_fonts() -> list[dict]:
@@ -100,10 +141,12 @@ def list_fonts() -> list[dict]:
     for directory, bundled in directories:
         if not directory.is_dir():
             continue
+        manifest = _manifest_aliases(directory)
         for path in sorted(directory.iterdir()):
             if path.suffix.lower() not in FONT_EXTENSIONS or not path.is_file():
                 continue
             record = _record(path, bundled)
+            record["aliases"] = sorted(set(record["aliases"]) | manifest.get(path.name, set()))
             key = normalize(record["family"]) + normalize(record["style"])
             if key in seen:
                 continue

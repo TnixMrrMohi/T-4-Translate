@@ -55,6 +55,8 @@ type FontType = {
   resolved: string | null;
   resolvedId: string | null;
   resolvedFamily: string | null;
+  resolvedCss: string | null;
+  bundled: boolean;
 };
 type FontsDoc = {fonts: FontEntry[]; types: FontType[]};
 
@@ -1118,10 +1120,12 @@ export function App() {
                             {item.resolved ?? '—'}
                             {item.fallback && <span className="font-type-tag">جانشین</span>}
                           </span>
-                          <span className="font-type-hint">
-                            {item.fallback
-                              ? `پیشنهاد: ${item.suggestions.slice(0, 3).join('، ')}`
-                              : ''}
+                          <span
+                            className="font-type-sample"
+                            style={item.bundled && item.resolvedCss ? {fontFamily: `'${item.resolvedCss}'`} : undefined}
+                            dir="rtl"
+                          >
+                            نمونهٔ متن فارسی
                           </span>
                         </li>
                       ))}

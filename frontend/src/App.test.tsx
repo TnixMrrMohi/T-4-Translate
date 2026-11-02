@@ -487,9 +487,11 @@ describe('فونت هر نوع بالن در مرحلهٔ درج ترجمه', ()
     ],
     types: [
       {kind: 'speech', label: 'صحبت عادی', suggestions: ['Koodak Bold', 'Roya Bold'], missing: ['Koodak Bold'],
-       fallback: true, resolved: 'Vazirmatn Regular', resolvedId: 'Vazirmatn-Regular', resolvedFamily: 'Vazirmatn'},
+       fallback: true, resolved: 'Vazirmatn Regular', resolvedId: 'Vazirmatn-Regular',
+       resolvedFamily: 'Vazirmatn', resolvedCss: 'Vazirmatn-Regular', bundled: true},
       {kind: 'shout', label: 'بالن فریاد', suggestions: ['Afsaneh', 'Kourush'], missing: [],
-       fallback: false, resolved: 'Afsaneh', resolvedId: 'Afsaneh', resolvedFamily: 'Afsaneh'},
+       fallback: false, resolved: 'Afsaneh', resolvedId: 'Afsaneh',
+       resolvedFamily: 'Afsaneh', resolvedCss: 'AFSANEH', bundled: true},
     ],
   };
 
@@ -511,7 +513,10 @@ describe('فونت هر نوع بالن در مرحلهٔ درج ترجمه', ()
     expect(screen.getByText('Vazirmatn Regular')).toBeInTheDocument();
     // دسته‌ای که فونت پیشنهادی‌اش نصب نیست، برچسب «جانشین» دارد.
     expect(screen.getByText('جانشین')).toBeInTheDocument();
-    expect(screen.getByText(/پیشنهاد: Koodak Bold، Roya Bold/)).toBeInTheDocument();
+    // هر ردیف نمونهٔ متن را با فونت همان دسته نشان می‌دهد.
+    const samples = screen.getAllByText('نمونهٔ متن فارسی');
+    expect(samples).toHaveLength(2);
+    expect(samples[1]).toHaveStyle({fontFamily: "'AFSANEH'"});
     expect(screen.getByLabelText('افزودن فونت')).toBeInTheDocument();
     expect(screen.getByText(/۲ فونت موجود است|2 فونت موجود است/)).toBeInTheDocument();
   });

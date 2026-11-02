@@ -1,0 +1,673 @@
+/* Auto-generated from Fonts.rar (84 Persian fonts) */
+/* Source: Google Drive Fonts.rar - extracted 2026-11-02 */
+@font-face {
+  font-family: '0 Farnaz';
+  src: url('/fonts/persian-pack/0%20Farnaz.TTF') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Khodkar Bold';
+  src: url('/fonts/persian-pack/0%20Khodkar%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Koodak Bold';
+  src: url('/fonts/persian-pack/0%20Koodak%20Bold.TTF') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Koodak Outline';
+  src: url('/fonts/persian-pack/0%20Koodak%20Outline.TTF') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Lotus Bold';
+  src: url('/fonts/persian-pack/0%20Lotus%20Bold.TTF') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Mahsa';
+  src: url('/fonts/persian-pack/0%20Mahsa.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Majid Shadow';
+  src: url('/fonts/persian-pack/0%20Majid%20Shadow.TTF') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Mashhad Bold';
+  src: url('/fonts/persian-pack/0%20Mashhad%20Bold.TTF') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Mashhad';
+  src: url('/fonts/persian-pack/0%20Mashhad.TTF') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Mehr Bold';
+  src: url('/fonts/persian-pack/0%20Mehr%20Bold.TTF') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Narm';
+  src: url('/fonts/persian-pack/0%20Narm.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Roya Bold';
+  src: url('/fonts/persian-pack/0%20Roya%20Bold.TTF') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Roya';
+  src: url('/fonts/persian-pack/0%20Roya.TTF') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Soroosh';
+  src: url('/fonts/persian-pack/0%20Soroosh.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Tannaz Bold';
+  src: url('/fonts/persian-pack/0%20Tannaz%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Tehran';
+  src: url('/fonts/persian-pack/0%20Tehran.TTF') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Titr Bold';
+  src: url('/fonts/persian-pack/0%20Titr%20Bold.TTF') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Traffic Bold';
+  src: url('/fonts/persian-pack/0%20Traffic%20Bold.TTF') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Traffic';
+  src: url('/fonts/persian-pack/0%20Traffic.TTF') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: '0 Yekan';
+  src: url('/fonts/persian-pack/0%20Yekan.TTF') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'A KORDi';
+  src: url('/fonts/persian-pack/A%20KORDi.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'AFSANEH';
+  src: url('/fonts/persian-pack/AFSANEH.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Arefi';
+  src: url('/fonts/persian-pack/Arefi.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Aseman';
+  src: url('/fonts/persian-pack/B%20Aseman.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Elham';
+  src: url('/fonts/persian-pack/B%20Elham.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Elm Border';
+  src: url('/fonts/persian-pack/B%20Elm%20Border.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Elm Italic';
+  src: url('/fonts/persian-pack/B%20Elm%20Italic.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Elm';
+  src: url('/fonts/persian-pack/B%20Elm.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Esfehan Bold';
+  src: url('/fonts/persian-pack/B%20Esfehan%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Farnaz';
+  src: url('/fonts/persian-pack/B%20Farnaz.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Haleh Bold_0';
+  src: url('/fonts/persian-pack/B%20Haleh%20Bold_0.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Haleh_0';
+  src: url('/fonts/persian-pack/B%20Haleh_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Helal';
+  src: url('/fonts/persian-pack/B%20Helal.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Homa';
+  src: url('/fonts/persian-pack/B%20Homa.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Koodak Bold';
+  src: url('/fonts/persian-pack/B%20Koodak%20Bold.TTF') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Koodak Outline';
+  src: url('/fonts/persian-pack/B%20Koodak%20Outline.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Koodk Bold';
+  src: url('/fonts/persian-pack/B%20Koodk%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Kourosh_0';
+  src: url('/fonts/persian-pack/B%20Kourosh_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Lotus';
+  src: url('/fonts/persian-pack/B%20Lotus.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Mehr Bold';
+  src: url('/fonts/persian-pack/B%20Mehr%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Mitra Bold';
+  src: url('/fonts/persian-pack/B%20Mitra%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Mitra';
+  src: url('/fonts/persian-pack/B%20Mitra.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Moj_0';
+  src: url('/fonts/persian-pack/B%20Moj_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Morvarid_0';
+  src: url('/fonts/persian-pack/B%20Morvarid_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Roya Bold';
+  src: url('/fonts/persian-pack/B%20Roya%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Roya';
+  src: url('/fonts/persian-pack/B%20Roya.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Setareh Bold';
+  src: url('/fonts/persian-pack/B%20Setareh%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Setareh';
+  src: url('/fonts/persian-pack/B%20Setareh.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Siavash_0';
+  src: url('/fonts/persian-pack/B%20Siavash_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Sina Bold';
+  src: url('/fonts/persian-pack/B%20Sina%20Bold.TTF') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'B Yekan';
+  src: url('/fonts/persian-pack/B%20Yekan.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'DecoType Naskh Variants';
+  src: url('/fonts/persian-pack/DecoType%20Naskh%20Variants.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'DimaBlue';
+  src: url('/fonts/persian-pack/DimaBlue.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Far.Johar';
+  src: url('/fonts/persian-pack/Far.Johar.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Far_AMina';
+  src: url('/fonts/persian-pack/Far_AMina.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Far_Beirut';
+  src: url('/fonts/persian-pack/Far_Beirut.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Far_DastNevis';
+  src: url('/fonts/persian-pack/Far_DastNevis.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Far_Elham';
+  src: url('/fonts/persian-pack/Far_Elham.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Gam-Azad';
+  src: url('/fonts/persian-pack/Gam-Azad.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Hayat';
+  src: url('/fonts/persian-pack/Hayat.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IRDastNevis';
+  src: url('/fonts/persian-pack/IRDastNevis.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IRDavat';
+  src: url('/fonts/persian-pack/IRDavat.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IRElham';
+  src: url('/fonts/persian-pack/IRElham.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IRFarnaz';
+  src: url('/fonts/persian-pack/IRFarnaz.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IRKamran';
+  src: url('/fonts/persian-pack/IRKamran.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IranNastaliq';
+  src: url('/fonts/persian-pack/IranNastaliq.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Kaghaz Alef Bold';
+  src: url('/fonts/persian-pack/Kaghaz%20Alef%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Lalezar-Regular';
+  src: url('/fonts/persian-pack/Lalezar-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Mj_Liner Print-out Light_0';
+  src: url('/fonts/persian-pack/Mj_Liner%20Print-out%20Light_0.ttf') format('truetype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Mj_Liner Print-out_0';
+  src: url('/fonts/persian-pack/Mj_Liner%20Print-out_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Mj_Liner Screen Bd_0';
+  src: url('/fonts/persian-pack/Mj_Liner%20Screen%20Bd_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Mj_Liner Screen_0';
+  src: url('/fonts/persian-pack/Mj_Liner%20Screen_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Mj_Liner XL_0';
+  src: url('/fonts/persian-pack/Mj_Liner%20XL_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Mj_Liner XXL_0';
+  src: url('/fonts/persian-pack/Mj_Liner%20XXL_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Mj_Parand_0';
+  src: url('/fonts/persian-pack/Mj_Parand_0.TTF') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Mj_Ramollah Outline_0';
+  src: url('/fonts/persian-pack/Mj_Ramollah%20Outline_0.TTF') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Mj_Ramollah_0';
+  src: url('/fonts/persian-pack/Mj_Ramollah_0.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Negaar Bold';
+  src: url('/fonts/persian-pack/Negaar%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Persian-Jadid pc';
+  src: url('/fonts/persian-pack/Persian-Jadid%20pc.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Vazir-Code';
+  src: url('/fonts/persian-pack/Vazir-Code.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Yekan';
+  src: url('/fonts/persian-pack/Yekan.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'aref_ graffiti';
+  src: url('/fonts/persian-pack/aref_%20graffiti.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'mj moshfegh';
+  src: url('/fonts/persian-pack/mj%20moshfegh.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'zangar';
+  src: url('/fonts/persian-pack/zangar.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}

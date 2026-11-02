@@ -705,7 +705,9 @@ def list_fonts() -> dict:
                    "missing": info["missing"], "fallback": info["fallback"],
                    "resolved": info["font"]["name"] if info["font"] else None,
                    "resolvedId": info["font"]["id"] if info["font"] else None,
-                   "resolvedFamily": info["font"]["family"] if info["font"] else None}
+                   "resolvedFamily": info["font"]["family"] if info["font"] else None,
+                   "resolvedCss": info["font"].get("cssFamily") if info["font"] else None,
+                   "bundled": bool(info["font"]["bundled"]) if info["font"] else False}
                   for info in resolved.values()],
     }
 
