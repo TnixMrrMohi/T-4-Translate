@@ -773,3 +773,43 @@ describe('قاب استاندارد پیش‌نمایش', () => {
     }
   });
 });
+
+describe('چیدمان دو ستونی', () => {
+  function layout() {
+    const sidebar = document.querySelector('aside.sidebar') as HTMLElement;
+    const workspace = document.querySelector('section.workspace') as HTMLElement;
+    return {sidebar, workspace};
+  }
+
+  it('مراحل و پیش‌نمایش در ستون راست و کارت مرحله در ستون چپ است', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 690, height: 5880, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+    });
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+
+    const {sidebar, workspace} = layout();
+    expect(sidebar).toBeInTheDocument();
+    expect(workspace).toBeInTheDocument();
+    // در RTL ستون اول سمت راست است: ستون کنار قبل از کارت در DOM می‌آید.
+    expect(sidebar.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // پنج مرحله داخل ستون راست است.
+    const steps = within(sidebar).getByRole('list', {name: 'مراحل کار'});
+    expect(within(steps).getAllByRole('listitem')).toHaveLength(5);
+
+    // پیش‌نمایش مرحلهٔ جاری هم در همان ستون است، نه داخل کارت.
+    expect(within(sidebar).getByRole('button', {name: /بزرگ‌نمایی:/})).toBeInTheDocument();
+    expect(within(workspace).queryByRole('button', {name: /بزرگ‌نمایی:/})).not.toBeInTheDocument();
+  });
+
+  it('پیش از انتخاب تصویر، ستون راست جای پیش‌نمایش را با راهنما نشان می‌دهد', async () => {
+    mockApi({jobs: []});
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
+    const {sidebar} = layout();
+    expect(within(sidebar).getByText(/پس از انتخاب تصویر، پیش‌نمایش همین‌جا/)).toBeInTheDocument();
+  });
+});

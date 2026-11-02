@@ -74,9 +74,17 @@
 .app-header .brand{font-size:18px;letter-spacing:.1em;color:#fff;font-weight:800}
 .app-header .status{position:absolute;right:20px;font-size:13px;color:#eef9f4}
 .app-header .reset{position:absolute;left:20px;padding:6px 12px;font-size:12px;background:#1b2a2a;color:#9bf3cc;border:1px solid #00ffcc55}
-.wizard{max-width:860px;margin:28px auto 60px;padding:0 20px}
-.wizard-steps{display:flex;gap:6px;list-style:none;margin:0 0 14px;padding:0}
-.wizard-steps li{flex:1;min-width:0}
+/* --- چیدمان دو ستونی: کارت سمت چپ صفحه، مراحل و پیش‌نمایش سمت راست --- */
+/* در RTL اولین ستون سمت راست است؛ پس ستون کنار (مراحل + پیش‌نمایش) اول می‌آید و
+   کارت مرحله با ستون دوم به لبهٔ چپ صفحه می‌چسبد. */
+.layout{display:grid;grid-template-columns:minmax(300px,360px) minmax(0,1fr);align-items:start;gap:24px;padding:20px 20px 60px;max-width:1560px;margin:0 auto}
+.sidebar{position:sticky;top:14px;display:flex;flex-direction:column;gap:12px;min-width:0;max-height:calc(100vh - 28px)}
+.sidebar-previews{display:flex;flex-direction:column;gap:14px;overflow:auto;padding-inline-end:4px}
+.sidebar-previews .preview-card{max-width:none;margin:0}
+.sidebar-empty{color:#7d9294;font-size:13px;line-height:1.9;margin:0;text-align:center;border:1px dashed #ffffff26;border-radius:12px;padding:16px}
+.workspace{min-width:0;display:flex;flex-direction:column;gap:12px}
+.wizard-steps{display:flex;flex-direction:column;gap:6px;list-style:none;margin:0;padding:0}
+.wizard-steps li{min-width:0}
 .step-item{display:flex;align-items:center;gap:8px;width:100%;padding:9px 10px;border-radius:10px;background:#0b171d;border:1px solid #ffffff1f;color:#9fb5b2;cursor:pointer;font:inherit;font-size:13px;font-weight:normal;transition:border-color .2s,background .2s}
 .step-item .step-index{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#16262b;color:#9fb5b2;font-size:12px;font-weight:bold;flex:0 0 auto}
 .step-item .step-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -86,7 +94,7 @@
 .step-item.is-done .step-index{background:#0f3b33;color:#9bf3cc}
 .step-item.is-available:hover:not(:disabled){border-color:#00ffcc88}
 .step-item.is-locked{opacity:.5;cursor:not-allowed}
-.wizard-status{margin:0 0 14px;color:#a8b9bb;font-size:13px;text-align:center;min-height:18px}
+.wizard-status{margin:0;color:#a8b9bb;font-size:13px;text-align:start;min-height:18px}
 .wizard-card{background:#0a0f12;border:1px solid #00ffcc33;border-radius:16px;padding:22px}
 .wizard-title{margin:0 0 6px;font-size:20px;color:#fff}
 .wizard-subtitle{margin:16px 0 6px;font-size:16px;color:#eef9f4}
@@ -110,8 +118,16 @@
 .jobs-actions{display:flex;gap:6px;flex:0 0 auto}
 .jobs-actions button{font-size:12px;padding:5px 12px;border-radius:8px}
 .jobs-actions button.danger{background:#3a1414;color:#ff9b9b;border:1px solid #ff6b6b55}
+@media(max-width:1024px){
+  /* صفحهٔ باریک: مراحل بالای کارت، پیش‌نمایش زیر آن‌ها */
+  .layout{grid-template-columns:1fr;gap:14px;padding:14px 14px 40px}
+  .sidebar{position:static;max-height:none}
+  .wizard-steps{flex-direction:row;flex-wrap:wrap}
+  .wizard-steps li{flex:1 1 30%}
+  .sidebar-previews{flex-direction:row;flex-wrap:wrap}
+  .sidebar-previews .preview-card{flex:1 1 220px}
+}
 @media(max-width:720px){
-  .wizard-steps{flex-wrap:wrap}
   .wizard-steps li{flex:1 1 44%}
   .step-item .step-title{font-size:12px}
   .app-header .status{display:none}

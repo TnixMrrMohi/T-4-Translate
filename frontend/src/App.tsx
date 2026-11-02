@@ -817,7 +817,9 @@ export function App() {
         <span className="status" role="status">{status}</span>
       </header>
 
-      <div className="wizard">
+      <div className="layout">
+        {/* ستون راست: پنج مرحله و پیش‌نمایش تصویر همان مرحله */}
+        <aside className="sidebar" aria-label="مراحل و پیش‌نمایش">
         <ol className="wizard-steps" aria-label="مراحل کار">
           {STEPS.map(item => {
             const stepState = item.id === step ? 'current'
@@ -840,6 +842,76 @@ export function App() {
           })}
         </ol>
 
+        <div className="sidebar-previews" aria-label="پیش‌نمایش مرحلهٔ جاری">
+          {job && sourceVersion > 0 && step === 1 && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="source"
+              version={sourceVersion}
+              aspect={job.height / job.width}
+              alt="نمایش تصویر اصلی"
+              downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
+              caption={<span>تصویر اصلی — برای بزرگ‌نمایی کلیک کنید</span>}
+            />
+          )}
+          {step === 2 && source && ocrVersion > 0 && job && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="ocr"
+              version={ocrVersion}
+              aspect={job.height / job.width}
+              alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
+              downloadName={`t4-${job.jobId}-ocr.png`}
+              caption={<span>کادر و شمارهٔ خطوط (همان شماره‌های متن کنار)</span>}
+            />
+          )}
+          {step === 2 && bubbles && bubbles.bubbles.length > 0 && job && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="bubble"
+              version={bubbleVersion}
+              aspect={job.height / job.width}
+              alt="پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام"
+              downloadName={`t4-${job.jobId}-bubbles.png`}
+              caption={<span>کادر هر بالن با نام دسته و درصد اطمینان</span>}
+            />
+          )}
+          {step === 3 && job && cleanVersion > 0 && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="clean"
+              version={cleanVersion}
+              aspect={job.height / job.width}
+              alt="تصویر پاک‌سازی‌شده، بدون متن اصلی"
+              downloadName={`t4-${job.jobId}-clean.png`}
+              caption={<span>تصویر پاک‌سازی‌شده (بدون متن اصلی)</span>}
+            />
+          )}
+          {step === 4 && job && renderVersion > 0 && (
+            <ImagePreview
+              jobId={job.jobId}
+              kind="render"
+              version={renderVersion}
+              aspect={job.height / job.width}
+              alt="خروجی فارسی روی تصویر"
+              downloadName={`t4-${job.jobId}-fa.png`}
+              caption={<span>خروجی فارسی (آزمایشی)</span>}
+            />
+          )}
+          {/* مرحلهٔ ۵ خودش هر دو لایه را در پردهٔ مقایسه نشان می‌دهد؛ تکرارش لازم نیست. */}
+          {step === 5 && (
+            <p className="sidebar-empty">
+              مقایسهٔ پرده‌ای در کارت کنار نمایش داده می‌شود: ورودی و خروجی روی هم، با دستگیره.
+            </p>
+          )}
+          {step !== 5 && (!job || sourceVersion === 0) && (
+            <p className="sidebar-empty">پس از انتخاب تصویر، پیش‌نمایش همین‌جا نمایش داده می‌شود.</p>
+          )}
+        </div>
+        </aside>
+
+        {/* ستون چپ: کارت مرحلهٔ جاری، چسبیده به گوشهٔ چپ صفحه */}
+        <section className="workspace" aria-label="مرحلهٔ جاری">
         <p className="wizard-status" role="status">{message}</p>
 
         <section className="wizard-card" aria-live="polite">
@@ -878,16 +950,10 @@ export function App() {
 
               {job && sourceVersion > 0 && (
                 <>
-                  <p className="wizard-note">تصویر فعلی: <span dir="ltr">{job.width} × {job.height} · {job.format}</span></p>
-                  <ImagePreview
-                    jobId={job.jobId}
-                    kind="source"
-                    version={sourceVersion}
-                    aspect={job.height / job.width}
-                    alt="نمایش تصویر اصلی"
-                    downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
-                    caption={<span>تصویر اصلی — برای بزرگ‌نمایی کلیک کنید</span>}
-                  />
+                  <p className="wizard-note">
+                    تصویر فعلی: <span dir="ltr">{job.width} × {job.height} · {job.format}</span>
+                    {' '}— پیش‌نمایش در ستون راست است.
+                  </p>
                   <div className="wizard-nav">
                     <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void continueFromImage()}>
                       {source ? 'ادامه به ترجمه' : 'ادامه (تشخیص خودکار متن)'}
@@ -944,17 +1010,6 @@ export function App() {
                 <p className="wizard-help">برای این کار هنوز متنی تشخیص داده نشده است؛ ابتدا OCR را اجرا کنید.</p>
               ) : (
                 <>
-                  {ocrVersion > 0 && (
-                    <ImagePreview
-                      jobId={job!.jobId}
-                      kind="ocr"
-                      version={ocrVersion}
-                      aspect={job!.height / job!.width}
-                      alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
-                      downloadName={`t4-${job!.jobId}-ocr.png`}
-                      caption={<span>کادر و شمارهٔ خطوط تشخیص‌داده‌شده (همان شماره‌های متن زیر)</span>}
-                    />
-                  )}
                   <h3 className="wizard-subtitle">نوع بالن‌ها</h3>
                   <p className="wizard-help">
                     هر خط تشخیص‌داده‌شده به بالن خودش نسبت داده می‌شود و شکل آن بالن، دسته و فونت پیشنهادی
@@ -964,15 +1019,6 @@ export function App() {
                   {bubblesBusy && <p className="wizard-help" role="status">در حال تشخیص نوع بالن‌ها…</p>}
                   {bubbles && bubbles.bubbles.length > 0 && (
                     <>
-                      <ImagePreview
-                        jobId={job!.jobId}
-                        kind="bubble"
-                        version={bubbleVersion}
-                        aspect={job!.height / job!.width}
-                        alt="پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام"
-                        downloadName={`t4-${job!.jobId}-bubbles.png`}
-                        caption={<span>کادر هر بالن با نام دسته و درصد اطمینان</span>}
-                      />
                       <ul className="bubble-list">
                         {bubbles.bubbles.map(bubble => (
                           <li key={bubble.id} className="bubble-item">
@@ -1093,19 +1139,11 @@ export function App() {
                     </button>
                   </div>
 
-                  {cleanVersion > 0 ? (
-                    <ImagePreview
-                      jobId={job.jobId}
-                      kind="clean"
-                      version={cleanVersion}
-                      aspect={job.height / job.width}
-                      alt="تصویر پاک‌سازی‌شده، بدون متن اصلی"
-                      downloadName={`t4-${job.jobId}-clean.png`}
-                      caption={<span>تصویر پاک‌سازی‌شده (بدون متن اصلی)</span>}
-                    />
-                  ) : (
-                    <p className="wizard-note">{busy ? 'در حال پاک‌سازی…' : 'هنوز پاک‌سازی اجرا نشده است.'}</p>
-                  )}
+                  <p className="wizard-note">
+                    {cleanVersion > 0
+                      ? 'پاک‌سازی انجام شد؛ نتیجه را در ستون راست ببینید.'
+                      : busy ? 'در حال پاک‌سازی…' : 'هنوز پاک‌سازی اجرا نشده است.'}
+                  </p>
 
                   <div className="wizard-nav">
                     <button type="button" className="ghost" onClick={() => goToStep(2)}>مرحلهٔ قبل (ترجمه)</button>
@@ -1179,19 +1217,11 @@ export function App() {
                     </button>
                   </div>
 
-                  {renderVersion > 0 ? (
-                    <ImagePreview
-                      jobId={job.jobId}
-                      kind="render"
-                      version={renderVersion}
-                      aspect={job.height / job.width}
-                      alt="خروجی فارسی روی تصویر"
-                      downloadName={`t4-${job.jobId}-fa.png`}
-                      caption={<span>خروجی فارسی (آزمایشی)</span>}
-                    />
-                  ) : (
-                    <p className="wizard-note">{busy ? 'در حال درج ترجمه…' : 'هنوز ترجمه روی تصویر درج نشده است.'}</p>
-                  )}
+                  <p className="wizard-note">
+                    {renderVersion > 0
+                      ? 'ترجمه روی تصویر درج شد؛ خروجی در ستون راست است.'
+                      : busy ? 'در حال درج ترجمه…' : 'هنوز ترجمه روی تصویر درج نشده است.'}
+                  </p>
 
                   <div className="wizard-nav">
                     <button type="button" className="ghost" onClick={() => goToStep(3)}>مرحلهٔ قبل (پاک‌سازی)</button>
@@ -1235,6 +1265,7 @@ export function App() {
               )}
             </>
           )}
+        </section>
         </section>
       </div>
 
