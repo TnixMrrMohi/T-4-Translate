@@ -32,6 +32,8 @@ function mockApi(options: {
   progress?: unknown | (() => unknown);
   /** اگر بدهید، پاسخ OCR تا resolve شدن این Promise عقب می‌افتد. */
   holdOcr?: () => Promise<void>;
+  /** پاسخ منبع ترجمه بر اساس تنظیم متن تبلیغاتی (replace/remove). */
+  sourceFor?: (promo: string) => unknown;
 } = {}) {
   const calls: {url: string; method: string}[] = [];
   let ocrDone = false;
@@ -84,6 +86,8 @@ function mockApi(options: {
       return options.bubbles ? json(options.bubbles) : json({detail: 'نیست'}, 404);
     }
     if (url.includes('/translation-source')) {
+      const promo = new URL(url, 'http://t4.local').searchParams.get('promo') ?? 'replace';
+      if (options.sourceFor) return json(options.sourceFor(promo));
       const ready = options.source && (!options.sourceAfterOcr || ocrDone);
       return ready ? json(options.source) : json({detail: 'نیست'}, 404);
     }
@@ -1039,5 +1043,76 @@ describe('فیلدهای متنی مرحلهٔ ۲', () => {
     const persian = screen.getByLabelText('ترجمهٔ فارسی');
     await user.type(persian, '[1] برو بیرون!');
     expect(await screen.findByText(/۱ خط · /)).toBeInTheDocument();
+  });
+});
+
+describe('متن تبلیغاتی در مرحلهٔ ۲', () => {
+  const promoItem = {
+    number: 2, text: 'moonb.ir', tone: 'متن تبلیغاتی (واترمارک/آدرس سایت)',
+    kind: 'promo', kindLabel: 'متن تبلیغاتی', lines: [2], promo: true,
+  };
+  const replaceSource = {
+    revision: 'r'.repeat(64), promo: 'replace',
+    items: [{number: 1, text: 'GO AWAY!'}, promoItem, {number: 3, text: 'I will stay'}],
+  };
+  const removeSource = {
+    revision: 's'.repeat(64), promo: 'remove',
+    items: [{number: 1, text: 'GO AWAY!'}, {number: 2, text: 'I will stay'}],
+  };
+
+  async function open() {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    localStorage.removeItem('t4-promo');
+    const api = mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: replaceSource,
+      sourceFor: promo => (promo === 'remove' ? removeSource : replaceSource),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+    return {user, ...api};
+  }
+
+  it('اعلام و تنظیم می‌شود؛ پیش‌فرض «جایگزینی با moonb.ir» است', async () => {
+    await open();
+    expect(screen.getByRole('group', {name: 'رفتار متن تبلیغاتی'})).toBeInTheDocument();
+    const replace = screen.getByRole('button', {name: 'جایگزینی با moonb.ir'});
+    const remove = screen.getByRole('button', {name: 'حذف کامل'});
+    expect(replace).toHaveAttribute('aria-pressed', 'true');
+    expect(remove).toHaveAttribute('aria-pressed', 'false');
+    // متن شماره‌گذاری‌شده، جای تبلیغ را با moonb.ir نشان می‌دهد.
+    expect(screen.getByLabelText('متن انگلیسی')).toHaveValue(
+      '[1] GO AWAY!\n[2] (لحن: متن تبلیغاتی (واترمارک/آدرس سایت)) moonb.ir\n[3] I will stay');
+  });
+
+  it('پرامپت کپی‌شده قاعدهٔ جانشینی با moonb.ir را دارد', async () => {
+    const {user} = await open();
+    await user.click(screen.getByRole('button', {name: 'کپی با پرامپت'}));
+    await waitFor(async () => {
+      const copied = await navigator.clipboard.readText();
+      expect(copied).toContain('متن تبلیغاتی');
+      expect(copied).toContain('moonb.ir');
+      expect(copied).toContain('به‌جای ترجمه فقط');
+    });
+  });
+
+  it('با انتخاب «حذف کامل» شماره‌گذاری دوباره خوانده می‌شود و پرامپت عوض می‌شود', async () => {
+    const {user, calls} = await open();
+    await user.click(screen.getByRole('button', {name: 'حذف کامل'}));
+
+    await waitFor(() => expect(calls.some(call => call.url.includes('promo=remove'))).toBe(true));
+    expect(localStorage.getItem('t4-promo')).toBe('remove');
+    expect(await screen.findByRole('button', {name: 'حذف کامل'})).toHaveAttribute('aria-pressed', 'true');
+    // خط تبلیغاتی از شماره‌گذاری حذف شده است.
+    await waitFor(() => expect(screen.getByLabelText('متن انگلیسی')).toHaveValue(
+      '[1] GO AWAY!\n[2] I will stay'));
+
+    await user.click(screen.getByRole('button', {name: 'کپی با پرامپت'}));
+    await waitFor(async () => {
+      const copied = await navigator.clipboard.readText();
+      expect(copied).toContain('آن شماره را کاملاً حذف کن');
+      expect(copied).not.toContain('به‌جای ترجمه فقط');
+    });
   });
 });

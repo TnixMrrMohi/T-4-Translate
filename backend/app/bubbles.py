@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -106,6 +107,13 @@ BUBBLE_TYPES: dict[str, dict] = {
             "technique": {"label": "متن تکنیک", "fonts": ["Kaghaz", "Farnaz", "Dima Abdi", "Mj_Moshfegh", "Sina", "Afsaneh"]},
         },
     },
+    "promo": {
+        "tone": "متن تبلیغاتی (واترمارک/آدرس سایت)",
+        "label": "متن تبلیغاتی",
+        "description": "واترمارک، آدرس سایت، نام مترجم/اسکنر یا تبلیغ کانال؛ ترجمه نمی‌شود و حذف یا با moonb.ir جایگزین می‌شود.",
+        "fonts": [],
+        "style": {"bold": False, "italic": False, "stroke": "none", "shadow": False},
+    },
     "unknown": {
         "tone": "نامشخص",
         "label": "نامشخص",
@@ -127,8 +135,34 @@ KIND_COLORS = {
     "monster": (200, 0, 120),
     "cloud": (255, 160, 220),
     "outside": (150, 150, 150),
+    "promo": (255, 195, 90),
     "unknown": (120, 120, 120),
 }
+
+# نشانه‌های متن تبلیغاتی: آدرس سایت، آی‌دی شبکه‌های اجتماعی، نام اسکنر/مترجم و
+# دعوت به کانال. الگوها محافظه‌کارانه‌اند تا دیالوگ عادی به‌اشتباه تبلیغ شمرده نشود.
+PROMO_PATTERNS = (
+    r"https?://", r"www\.", r"\b[a-z0-9-]+\.(com|net|org|ir|me|xyz|tv|co|io|info|site|online|link)\b",
+    r"\bt\.me/", r"\bdiscord\.gg/", r"@[a-z0-9_]{4,}\b",
+    r"instagram", r"telegram", r"facebook", r"twitter", r"patreon", r"ko-?fi",
+    r"translated by", r"translation (by|group)", r"scanlat", r"scans? by", r"scan team",
+    r"read (more|online|at)", r"follow us", r"join (us|our)", r"subscribe",
+    r"free webtoon", r"raw provider", r"proofreader",
+    r"تبلیغ", r"کانال", r"تلگرام", r"اینستاگرام", r"تخفیف", r"خرید", r"فروش",
+    r"مترجم", r"اسکن", r"دانلود",
+)
+PROMO_RE = re.compile("|".join(PROMO_PATTERNS), re.IGNORECASE)
+# در حالت «جایگزینی»، متن تبلیغاتی با همین رشته عوض می‌شود.
+PROMO_REPLACEMENT = "moonb.ir"
+
+
+def is_promotional(text: str) -> bool:
+    """آیا این متن، تبلیغ/واترمارک است (نه دیالوگ داستان)؟"""
+    clean = " ".join(str(text or "").split())
+    if len(clean) < 2:
+        return False
+    return bool(PROMO_RE.search(clean))
+
 
 MIN_AREA_RATIO = 0.00015       # ناحیه‌های کوچک‌تر از این نسبت، نویز شمرده می‌شوند
 COMPANION_MAX_RATIO = 0.06     # حباب همراه کوچک‌تر از این نسبت از بالن اصلی است

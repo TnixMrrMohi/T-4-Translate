@@ -251,3 +251,13 @@
 .text-box::-webkit-scrollbar-thumb{background:#00ffcc33;border-radius:10px}
 .text-box::-webkit-scrollbar-thumb:hover{background:#00ffcc55}
 @media (max-width:600px){.text-box{min-height:150px;padding:12px;font-size:13px}}
+
+/* تنظیم رفتار متن تبلیغاتی در مرحلهٔ ۲ */
+.promo-setting{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px;padding:8px 12px;border:1px solid #ffce6b33;border-radius:10px;background:#141008}
+.promo-setting-label{color:#d8c9a6;font-size:12px;line-height:1.7}
+.promo-options{display:inline-flex;gap:6px;margin-inline-start:auto}
+.promo-options button{font:inherit;font-size:12px;font-weight:bold;padding:6px 12px;border-radius:8px;background:transparent;color:#ffce6b;border:1px solid #ffce6b44;cursor:pointer}
+.promo-options button:hover{background:#241c0c;border-color:#ffce6b}
+.promo-options button[aria-pressed="true"]{background:#ffce6b;color:#050505;border-color:#ffce6b}
+.promo-options button:focus-visible{outline:2px solid #ffce6b;outline-offset:2px}
+@media (max-width:600px){.promo-options{margin-inline-start:0}}

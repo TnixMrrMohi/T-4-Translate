@@ -10,7 +10,14 @@ type SourceItem = {
   kind?: string;
   kindLabel?: string;
   lines?: number[];
+  /** این بلوک متن تبلیغاتی است و در حالت جانشینی به moonb.ir تبدیل می‌شود. */
+  promo?: boolean;
 };
+
+/** رفتار متن تبلیغاتی (واترمارک/آدرس سایت/نام اسکنر) در شماره‌گذاری مرحلهٔ ۲. */
+type PromoAction = 'replace' | 'remove';
+const PROMO_KEY = 't4-promo';
+const PROMO_SITE = 'moonb.ir';
 type Source = {revision: string; items: SourceItem[]; blockCount?: number};
 type Job = {jobId: string; width: number; height: number; format: string; status: string};
 type JobSummary = Job & {createdAt: string; sizeBytes?: number};
@@ -61,6 +68,12 @@ type FontType = {
 type FontsDoc = {fonts: FontEntry[]; types: FontType[]};
 
 /** دستور ترجمه که همراه متن شماره‌گذاری‌شده کپی می‌شود. */
+/** قاعدهٔ متن تبلیغاتی که به پرامپت اضافه می‌شود. */
+const PROMO_RULES: Record<PromoAction, string> = {
+  replace: `- اگر شماره‌ای متن تبلیغاتی بود (واترمارک، آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال یا شبکهٔ اجتماعی)، آن را ترجمه نکن و به‌جای ترجمه فقط «${PROMO_SITE}» بنویس.`,
+  remove: '- اگر شماره‌ای متن تبلیغاتی بود (واترمارک، آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال یا شبکهٔ اجتماعی)، آن شماره را کاملاً حذف کن و در پاسخ نیاور.',
+};
+
 const TRANSLATION_PROMPT = [
   'متن زیر از یک صفحهٔ مانگا/وب‌تون استخراج شده است. هر [شماره] یک بالن (یا یک متن بیرون بالن) است و',
   'متن همهٔ خطوط همان بالن با هم آمده است؛ نه هر خط یک ترجمهٔ جدا.',
@@ -415,6 +428,10 @@ export function App() {
   const bubblesRequested = useRef<string | null>(null);
   const [fontsDoc, setFontsDoc] = useState<FontsDoc | null>(null);
   const [fontsBusy, setFontsBusy] = useState(false);
+  // رفتار متن تبلیغاتی؛ انتخاب کاربر بین دو کار همان اجرا می‌ماند.
+  const [promoAction, setPromoAction] = useState<PromoAction>(
+    () => (localStorage.getItem(PROMO_KEY) === 'remove' ? 'remove' : 'replace'));
+
   // پیشرفت زندهٔ تشخیص خودکار متن (نوار پیشرفت مرحلهٔ ۱).
   const [ocrProgress, setOcrProgress] = useState<Progress | null>(null);
   const progressTimer = useRef<number | null>(null);
@@ -487,6 +504,12 @@ export function App() {
     void loadJobs();
   };
 
+  /** پرامپت ترجمه با قاعدهٔ متن تبلیغاتیِ انتخاب‌شده. */
+  const translationPrompt = TRANSLATION_PROMPT.replace(
+    '- پرانتز لحن را در پاسخ تکرار نکن',
+    `${PROMO_RULES[promoAction]}\n- پرانتز لحن را در پاسخ تکرار نکن`,
+  );
+
   const numberedSource = source
     ? source.items.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n')
     : '';
@@ -496,9 +519,28 @@ export function App() {
     ? `${translation.split('\n').filter(line => line.trim()).length.toLocaleString('fa-IR')} خط · ${translation.length.toLocaleString('fa-IR')} نویسه`
     : 'خالی — منتظر ترجمه';
 
+  /** تغییر رفتار متن تبلیغاتی: ذخیرهٔ انتخاب و خواندن دوبارهٔ شماره‌گذاری از سرور. */
+  async function choosePromo(action: PromoAction) {
+    if (action === promoAction) return;
+    setPromoAction(action);
+    localStorage.setItem(PROMO_KEY, action);
+    if (!job) return;
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/translation-source?promo=${action}`);
+      if (!response.ok) return;
+      const updated: Source = await response.json();
+      setSource(updated);
+      setWarnings(translation.trim()
+        ? 'شماره‌گذاری متن تبلیغاتی عوض شد؛ ترجمهٔ فعلی را دوباره بررسی کنید.'
+        : '');
+    } catch {
+      fail('خواندن دوبارهٔ متن با تنظیم جدید ناموفق بود.');
+    }
+  }
+
   async function copySource(withPrompt: boolean) {
     if (!numberedSource) return;
-    const payload = withPrompt ? `${TRANSLATION_PROMPT}\n${numberedSource}` : numberedSource;
+    const payload = withPrompt ? `${translationPrompt}\n${numberedSource}` : numberedSource;
     const ok = await copyToClipboard(payload);
     if (!ok) {
       fail('کپی در حافظه ممکن نشد؛ متن را دستی انتخاب و کپی کنید.');
@@ -629,7 +671,7 @@ export function App() {
     setLoadingData(true);
     setSource(null); setTranslation(''); setWarnings(''); setOcrVersion(0); setRenderVersion(0); setCleanVersion(0);
     Promise.all([
-      fetch(`/api/jobs/${job.jobId}/translation-source`, {signal: controller.signal}),
+      fetch(`/api/jobs/${job.jobId}/translation-source?promo=${promoAction}`, {signal: controller.signal}),
       fetch(`/api/jobs/${job.jobId}/translations`, {signal: controller.signal}),
       fetch(`/api/jobs/${job.jobId}/artifacts`, {signal: controller.signal}),
     ]).then(async ([sourceResponse, translationResponse, artifactResponse]) => {
@@ -668,7 +710,7 @@ export function App() {
     try {
       const response = await fetch(`/api/jobs/${job.jobId}/translations`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({text: translation, sourceRevision: source.revision}),
+        body: JSON.stringify({text: translation, sourceRevision: source.revision, promo: promoAction}),
       });
       const result = await response.json();
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'ذخیرهٔ ترجمه ناموفق بود.');
@@ -937,7 +979,7 @@ export function App() {
       const response = await fetch(`/api/jobs/${job.jobId}/ocr`, {method: 'POST'});
       const result = await response.json();
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'OCR ناموفق بود.');
-      const next = await fetch(`/api/jobs/${job.jobId}/translation-source`);
+      const next = await fetch(`/api/jobs/${job.jobId}/translation-source?promo=${promoAction}`);
       if (!next.ok) throw Error('دریافت متن OCR ناموفق بود.');
       const updated: Source = await next.json();
       if (source && source.revision !== updated.revision && translation) setWarnings('متن OCR تغییر کرده است؛ ترجمهٔ قبلی را پیش از ذخیره بررسی کنید.');
@@ -1179,6 +1221,28 @@ export function App() {
                 <p className="wizard-help">برای این کار هنوز متنی تشخیص داده نشده است؛ ابتدا OCR را اجرا کنید.</p>
               ) : (
                 <>
+                  {/* اعلام و تنظیم رفتار متن تبلیغاتی؛ همراه شماره‌گذاری انجام می‌شود */}
+                  <div className="promo-setting" role="group" aria-label="رفتار متن تبلیغاتی">
+                    <span className="promo-setting-label">
+                      متن تبلیغاتی (آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال) در شماره‌گذاری:
+                    </span>
+                    <span className="promo-options">
+                      <button
+                        type="button"
+                        aria-pressed={promoAction === 'replace'}
+                        onClick={() => void choosePromo('replace')}
+                      >
+                        جایگزینی با {PROMO_SITE}
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={promoAction === 'remove'}
+                        onClick={() => void choosePromo('remove')}
+                      >
+                        حذف کامل
+                      </button>
+                    </span>
+                  </div>
                   <div className="copy-row">
                     <button
                       type="button"

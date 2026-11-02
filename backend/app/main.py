@@ -275,6 +275,17 @@ def workspace_for(job_id: str) -> Path:
 class TranslationInput(BaseModel):
     text: str = Field(max_length=1_000_000)
     sourceRevision: str = Field(min_length=64, max_length=64)
+    # رفتار متن تبلیغاتی هنگام شماره‌گذاری: جانشینی با moonb.ir، حذف، یا دست‌نزدن
+    promo: str = Field(default="replace")
+
+
+PROMO_ACTIONS = ("replace", "remove", "keep")
+
+
+def _check_promo(action: str) -> str:
+    if action not in PROMO_ACTIONS:
+        raise HTTPException(400, "رفتار متن تبلیغاتی نامعتبر است.")
+    return action
 
 
 BUBBLE_VERSION = 3  # با هر تغییر در هندسهٔ تشخیص/گروه‌بندی یک پله بالا می‌رود تا کش کهنه شود
@@ -304,32 +315,60 @@ def translation_blocks(job_id: str, lines: list) -> list:
     return bubbles.blocks(bubbles_for(job_id, lines), lines)
 
 
-def blocks_revision(lines: list, block_list: list) -> str:
-    """نسخهٔ منبع ترجمه: هم OCR و هم گروه‌بندی خطوط در بلوک‌ها."""
-    raw = json.dumps({"ocr": ocr_revision(lines),
+def apply_promo(block_list: list, action: str) -> list:
+    """متن‌های تبلیغاتی (واترمارک/آدرس سایت/نام اسکنر) را حذف یا با moonb.ir جایگزین می‌کند.
+
+    در حالت جانشینی، خودِ متن بلوک به ``moonb.ir`` تبدیل می‌شود تا هم در متن
+    شماره‌گذاری‌شده دیده شود و هم هنگام درج، همان آدرس روی تصویر بنشیند.
+    """
+    action = _check_promo(action)
+    if action == "keep":
+        return block_list
+    result = []
+    for item in block_list:
+        if bubbles.is_promotional(item.get("text", "")):
+            if action == "remove":
+                continue
+            result.append({**item, "text": bubbles.PROMO_REPLACEMENT, "kind": "promo",
+                           "kindLabel": bubbles.BUBBLE_TYPES["promo"]["label"],
+                           "tone": bubbles.BUBBLE_TYPES["promo"]["tone"], "promo": True})
+        else:
+            result.append(dict(item))
+    for index, item in enumerate(result, 1):
+        item["number"] = index
+    return result
+
+
+def blocks_revision(lines: list, block_list: list, promo: str = "replace") -> str:
+    """نسخهٔ منبع ترجمه: هم OCR، هم گروه‌بندی خطوط و هم رفتار متن تبلیغاتی."""
+    raw = json.dumps({"ocr": ocr_revision(lines), "promo": promo,
                       "blocks": [[item["number"], item["lines"], item["text"]] for item in block_list]},
                      ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @app.get("/api/jobs/{job_id}/translation-source")
-def translation_source(job_id: str) -> dict:
+def translation_source(job_id: str, promo: str = "replace") -> dict:
+    """متن شماره‌گذاری‌شده؛ با تنظیم ``promo`` متن تبلیغاتی حذف یا با moonb.ir عوض می‌شود."""
+    action = _check_promo(promo)
     result = get_ocr(job_id)
     lines = result["lines"]
     if len(lines) > 9999:
         raise HTTPException(400, "تعداد خطوط برای ترجمهٔ شماره‌گذاری‌شده بیش از حد مجاز است.")
-    block_list = translation_blocks(job_id, lines)
-    return {"revision": blocks_revision(lines, block_list), "blockCount": len(block_list),
+    block_list = apply_promo(translation_blocks(job_id, lines), action)
+    return {"revision": blocks_revision(lines, block_list, action), "blockCount": len(block_list),
+            "promo": action,
             "items": [{"number": item["number"], "text": item["text"], "tone": item["tone"],
                        "kind": item["kind"], "kindLabel": item["kindLabel"],
-                       "lines": item["lines"], "bbox": item["bbox"]}
+                       "lines": item["lines"], "bbox": item["bbox"],
+                       "promo": bool(item.get("promo"))}
                       for item in block_list]}
 
 
 @app.post("/api/jobs/{job_id}/translations")
 async def save_translation(job_id: str, body: TranslationInput) -> dict:
     async with _ocr_lock:
-        source = translation_source(job_id)
+        source = translation_source(job_id, _check_promo(body.promo))
         if body.sourceRevision != source["revision"]:
             raise HTTPException(409, "متن OCR تغییر کرده است؛ ابتدا منبع را دوباره بارگذاری کنید.")
         if not source["items"]:
@@ -339,6 +378,12 @@ async def save_translation(job_id: str, body: TranslationInput) -> dict:
         line_translations: dict[str, str] = {}
         for item in source["items"]:
             text = parsed.translations.get(item["number"])
+            if not text and item.get("promo"):
+                # شمارهٔ تبلیغاتی جا افتاده است؛ همان جانشین پیش‌فرض نوشته می‌شود.
+                text = bubbles.PROMO_REPLACEMENT
+                parsed.translations[item["number"]] = text
+                if item["number"] in parsed.missing:
+                    parsed.missing.remove(item["number"])
             if not text:
                 continue
             for line_number in item["lines"]:
