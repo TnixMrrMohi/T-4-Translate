@@ -411,7 +411,6 @@ export function App() {
   const [sourceVersion, setSourceVersion] = useState(0);
   const [ocrVersion, setOcrVersion] = useState(0);
   const [bubbles, setBubbles] = useState<BubbleDoc | null>(null);
-  const [bubblesBusy, setBubblesBusy] = useState(false);
   const [bubbleVersion, setBubbleVersion] = useState(0);
   const bubblesRequested = useRef<string | null>(null);
   const [fontsDoc, setFontsDoc] = useState<FontsDoc | null>(null);
@@ -836,7 +835,6 @@ export function App() {
   async function loadBubbles(jobId: string) {
     if (bubblesRequested.current === jobId) return;
     bubblesRequested.current = jobId;
-    setBubblesBusy(true);
     try {
       let response = await fetch(`/api/jobs/${jobId}/bubbles`);
       if (response.status === 404) {
@@ -852,8 +850,6 @@ export function App() {
       // تشخیص بالن اختیاری است؛ اگر نشد، بقیهٔ مرحله باید کار کند.
       bubblesRequested.current = null;
       setMessage(error instanceof Error ? `تشخیص نوع بالن انجام نشد: ${error.message}` : 'تشخیص نوع بالن انجام نشد.');
-    } finally {
-      setBubblesBusy(false);
     }
   }
 
@@ -1178,40 +1174,6 @@ export function App() {
                 <p className="wizard-help">برای این کار هنوز متنی تشخیص داده نشده است؛ ابتدا OCR را اجرا کنید.</p>
               ) : (
                 <>
-                  <h3 className="wizard-subtitle">نوع بالن‌ها</h3>
-                  <p className="wizard-help">
-                    هر خط تشخیص‌داده‌شده به بالن خودش نسبت داده می‌شود و شکل آن بالن، دسته و فونت پیشنهادی
-                    (بر اساس «لیست فونت‌های مخصوص تایپ») را تعیین می‌کند. تشخیص هندسی است و ممکن است
-                    برای بالن‌های دست‌کشیده اشتباه کند.
-                  </p>
-                  {bubblesBusy && <p className="wizard-help" role="status">در حال تشخیص نوع بالن‌ها…</p>}
-                  {bubbles && bubbles.bubbles.length > 0 && (
-                    <>
-                      <ul className="bubble-list">
-                        {bubbles.bubbles.map(bubble => (
-                          <li key={bubble.id} className="bubble-item">
-                            <div className="bubble-head">
-                              <span className="bubble-kind">{bubble.kindLabel}</span>
-                              <span className="bubble-conf">{Math.round(bubble.confidence * 100)}٪ اطمینان</span>
-                            </div>
-                            <div className="bubble-lines">
-                              خطوط: {bubble.lines.length > 0 ? bubble.lines.join('، ') : '—'}
-                            </div>
-                            {bubble.fonts.length > 0 && (
-                              <div className="bubble-fonts">
-                                فونت پیشنهادی: {bubble.fonts.slice(0, 4).join('، ')}
-                              </div>
-                            )}
-                            {bubble.variants && bubble.variants.length > 0 && (
-                              <div className="bubble-variants">
-                                حالت‌های ممکن: {bubble.variants.map(variant => variant.label).join('، ')}
-                              </div>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
                   <h3 className="wizard-subtitle">متن شماره‌گذاری‌شده (هر شماره یک بالن)</h3>
                   <p className="wizard-help">
                     متن OCR آزمایشی است؛ خطاهای آن را در ترجمه در نظر بگیرید. خطوط هر بالن با هم یک شماره شده‌اند و

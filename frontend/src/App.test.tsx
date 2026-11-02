@@ -435,18 +435,20 @@ describe('تشخیص نوع بالن‌ها در مرحلهٔ ترجمه', () =>
     return user;
   }
 
-  it('دسته، فونت پیشنهادی و خطوط هر بالن نمایش داده می‌شود', async () => {
+  it('بخش «نوع بالن‌ها» از کارت مرحله ۲ حذف شده و فقط پیش‌نمایش کنار می‌ماند', async () => {
     await openStep();
-    expect(await screen.findByRole('heading', {name: 'نوع بالن‌ها'})).toBeInTheDocument();
-    expect(await screen.findByText('صحبت عادی')).toBeInTheDocument();
-    expect(screen.getByText('68٪ اطمینان')).toBeInTheDocument();
-    expect(screen.getByText(/فونت پیشنهادی: Koodak Bold، Roya Bold/)).toBeInTheDocument();
-    expect(screen.getByText('خطوط: 1، 2')).toBeInTheDocument();
-    // متن بیرون بالن، حالت‌های ممکن را نشان می‌دهد.
-    expect(screen.getByText('متن بیرون بالن')).toBeInTheDocument();
-    expect(screen.getByText(/حالت‌های ممکن: زمزمه/)).toBeInTheDocument();
-    // پیش‌نمایش تشخیص با تصویر بالن‌ها بارگذاری می‌شود.
-    expect(screen.getByAltText('پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام')).toBeInTheDocument();
+    // تصویر تشخیص بالن‌ها در ستون پیش‌نمایش‌ها می‌ماند…
+    expect(await screen.findByAltText('پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام')).toBeInTheDocument();
+    // …ولی هیچ متنی دربارهٔ نوع/دسته/فونت بالن در کارت نیست.
+    const card = within(document.querySelector('.workspace') as HTMLElement);
+    expect(card.queryByRole('heading', {name: 'نوع بالن‌ها'})).not.toBeInTheDocument();
+    expect(card.queryByText('صحبت عادی')).not.toBeInTheDocument();
+    expect(card.queryByText(/اطمینان/)).not.toBeInTheDocument();
+    expect(card.queryByText(/فونت پیشنهادی/)).not.toBeInTheDocument();
+    expect(card.queryByText(/حالت‌های ممکن/)).not.toBeInTheDocument();
+    expect(document.querySelector('.bubble-list')).toBeNull();
+    // کارت مستقیم با «متن شماره‌گذاری‌شده» شروع می‌شود.
+    expect(screen.getByRole('heading', {name: 'متن شماره‌گذاری‌شده (هر شماره یک بالن)'})).toBeInTheDocument();
   });
 
   it('اگر تشخیص بالن شکست بخورد، بقیهٔ مرحله کار می‌کند', async () => {
@@ -457,7 +459,7 @@ describe('تشخیص نوع بالن‌ها در مرحلهٔ ترجمه', () =>
     });
     render(<App />);
     await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
-    expect(screen.queryByRole('heading', {name: 'نوع بالن‌ها'})).toBeInTheDocument();
+    expect(screen.queryByRole('heading', {name: 'نوع بالن‌ها'})).not.toBeInTheDocument();
     expect(await screen.findByRole('button', {name: 'کپی متن'})).toBeInTheDocument();
   });
 });
