@@ -428,6 +428,9 @@ export function App() {
   const [copied, setCopied] = useState<'text' | 'prompt' | null>(null);
   const copiedTimer = useRef<number | null>(null);
   const [message, setMessage] = useState('');
+  // وضعیت موتور آزمایشی OCR؛ اگر روی این سیستم نصب/اجراشدنی نباشد، پیش از
+  // کلیک به کاربر گفته می‌شود تا در بن‌بستِ «OCR ناموفق بود» نماند.
+  const [ocrEngine, setOcrEngine] = useState<{ready: boolean; detail: string} | null>(null);
   const [busy, setBusy] = useState(false);
   const [source, setSource] = useState<Source | null>(null);
   const [translation, setTranslation] = useState('');
@@ -660,6 +663,15 @@ export function App() {
       .then(r => {if (!r.ok) throw Error(); return r.text();})
       .then(t => setStatus(t === 'ok' ? 'سرویس آماده است' : 'پاسخ سرویس نامعتبر است'))
       .catch(e => {if (e.name !== 'AbortError') setStatus('ارتباط با سرویس برقرار نشد');});
+
+    // آیا موتور OCR نصب و اجراشدنی است؟ (پاسخ نامعلوم یعنی چیزی نمایش ندهیم.)
+    fetch('/api/ocr-status', {signal: controller.signal})
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data || typeof data.ready !== 'boolean') return;
+        setOcrEngine({ready: data.ready, detail: typeof data.detail === 'string' ? data.detail : ''});
+      })
+      .catch(() => {});
     
     // پیوند مستقیم به یک کار: `?job=<id>` بر آخرین کار ذخیره‌شده اولویت دارد
     // (برای بازکردن سریع همان صفحه، بدون جست‌وجو در فهرست).
@@ -1195,6 +1207,13 @@ export function App() {
               <h2 className="wizard-title">مرحله ۱: انتخاب تصویر</h2>
               <p className="wizard-help">تصویر مانگا یا وب‌تون را انتخاب یا اینجا رها کنید. در مرحلهٔ بعد متن‌ها تشخیص داده می‌شوند.</p>
 
+              {ocrEngine && !ocrEngine.ready && (
+                <p className="wizard-warning" role="alert">
+                  <b>تشخیص خودکار متن روی این سیستم کار نمی‌کند.</b>{' '}
+                  {ocrEngine.detail || 'موتور آزمایشی OCR نصب یا اجرا نشد.'}
+                </p>
+              )}
+
               {/* نوار بالای ناحیهٔ ورود عکس: برچسب سمت راست، آیکون سطل زباله سمت چپ */}
               <div className="upload-bar">
                 <span className="upload-bar-label">تصویر ورودی</span>
@@ -1253,7 +1272,13 @@ export function App() {
                     {' '}— پیش‌نمایش در ستون راست است.
                   </p>
                   <div className="wizard-nav">
-                    <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void continueFromImage()}>
+                    <button
+                      type="button"
+                      className="ocr"
+                      disabled={busy || loadingData || ocrEngine?.ready === false}
+                      title={ocrEngine?.ready === false ? 'موتور OCR نصب یا اجرا نشد؛ ابتدا آن را نصب کنید.' : undefined}
+                      onClick={() => void continueFromImage()}
+                    >
                       {source ? 'ادامه به ترجمه' : 'ادامه (تشخیص خودکار متن)'}
                     </button>
                   </div>
@@ -1388,7 +1413,7 @@ export function App() {
                       {warnings && <p className="wizard-note">{warnings}</p>}
                       <div className="wizard-nav">
                         <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
-                        <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void runOcr()}>اجرای دوبارهٔ OCR</button>
+                        <button type="button" className="ghost" disabled={busy || loadingData || ocrEngine?.ready === false} onClick={() => void runOcr()}>اجرای دوبارهٔ OCR</button>
                         <button type="button" className="ocr" disabled={busy || loadingData || !translation.trim()} onClick={() => void saveTranslation()}>
                           ذخیرهٔ ترجمه و ادامه
                         </button>

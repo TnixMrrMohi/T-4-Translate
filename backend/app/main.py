@@ -205,6 +205,12 @@ async def run_native_safely(func, *args):
             raise
 
 
+@app.get("/api/ocr-status")
+def ocr_status() -> dict:
+    """آیا موتور آزمایشی OCR نصب و قابل اجراست؟ (برای نمایش زودهنگام در رابط.)"""
+    return ocr.engine_status()
+
+
 @app.post("/api/jobs/{job_id}/ocr")
 async def run_ocr(job_id: str) -> dict:
     # The single shared engine is not used concurrently; work runs off the event loop.

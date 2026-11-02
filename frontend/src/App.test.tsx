@@ -36,6 +36,8 @@ function mockApi(options: {
   sourceFor?: (promo: string) => unknown;
   /** فهرست ناحیه‌های پاک‌سازی (مرحلهٔ ۳). */
   cleanAreas?: unknown;
+  /** وضعیت موتور OCR؛ پیش‌فرض «آماده» است. */
+  ocrStatus?: unknown;
 } = {}) {
   const calls: {url: string; method: string; body?: unknown}[] = [];
   let ocrDone = false;
@@ -92,6 +94,9 @@ function mockApi(options: {
         return json({font: {id: 'X', name: 'X', family: 'X', style: '', file: 'x.ttf', bundled: false}}, 201);
       }
       return json(options.fonts ?? {fonts: [], types: []});
+    }
+    if (url.endsWith('/api/ocr-status')) {
+      return json(options.ocrStatus ?? {ready: true, provider: 'mock', detail: ''});
     }
     if (url.includes('/clean-areas')) {
       return json(options.cleanAreas ?? {jobId: JOB_ID, areas: [], blockCount: 0, cleaned: false});
@@ -235,7 +240,7 @@ describe('تأییدهای عملیات', () => {
     expect(within(dialog).getByText('اجرای مجدد OCR')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', {name: 'انصراف'}));
 
-    expect(calls.some(call => call.url.includes('/ocr'))).toBe(false);
+    expect(calls.some(call => call.url.includes('/ocr') && !call.url.includes('/ocr-status'))).toBe(false);
   });
 });
 
@@ -1216,5 +1221,36 @@ describe('ناحیه‌های پاک‌سازی در مرحلهٔ ۳', () => {
   it('بدون انتخاب ناحیه، دکمهٔ پاک‌سازی مجدد غیرفعال است', async () => {
     await openCleaning();
     expect(screen.getByRole('button', {name: 'پاک‌سازی مجدد ناحیه‌های انتخاب‌شده'})).toBeDisabled();
+  });
+});
+
+describe('آماده نبودن موتور OCR', () => {
+  const detail = 'موتور آزمایشی OCR نصب نیست: بستهٔ «rapidocr_onnxruntime» پیدا نشد. '
+    + 'برای نصب: python -m pip install -e ".[ocr-experimental]"';
+
+  it('پیش از کلیک هشدار روشن با نام بسته و دستور نصب نشان داده می‌شود', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      ocrStatus: {ready: false, provider: 'rapidocr-experimental', detail},
+    });
+    render(<App />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('تشخیص خودکار متن روی این سیستم کار نمی‌کند');
+    expect(alert).toHaveTextContent('rapidocr_onnxruntime');
+    expect(alert).toHaveTextContent('pip install');
+    // دکمهٔ ادامه تا نصب موتور غیرفعال می‌ماند.
+    const start = await screen.findByRole('button', {name: 'ادامه (تشخیص خودکار متن)'});
+    expect(start).toBeDisabled();
+  });
+
+  it('اگر موتور آماده باشد هیچ هشداری نمایش داده نمی‌شود', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'}});
+    render(<App />);
+
+    expect(await screen.findByRole('button', {name: 'ادامه (تشخیص خودکار متن)'})).toBeEnabled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

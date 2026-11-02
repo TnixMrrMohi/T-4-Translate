@@ -26,16 +26,45 @@ class OcrUnavailable(Exception):
     pass
 
 
+INSTALL_HINT = 'python -m pip install -e ".[ocr-experimental]"'
+
+
 @lru_cache(maxsize=1)
 def _engine():
     try:
         from rapidocr_onnxruntime import RapidOCR
-    except (ImportError, OSError) as exc:
-        raise OcrUnavailable('موتور آزمایشی OCR نصب نشده یا قابل اجرا نیست.') from exc
+    except ImportError as exc:
+        # پیام باید بگوید *چه چیزی* کم است و چگونه نصب می‌شود؛ پیام کلیِ
+        # «نصب نشده یا قابل اجرا نیست» کاربر را در بن‌بست می‌گذاشت.
+        missing = getattr(exc, 'name', None) or 'rapidocr_onnxruntime'
+        raise OcrUnavailable(
+            'موتور آزمایشی OCR نصب نیست: بستهٔ '
+            f'«{missing}» پیدا نشد. برای نصب: {INSTALL_HINT} '
+            '(در لینوکس بدون رابط گرافیکی: python -m pip install opencv-python-headless)'
+        ) from exc
+    except OSError as exc:
+        # بسته نصب است ولی کتابخانهٔ سیستمی‌اش بارگذاری نمی‌شود (اغلب libGL).
+        raise OcrUnavailable(
+            'موتور OCR نصب است ولی کتابخانهٔ سیستمیِ لازم بارگذاری نشد؛ اغلب '
+            'libGL در لینوکس بدون رابط گرافیکی است. راه‌حل: '
+            'python -m pip install opencv-python-headless. '
+            f'جزئیات: {exc}'
+        ) from exc
     try:
         return RapidOCR()
     except Exception as exc:
-        raise OcrUnavailable('بارگذاری مدل OCR ناموفق بود.') from exc
+        raise OcrUnavailable(f'بارگذاری مدل OCR ناموفق بود: {exc}') from exc
+
+
+def engine_status() -> dict:
+    """وضعیت موتور OCR بدون اجرای تشخیص؛ رابط پیش از کلیک آن را نشان می‌دهد."""
+    try:
+        _engine()
+    except OcrUnavailable as exc:
+        return {'ready': False, 'provider': 'rapidocr-experimental', 'detail': str(exc)}
+    except Exception as exc:  # pragma: no cover - محافظِ نهایی
+        return {'ready': False, 'provider': 'rapidocr-experimental', 'detail': str(exc)}
+    return {'ready': True, 'provider': 'rapidocr-experimental', 'detail': ''}
 
 
 def _read(image) -> list:

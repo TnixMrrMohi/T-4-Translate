@@ -100,6 +100,9 @@
 .wizard-subtitle{margin:16px 0 6px;font-size:16px;color:#eef9f4}
 .wizard-help{margin:0 0 14px;color:#a8b9bb;font-size:14px;line-height:1.8}
 .wizard-note{margin:12px 0 0;color:#9bf3cc;font-size:13px;line-height:1.8}
+/* هشدار آماده نبودن موتور OCR؛ پیام کوتاه و راهنمای نصب، نه پیام مبهم. */
+.wizard-warning{margin:0 0 14px;padding:10px 12px;border:1px solid #7a4a2a;border-radius:10px;background:#2a1a12;color:#ffcf9b;font-size:13px;line-height:1.9}
+.wizard-warning b{color:#ffb066}
 .wizard-nav{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-start;margin-top:18px}
 .wizard-nav.start{justify-content:flex-start;margin:0 0 14px}
 .wizard-nav button{font-size:14px;padding:9px 16px}
