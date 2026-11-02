@@ -54,6 +54,9 @@ def test_installed_font_wins_for_its_type(tmp_path, monkeypatch):
 
 def test_install_rejects_non_font_and_wrong_extension(tmp_path, monkeypatch):
     monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    with pytest.raises(fonts.FontError) as rar:
+        fonts.install("Fonts.rar", b"Rar!\x1a\x07\x01\x00")
+    assert "RAR" in str(rar.value)
     with pytest.raises(fonts.FontError):
         fonts.install("notes.txt", b"hello")
     with pytest.raises(fonts.FontError):

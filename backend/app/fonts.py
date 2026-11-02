@@ -147,8 +147,10 @@ def resolve_map() -> dict[str, dict]:
 def install(filename: str, data: bytes) -> dict:
     """فونت آپلودشده را پس از اعتبارسنجی در پوشهٔ داده‌ها ذخیره می‌کند."""
     suffix = Path(filename or "").suffix.lower()
+    if suffix == ".rar":
+        raise FontError("آرشیو RAR پشتیبانی نمی‌شود؛ همان فونت‌ها را ZIP کنید یا فایل‌های ttf را جدا بفرستید.")
     if suffix not in FONT_EXTENSIONS:
-        raise FontError("فقط فایل فونت TTF، OTF یا TTC پذیرفته می‌شود.")
+        raise FontError("فقط فایل فونت TTF، OTF یا TTC (یا آرشیو ZIP) پذیرفته می‌شود.")
     if not data:
         raise FontError("فایل فونت خالی است.")
     if len(data) > MAX_FONT_BYTES:
