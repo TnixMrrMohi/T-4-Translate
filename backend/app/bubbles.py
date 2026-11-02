@@ -178,7 +178,9 @@ def _contour_features(mask, area_total: float, bright_ratio: float = 1.0) -> dic
         except Exception:  # کانتور معیوب (کمتر از سه نقطه) در OpenCV
             defects = None
         if defects is not None:
-            for item in defects[:, 0, :]:
+            # OpenCV 4 آرایهٔ (N,1,4) می‌دهد و OpenCV 5 آرایهٔ (N,4)؛ هر دو پشتیبانی می‌شوند.
+            rows = defects.reshape(-1, 4) if getattr(defects, "ndim", 0) != 2 else defects
+            for item in rows:
                 depth = float(item[3]) / 256.0 / scale
                 max_depth = max(max_depth, depth)
                 if depth > 0.06:

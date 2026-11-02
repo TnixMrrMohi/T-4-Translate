@@ -107,8 +107,14 @@ def _reshaper():
     return arabic_reshaper.ArabicReshaper()
 
 
+@lru_cache(maxsize=8192)
 def shape_text(text: str) -> str:
-    """متن منطقی فارسی را به رشتهٔ آمادهٔ رسم (ترتیب نمایشی) تبدیل می‌کند."""
+    """متن منطقی فارسی را به رشتهٔ آمادهٔ رسم (ترتیب نمایشی) تبدیل می‌کند.
+
+    نتیجه کش می‌شود: هر فراخوانی reshaper در کتابخانه برای هر لیگاتور یک بار
+    configparser را صدا می‌زند و بدون کش، رندر یک صفحه چند ده ثانیه طول می‌کشید
+    (چون `_fit` برای هر اندازهٔ فونت و هر خط دوباره shaping می‌کند).
+    """
     from bidi.algorithm import get_display
 
     return get_display(_reshaper().reshape(text))
@@ -150,15 +156,19 @@ def _quad_box(quad, width: int, height: int):
 
 def _fit(text: str, box_width: float, box_height: float, path: str | None = None):
     max_size = min(MAX_FONT_SIZE, max(MIN_FONT_SIZE, int(box_height)))
+    previous: tuple[int, list[str]] | None = None
     for size in range(max_size, MIN_FONT_SIZE - 1, -1):
         font = _font(size, path)
         lines = wrap_text(text, font, box_width)
         if not lines:
             return None, []
+        if previous == (size, lines):
+            continue  # همین شکست خط در اندازهٔ قبلی هم بود؛ محاسبهٔ دوباره لازم نیست
         widest = max(font.getlength(shape_text(line)) for line in lines)
         needed = len(lines) * size * LINE_HEIGHT_RATIO
         if widest <= box_width and needed <= box_height:
             return font, lines
+        previous = (size, lines)
     font = _font(MIN_FONT_SIZE, path)
     return font, wrap_text(text, font, box_width)
 
