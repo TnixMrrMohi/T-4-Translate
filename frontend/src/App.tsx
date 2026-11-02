@@ -124,6 +124,47 @@ const MAX_ZOOM = 4;
 /** نسبت استاندارد قاب پیش‌نمایش؛ همهٔ صفحه‌ها (هر عرض/ارتفاعی) در همین قاب یک‌اندازه دیده می‌شوند. */
 const PREVIEW_RATIO = '3 / 4';
 
+/** مرحله‌های گزارش‌شدهٔ سرور؛ هر کلید یک برچسب فارسی دارد. */
+const PROGRESS_STAGES: Record<string, string> = {
+  idle: 'در انتظار شروع…',
+  start: 'آماده‌سازی صفحه…',
+  model: 'بارگذاری موتور تشخیص متن…',
+  strips: 'خواندن متن، نوار به نوار…',
+  merge: 'یکسان‌سازی خطوط هم‌پوشان…',
+  save: 'ذخیرهٔ نتیجهٔ تشخیص…',
+  done: 'پایان تشخیص متن',
+  error: 'تشخیص متن ناموفق بود',
+};
+
+/** پیشرفت یک کار؛ کسر ۰ تا ۱ و نام مرحله (همان چیزی که سرور می‌دهد). */
+type Progress = {fraction: number; stage: string; running?: boolean; finished?: boolean; error?: string | null};
+
+/** نوار پیشرفتِ تشخیص خودکار متن؛ جای متن ساده را می‌گیرد و تا ۱۰۰٪ پر می‌شود. */
+function ProgressBar({progress}: {progress: Progress}) {
+  const percent = Math.max(0, Math.min(100, Math.round(progress.fraction * 100)));
+  const label = PROGRESS_STAGES[progress.stage] ?? 'در حال تشخیص خودکار متن…';
+  return (
+    <div className="progress-panel" data-stage={progress.stage}>
+      <div className="progress-head">
+        <span className="progress-label">{label}</span>
+        <span className="progress-percent" dir="ltr">{percent.toLocaleString('fa-IR')}٪</span>
+      </div>
+      <div
+        className="progress-track"
+        role="progressbar"
+        aria-label="پیشرفت تشخیص خودکار متن"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`${percent} درصد — ${label}`}
+      >
+        <div className="progress-fill" style={{width: `${percent}%`}} />
+      </div>
+      <p className="progress-hint">صفحه به نوارهای افقی شکسته می‌شود؛ هر نوار که خوانده شود، نوار پیشرفت جلو می‌رود.</p>
+    </div>
+  );
+}
+
 /** بندانگشتی ثابت‌اندازه؛ تصویر کامل (حتی ۱۵۰۰۰ پیکسل) فقط در مودال نمایش داده می‌شود. */
 function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1}: PreviewProps) {
   const [open, setOpen] = useState(false);
@@ -337,6 +378,11 @@ export function App() {
   const bubblesRequested = useRef<string | null>(null);
   const [fontsDoc, setFontsDoc] = useState<FontsDoc | null>(null);
   const [fontsBusy, setFontsBusy] = useState(false);
+  // پیشرفت زندهٔ تشخیص خودکار متن (نوار پیشرفت مرحلهٔ ۱).
+  const [ocrProgress, setOcrProgress] = useState<Progress | null>(null);
+  const progressTimer = useRef<number | null>(null);
+  const progressHideTimer = useRef<number | null>(null);
+  const progressActive = useRef(false);
 
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const dialogResolve = useRef<((ok: boolean) => void) | null>(null);
@@ -779,6 +825,60 @@ export function App() {
     void loadBubbles(job.jobId);
   }, [step, job, source]);
 
+  function stopProgressTimers() {
+    if (progressTimer.current !== null) {window.clearInterval(progressTimer.current); progressTimer.current = null;}
+    if (progressHideTimer.current !== null) {window.clearTimeout(progressHideTimer.current); progressHideTimer.current = null;}
+  }
+
+  /** شروع نوار پیشرفت: درصد واقعی از سرور خوانده می‌شود و تا آن هنگام از زمان تخمین زده می‌شود. */
+  function startProgress(jobId: string) {
+    stopProgressTimers();
+    progressActive.current = true;
+    const startedAt = Date.now();
+    setOcrProgress({fraction: 0.02, stage: 'start', running: true});
+    const poll = async () => {
+      let server: Progress | null = null;
+      try {
+        const response = await fetch(`/api/jobs/${jobId}/progress`);
+        if (response.ok) {
+          const data = await response.json() as Partial<Progress>;
+          if (typeof data.fraction === 'number') server = data as Progress;
+        }
+      } catch {
+        // سرور جواب نداد؛ تخمین زمانی نوار را جلو می‌برد.
+      }
+      const seconds = (Date.now() - startedAt) / 1000;
+      // تخمین: سریع بالا می‌رود و آرام به ۹۶٪ می‌رسد تا پیش از پایانِ واقعی پر نشود.
+      const estimate = Math.min(0.96, 1 - Math.exp(-seconds / 5));
+      setOcrProgress(previous => {
+        if (!previous) return previous;
+        const fraction = Math.min(0.99, Math.max(previous.fraction, estimate, server?.fraction ?? 0));
+        const stage = server?.stage && server.stage !== 'idle' ? server.stage : previous.stage;
+        return {fraction, stage, running: true};
+      });
+    };
+    void poll();
+    progressTimer.current = window.setInterval(() => void poll(), 350);
+  }
+
+  /** پایان کار: نوار تا ۱۰۰٪ پر می‌شود و نیم‌ثانیه بعد جای خود را به نتیجه می‌دهد. */
+  function finishProgress() {
+    stopProgressTimers();
+    if (!progressActive.current) return;
+    progressActive.current = false;
+    setOcrProgress({fraction: 1, stage: 'done', finished: true});
+    progressHideTimer.current = window.setTimeout(() => {setOcrProgress(null); progressHideTimer.current = null;}, 500);
+  }
+
+  /** توقف فوری (خطا یا ترک صفحه): نوار بدون رسیدن به ۱۰۰٪ پاک می‌شود. */
+  function abortProgress() {
+    stopProgressTimers();
+    progressActive.current = false;
+    setOcrProgress(null);
+  }
+
+  useEffect(() => () => stopProgressTimers(), []);
+
   /** OCR و رفتن به مرحلهٔ مقصد؛ در مرحلهٔ ۱ با دکمهٔ ادامه خودکار اجرا می‌شود. */
   async function runOcr(nextStep: number | null = null) {
     if (!job || busy) return;
@@ -793,6 +893,7 @@ export function App() {
       if (!ok) return;
     }
     setBusy(true); setMessage('در حال اجرای OCR آزمایشی…');
+    startProgress(job.jobId);
     try {
       const response = await fetch(`/api/jobs/${job.jobId}/ocr`, {method: 'POST'});
       const result = await response.json();
@@ -805,8 +906,11 @@ export function App() {
       setOcrVersion(Date.now());
       if (nextStep !== null) setStep(nextStep);
       setMessage('متن تشخیص داده شد. مرحلهٔ بعد: ترجمه.');
-    } catch (error) {fail(error instanceof Error ? error.message : 'OCR ناموفق بود.');}
-    finally {setBusy(false);}
+    } catch (error) {
+      abortProgress();
+      fail(error instanceof Error ? error.message : 'OCR ناموفق بود.');
+    }
+    finally {finishProgress(); setBusy(false);}
   }
 
   return (
@@ -945,6 +1049,9 @@ export function App() {
                 </button>
               </div>
 
+              {ocrProgress ? (
+                <ProgressBar progress={ocrProgress} />
+              ) : (
               <div
                 ref={dropZoneRef}
                 className={`select ${busy ? 'busy' : ''}`}
@@ -969,6 +1076,7 @@ export function App() {
                   onChange={e => {void upload(e.target.files?.[0]); e.target.value = '';}}
                 />
               </div>
+              )}
 
               {job && sourceVersion > 0 && (
                 <>
@@ -1027,6 +1135,7 @@ export function App() {
           {step === 2 && (
             <>
               <h2 className="wizard-title">مرحله ۲: ترجمهٔ فارسی</h2>
+              {ocrProgress && <ProgressBar progress={ocrProgress} />}
               {!source ? (
                 <p className="wizard-help">برای این کار هنوز متنی تشخیص داده نشده است؛ ابتدا OCR را اجرا کنید.</p>
               ) : (

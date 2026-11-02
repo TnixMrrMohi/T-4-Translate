@@ -8,7 +8,7 @@ from app import ocr
 def test_translation_flow_and_stale_revision(tmp_path, monkeypatch):
     monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
     lines = [{'text': 'First', 'quad': [], 'confidence': .8}, {'text': 'Second', 'quad': [], 'confidence': .7}]
-    monkeypatch.setattr(ocr, 'recognize', lambda path: lines)
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: lines)
     b = BytesIO(); Image.new('RGB', (20, 20)).save(b, format='PNG')
     with TestClient(app) as client:
         job = client.post('/api/jobs', files={'file': ('a.png', b.getvalue(), 'image/png')}).json()['jobId']
@@ -33,7 +33,7 @@ def test_translation_flow_and_stale_revision(tmp_path, monkeypatch):
 
 def test_empty_ocr_cannot_be_translated(tmp_path, monkeypatch):
     monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
-    monkeypatch.setattr(ocr, 'recognize', lambda path: [])
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: [])
     b = BytesIO(); Image.new('RGB', (20, 20)).save(b, format='PNG')
     with TestClient(app) as client:
         job = client.post('/api/jobs', files={'file': ('a.png', b.getvalue(), 'image/png')}).json()['jobId']
@@ -55,7 +55,7 @@ def test_one_bubble_is_one_translation_block(tmp_path, monkeypatch):
         {'text': 'CONVERSE', 'confidence': .9,
          'quad': [[150, 240], [250, 240], [250, 265], [150, 265]]},
     ]
-    monkeypatch.setattr(ocr, 'recognize', lambda path: lines)
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: lines)
     with TestClient(app) as client:
         job = client.post('/api/jobs', files={'file': ('a.png', buffer.getvalue(), 'image/png')}).json()['jobId']
         client.post(f'/api/jobs/{job}/ocr')

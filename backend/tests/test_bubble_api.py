@@ -41,7 +41,7 @@ def test_bubbles_requires_ocr(client, tmp_path, monkeypatch):
 
 def test_bubbles_are_detected_and_cached(client, tmp_path, monkeypatch):
     job = _upload(client, _page(tmp_path / "page.png"))
-    monkeypatch.setattr("app.main.ocr.recognize", lambda path: _lines())
+    monkeypatch.setattr("app.main.ocr.recognize", lambda path, on_progress=None: _lines())
     assert client.post(f"/api/jobs/{job}/ocr").status_code == 200
 
     assert client.get(f"/api/jobs/{job}/bubbles").status_code == 404
@@ -81,7 +81,7 @@ def test_unknown_job_returns_404(client):
 
 def test_broken_source_image_is_reported(client, tmp_path, monkeypatch):
     job = _upload(client, _page(tmp_path / "page.png"))
-    monkeypatch.setattr("app.main.ocr.recognize", lambda path: _lines())
+    monkeypatch.setattr("app.main.ocr.recognize", lambda path, on_progress=None: _lines())
     client.post(f"/api/jobs/{job}/ocr")
 
     def boom(*args, **kwargs):

@@ -19,7 +19,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
-from app import bubbles, cleaning, fonts, ocr, preview, rendering
+from app import bubbles, cleaning, fonts, ocr, preview, progress, rendering
 from app.translations import parse_translation
 
 app = FastAPI(title="T-4 Translate", version="0.1.0")
@@ -211,17 +211,33 @@ async def run_ocr(job_id: str) -> dict:
     root = Path(os.environ.get("T4_DATA_DIR", str(Path.home() / ".t4-translate"))) / "jobs"
     workspace = root / job_id
     async with _ocr_lock:
+        # پیشرفت زنده تا رابط کاربری نوار پیشرفت را پر کند.
+        progress.begin(job_id)
         try:
-            lines = await run_native_safely(ocr.recognize, workspace / "source.img")
+            lines = await run_native_safely(ocr.recognize, workspace / "source.img", progress.callback(job_id))
         except ocr.OcrUnavailable as exc:
+            progress.fail(job_id, str(exc))
             raise HTTPException(503, str(exc)) from None
         except Exception:
+            progress.fail(job_id, "پردازش OCR ناموفق بود.")
             raise HTTPException(500, "پردازش OCR ناموفق بود.") from None
+        progress.finish(job_id)
         result = {"jobId": job_id, "provider": "rapidocr-experimental", "lines": lines, "revision": ocr_revision(lines)}
         tmp = workspace / "ocr.json.tmp"
         tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, workspace / "ocr.json")
         return result
+
+
+@app.get("/api/jobs/{job_id}/progress")
+def get_progress(job_id: str) -> dict:
+    """درصد پیشرفتِ کار جاری (OCR) برای نوار پیشرفت؛ بدون کار فعال یعنی صفر."""
+    get_job(job_id)
+    data = progress.snapshot(job_id)
+    if data is None:
+        return {"jobId": job_id, "fraction": 0.0, "stage": "idle", "running": False,
+                "finished": False, "error": None}
+    return data
 
 
 @app.get("/api/jobs/{job_id}/ocr")

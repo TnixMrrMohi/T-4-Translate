@@ -123,7 +123,7 @@ def test_artifacts_report_progress(tmp_path, monkeypatch):
     from app import ocr
 
     monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(ocr, "recognize", lambda path: [
+    monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [
         {"text": "Hi", "confidence": .9, "quad": [[5, 5], [35, 5], [35, 35], [5, 35]]}])
     with TestClient(app) as client:
         job = _upload(client)["jobId"]

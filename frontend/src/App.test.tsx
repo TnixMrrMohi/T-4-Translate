@@ -28,6 +28,10 @@ function mockApi(options: {
   onFontUpload?: Handler;
   /** پاسخ آپلود؛ تابع، شمارهٔ آپلود (از ۱) را می‌گیرد تا هر بار کار تازه بسازد. */
   uploadJob?: (index: number) => unknown;
+  /** پاسخ /progress (نوار پیشرفت)؛ کسر ثابت یا تابع. */
+  progress?: unknown | (() => unknown);
+  /** اگر بدهید، پاسخ OCR تا resolve شدن این Promise عقب می‌افتد. */
+  holdOcr?: () => Promise<void>;
 } = {}) {
   const calls: {url: string; method: string}[] = [];
   let ocrDone = false;
@@ -49,6 +53,7 @@ function mockApi(options: {
       return json(options.upload ?? {jobId: JOB_ID, width: 1500, height: 15000, format: 'PNG', status: 'uploaded', createdAt: '2026-10-31T20:15:00+00:00'}, 201);
     }
     if (method === 'POST' && url.endsWith('/ocr')) {
+      if (options.holdOcr) await options.holdOcr();
       ocrDone = true;
       return json({jobId: JOB_ID, provider: 'mock', lines: options.ocrLines ?? [], revision: 'r'.repeat(64)});
     }
@@ -57,6 +62,10 @@ function mockApi(options: {
     }
     if (method === 'POST' && url.endsWith('/render')) {
       return json({jobId: JOB_ID, drawn: 2, message: 'ترجمهٔ فارسی روی پیش‌نمایش قرار گرفت؛ این خروجی هنوز آزمایشی است.'});
+    }
+    if (url.includes('/progress')) {
+      const value = typeof options.progress === 'function' ? (options.progress as () => unknown)() : options.progress;
+      return json(value ?? {jobId: JOB_ID, fraction: 0, stage: 'idle', running: false, finished: false, error: null});
     }
     if (url.endsWith('/artifacts')) {
       const ready = Boolean(options.source) && (!options.sourceAfterOcr || ocrDone);
@@ -103,6 +112,12 @@ const jobItem = {
   sizeBytes: 1024,
   status: 'uploaded',
 };
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => {resolve = done;});
+  return {promise, resolve};
+}
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -855,5 +870,63 @@ describe('آیکون سطل زباله در مرحلهٔ ۱', () => {
     expect(localStorage.getItem('t4-last-job')).toBeNull();
     // کار پاک‌شده در «کارهای قبلی» می‌آید (فایل‌ها حذف نمی‌شوند).
     expect(await screen.findByRole('region', {name: 'کارهای قبلی'})).toBeInTheDocument();
+  });
+});
+
+describe('نوار پیشرفت تشخیص خودکار متن', () => {
+  const SOURCE = {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]};
+
+  it('جای متن ساده، نوار پیشرفت را نشان می‌دهد و درصد سرور را پر می‌کند', async () => {
+    const hold = deferred();
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 1200, format: 'PNG', status: 'uploaded'},
+      source: SOURCE,
+      sourceAfterOcr: true,
+      progress: {jobId: JOB_ID, fraction: 0.62, stage: 'strips', running: true, finished: false},
+      holdOcr: () => hold.promise,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    // پیش از اجرا نواری وجود ندارد.
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('button', {name: 'ادامه (تشخیص خودکار متن)'}));
+
+    const bar = await screen.findByRole('progressbar', {name: 'پیشرفت تشخیص خودکار متن'});
+    expect(bar).toHaveAttribute('aria-valuemin', '0');
+    expect(bar).toHaveAttribute('aria-valuemax', '100');
+    // درصد واقعیِ سرور روی نوار می‌نشیند (نه متن سادهٔ «در حال پردازش…»).
+    await waitFor(() => expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(62));
+    expect(screen.queryByText('در حال پردازش…')).not.toBeInTheDocument();
+    expect(screen.queryByText('انتخاب فایل یا رهاکردن تصویر')).not.toBeInTheDocument();
+    expect(screen.getByText('خواندن متن، نوار به نوار…')).toBeInTheDocument();
+    expect(document.querySelector('.progress-fill')).toBeTruthy();
+
+    hold.resolve();
+    // پس از پایان، نوار پر می‌شود و سپس جای خود را به مرحلهٔ بعد می‌دهد.
+    await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument(), {timeout: 3000});
+    expect(await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'})).toBeInTheDocument();
+  });
+
+  it('بدون پاسخ سرور، نوار با گذشت زمان خودش پر می‌شود (تخمین)', async () => {
+    const hold = deferred();
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 1200, format: 'PNG', status: 'uploaded'},
+      source: SOURCE,
+      sourceAfterOcr: true,
+      holdOcr: () => hold.promise,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', {name: 'ادامه (تشخیص خودکار متن)'}));
+
+    const bar = await screen.findByRole('progressbar', {name: 'پیشرفت تشخیص خودکار متن'});
+    await waitFor(() => expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThan(0));
+    // نوار پیش از پایانِ واقعی پر نمی‌شود (سقف ۹۹٪).
+    expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(100);
+    hold.resolve();
+    await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument(), {timeout: 3000});
   });
 });

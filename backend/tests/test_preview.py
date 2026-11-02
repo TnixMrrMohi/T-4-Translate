@@ -64,7 +64,7 @@ def test_overlay_missing_file_raises(tmp_path):
 
 def test_preview_endpoint_and_media_type(tmp_path, monkeypatch):
     monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(ocr, "recognize", lambda path: [_line()])
+    monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [_line()])
     with TestClient(app) as client:
         job = client.post("/api/jobs", files={"file": ("a.png", _png(), "image/png")}).json()["jobId"]
         # بدون OCR هنوز پیش‌نمایشی وجود ندارد.
@@ -76,7 +76,7 @@ def test_preview_endpoint_and_media_type(tmp_path, monkeypatch):
         # کش: درخواست دوم همان بایت‌ها را می‌دهد.
         assert client.get(f"/api/jobs/{job}/ocr-preview").content == first.content
         # با تغییر OCR، پیش‌نمایش بازسازی می‌شود.
-        monkeypatch.setattr(ocr, "recognize", lambda path: [_line([[20, 20], [100, 20], [100, 60], [20, 60]])])
+        monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [_line([[20, 20], [100, 20], [100, 60], [20, 60]])])
         client.post(f"/api/jobs/{job}/ocr")
         assert client.get(f"/api/jobs/{job}/ocr-preview").content != first.content
 
@@ -114,7 +114,7 @@ def test_thumbnail_handles_transparent_png(tmp_path):
 
 def test_thumb_endpoint_for_source_and_render(tmp_path, monkeypatch):
     monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(ocr, "recognize", lambda path: [_line()])
+    monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [_line()])
     buffer = BytesIO()
     Image.new("RGB", (1600, 900), "white").save(buffer, format="PNG")
     with TestClient(app) as client:
@@ -132,12 +132,12 @@ def test_thumb_endpoint_for_source_and_render(tmp_path, monkeypatch):
 
 def test_thumb_cache_invalidates_when_preview_changes(tmp_path, monkeypatch):
     monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(ocr, "recognize", lambda path: [_line()])
+    monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [_line()])
     with TestClient(app) as client:
         job = client.post("/api/jobs", files={"file": ("a.png", _png(), "image/png")}).json()["jobId"]
         client.post(f"/api/jobs/{job}/ocr")
         first = client.get(f"/api/jobs/{job}/thumb/ocr").content
-        monkeypatch.setattr(ocr, "recognize", lambda path: [_line([[60, 40], [90, 40], [90, 70], [60, 70]])])
+        monkeypatch.setattr(ocr, "recognize", lambda path, on_progress=None: [_line([[60, 40], [90, 40], [90, 70], [60, 70]])])
         client.post(f"/api/jobs/{job}/ocr")
         assert client.get(f"/api/jobs/{job}/ocr-preview").status_code == 200
         assert client.get(f"/api/jobs/{job}/thumb/ocr").content != first

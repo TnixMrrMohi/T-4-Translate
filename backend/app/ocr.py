@@ -8,6 +8,7 @@
 """
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from PIL import Image
@@ -16,6 +17,9 @@ from PIL import Image
 # خطی که روی مرز نوار می‌افتد، دست‌کم در یکی از دو نوار کامل دیده شود.
 STRIP_HEIGHT = 1000
 STRIP_OVERLAP = 100
+
+# گزارش پیشرفت: (کسر ۰ تا ۱، نام مرحله)
+ProgressReporter = Callable[[float, str], None]
 
 
 class OcrUnavailable(Exception):
@@ -72,20 +76,50 @@ def _dedupe(lines: list[dict]) -> list[dict]:
     return kept
 
 
-def recognize(path: Path) -> list[dict]:
-    """خطوط متن صفحه را با کادرهای مطلقِ صفحه برمی‌گرداند."""
+def _strips(height: int) -> int:
+    """تعداد نوارهایی که صفحه به آن‌ها شکسته می‌شود (برای درصد پیشرفت)."""
+    step = STRIP_HEIGHT - STRIP_OVERLAP
+    return max(1, -(-(height - STRIP_HEIGHT) // step) + 1)
+
+
+def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[dict]:
+    """خطوط متن صفحه را با کادرهای مطلقِ صفحه برمی‌گرداند.
+
+    اگر ``on_progress`` داده شود، پیشرفت (کسر ۰ تا ۱ و نام مرحله) گزارش می‌شود تا
+    رابط کاربری نوار پیشرفت را پر کند؛ خطا در گزارش‌دهی هرگز OCR را متوقف نمی‌کند.
+    """
+    def report(fraction: float, stage: str) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(fraction, stage)
+        except Exception:  # گزارش پیشرفت فقط تزئینی است
+            pass
+
+    report(0.02, 'start')
     with Image.open(path) as source:
         width, height = source.size
         if height <= STRIP_HEIGHT + STRIP_OVERLAP:
-            return _shift(_read(str(path)), 0)
+            report(0.08, 'model')  # نخستین فراخوانی، مدل را در حافظه بار می‌کند
+            result = _shift(_read(str(path)), 0)
+            report(0.99, 'save')
+            return result
+        total = _strips(height)
         result: list[dict] = []
         top = 0
+        index = 0
         while top < height:
             bottom = min(height, top + STRIP_HEIGHT)
+            report(0.08 + 0.86 * index / total, 'model' if index == 0 else 'strips')
             with Image.open(path) as strip_source:
                 strip = np.array(strip_source.convert('RGB').crop((0, top, width, bottom)))
             result.extend(_shift(_read(strip), top))
+            index += 1
+            report(0.08 + 0.86 * index / total, 'strips')
             if bottom >= height:
                 break
             top = bottom - STRIP_OVERLAP
-    return _dedupe(result)
+    report(0.97, 'merge')
+    result = _dedupe(result)
+    report(0.99, 'save')
+    return result

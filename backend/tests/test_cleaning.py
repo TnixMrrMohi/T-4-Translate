@@ -31,7 +31,7 @@ def test_api_clean_and_stale_translation(tmp_path, monkeypatch):
     from app import ocr
     from io import BytesIO
     monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
-    monkeypatch.setattr(ocr, 'recognize', lambda path: [{'text': 'A', 'confidence': .9, 'quad': [[5, 5], [40, 5], [40, 40], [5, 40]]}])
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: [{'text': 'A', 'confidence': .9, 'quad': [[5, 5], [40, 5], [40, 40], [5, 40]]}])
     array = np.full((50, 50, 3), 255, dtype=np.uint8); array[15:25, 15:25] = 0
     buf = BytesIO(); Image.fromarray(array).save(buf, format='PNG')
     with TestClient(app) as client:

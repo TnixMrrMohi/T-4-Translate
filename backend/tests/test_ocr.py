@@ -14,7 +14,7 @@ def create(client):
 def test_ocr_result_saved_and_retrieved(monkeypatch, tmp_path):
     monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
     lines = [{'text': 'Hello', 'confidence': 0.9, 'quad': [[1, 2], [3, 2], [3, 4], [1, 4]]}]
-    monkeypatch.setattr(ocr, 'recognize', lambda path: lines)
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: lines)
     with TestClient(app) as client:
         job = create(client)
         assert client.get(f'/api/jobs/{job}/ocr').status_code == 404
@@ -26,7 +26,7 @@ def test_ocr_result_saved_and_retrieved(monkeypatch, tmp_path):
 
 def test_ocr_missing_model_is_explicit(monkeypatch, tmp_path):
     monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
-    def missing(path):
+    def missing(path, on_progress=None):
         raise ocr.OcrUnavailable('موتور نصب نشده است')
     monkeypatch.setattr(ocr, 'recognize', missing)
     with TestClient(app) as client:
