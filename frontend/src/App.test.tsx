@@ -1,7 +1,7 @@
 import {describe, expect, it, vi, beforeEach} from 'vitest';
 import {fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import {App} from './App';
+import {advanceProgress, App, PROGRESS_CEILING} from './App';
 
 type Handler = (init?: RequestInit) => Response | undefined;
 
@@ -985,6 +985,52 @@ describe('آیکون سطل زباله در مرحلهٔ ۱', () => {
   });
 });
 
+describe('محاسبهٔ پله‌های نوار پیشرفت', () => {
+  const start = {fraction: 0.02, at: 1_000, perSecond: 0};
+
+  it('بدون گزارش سرور، نوار با گذشت زمان به ۹۹٪ نمی‌رسد', () => {
+    // ریشهٔ شکایت: تخمین زمانیِ قبلی در ۱۶ ثانیه به ۹۶٪ و بعد ۹۹٪ می‌رسید و همان‌جا
+    // می‌ماند. حالا بدون پیشرفت واقعی، نوار فقط تا ۱۲٪ (مرحلهٔ بارگذاری مدل) می‌رود.
+    let state = start;
+    let fraction = 0.02;
+    for (let second = 1; second <= 120; second += 1) {
+      const next = advanceProgress(state, 0.02, 1_000 + second * 1000);
+      state = next.pace;
+      fraction = next.fraction;
+    }
+    expect(fraction).toBeLessThanOrEqual(0.12);
+    expect(fraction).toBeGreaterThan(0.02);
+  });
+
+  it('بین دو گزارش سرور، نوار با سرعت واقعیِ مشاهده‌شده جلو می‌رود', () => {
+    // نوار اول در ثانیهٔ ۴ تمام شد: ۰٫۰۶ → ۰٫۲۰ یعنی ۰٫۰۳۵ در ثانیه.
+    let {pace} = advanceProgress(start, 0.06, 4_000);
+    ({pace} = advanceProgress(pace, 0.20, 8_000));
+    // ۴ ثانیه بی‌خبری: نباید بپرد، ولی باید آرام جلو رفته باشد.
+    const {fraction} = advanceProgress(pace, 0.20, 12_000);
+    expect(fraction).toBeGreaterThan(0.20);
+    expect(fraction).toBeLessThan(0.40);
+  });
+
+  it('عدد سرور ملاک است و از ۹۴٪ جز با گزارش خودِ سرور جلوتر نمی‌رود', () => {
+    let {pace} = advanceProgress(start, 0.60, 5_000);
+    ({pace} = advanceProgress(pace, 0.60, 5_000 + 30_000));
+    const projected = advanceProgress(pace, 0.60, 5_000 + 60_000);
+    expect(projected.fraction).toBeLessThanOrEqual(PROGRESS_CEILING);
+    // در پایانِ واقعی، عدد سرور (۰٫۹۹) نمایش داده می‌شود.
+    const done = advanceProgress(projected.pace, 0.99, 5_000 + 61_000);
+    expect(done.fraction).toBeCloseTo(0.99, 5);
+  });
+
+  it('مقدار نوار هرگز عقب نمی‌رود', () => {
+    let {pace} = advanceProgress(start, 0.35, 3_000);
+    const first = advanceProgress(pace, 0.35, 9_000).fraction;
+    expect(first).toBeGreaterThanOrEqual(0.35);
+    const back = advanceProgress(pace, 0.10, 9_500);
+    expect(back.fraction).toBeGreaterThanOrEqual(0.35);
+  });
+});
+
 describe('نوار پیشرفت تشخیص خودکار متن', () => {
   const SOURCE = {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]};
 
@@ -1021,7 +1067,7 @@ describe('نوار پیشرفت تشخیص خودکار متن', () => {
     expect(await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'})).toBeInTheDocument();
   });
 
-  it('بدون پاسخ سرور، نوار با گذشت زمان خودش پر می‌شود (تخمین)', async () => {
+  it('بدون پاسخ سرور، نوار فقط آرام و محدود جلو می‌رود و به ۹۹٪ نمی‌رسد', async () => {
     const hold = deferred();
     localStorage.setItem('t4-last-job', JOB_ID);
     mockApi({
@@ -1036,8 +1082,9 @@ describe('نوار پیشرفت تشخیص خودکار متن', () => {
 
     const bar = await screen.findByRole('progressbar', {name: 'پیشرفت تشخیص خودکار متن'});
     await waitFor(() => expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThan(0));
-    // نوار پیش از پایانِ واقعی پر نمی‌شود (سقف ۹۹٪).
-    expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(100);
+    // بدون پیشرفت واقعی، تخمین زمانی نوار را بالا نمی‌برد (سقف مرحلهٔ بارگذاری ۱۲٪).
+    await new Promise(resolve => window.setTimeout(resolve, 600));
+    expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(15);
     hold.resolve();
     await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument(), {timeout: 3000});
   });

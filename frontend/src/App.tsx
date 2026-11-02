@@ -178,6 +178,45 @@ const PROGRESS_STAGES: Record<string, string> = {
 /** پیشرفت یک کار؛ کسر ۰ تا ۱ و نام مرحله (همان چیزی که سرور می‌دهد). */
 type Progress = {fraction: number; stage: string; running?: boolean; finished?: boolean; error?: string | null};
 
+/** سقف پیش‌بینی بین دو پاسخ سرور؛ پیش از پایانِ واقعی هرگز ۹۹٪ نشان داده نمی‌شود. */
+export const PROGRESS_CEILING = 0.94;
+/** پیش از اندازه‌گیری سرعت واقعی (مرحلهٔ بارگذاری مدل) نوار فقط آرام حرکت می‌کند. */
+const WARMUP_PACE = 0.0035;   // ≈ ۰٫۳۵٪ در ثانیه
+const WARMUP_CEILING = 0.12;
+
+/** سرعت مشاهده‌شدهٔ پیشرفت و آخرین نقطهٔ واقعی؛ برای پر کردن فاصلهٔ بین دو پاسخ سرور. */
+export type ProgressPace = {fraction: number; at: number; perSecond: number};
+
+/**
+ * پیشرفت بعدی نوار را از «سرعت واقعیِ مشاهده‌شده» حساب می‌کند، نه از یک تخمین زمانیِ
+ * ثابت. قبلاً یک تخمین زمانی با شیب تند، نوار را در ۱۶ ثانیه به ۹۶٪ و بعد ۹۹٪ می‌برد و
+ * بقیهٔ کار (که ممکن است دقیقه‌ها طول بکشد) پشتِ همان ۹۹٪ می‌ماند. حالا:
+ *   - عدد سرور همیشه ملاک است؛
+ *   - بین دو گزارش سرور، نوار با همان سرعتی که تا حالا واقعاً جلو رفته پر می‌شود؛
+ *   - تا وقتی سرور خودش نزدیک پایان را نگفته، نوار از ۹۴٪ جلوتر نمی‌رود.
+ */
+export function advanceProgress(pace: ProgressPace, serverFraction: number, now: number):
+  {pace: ProgressPace; fraction: number} {
+  const next: ProgressPace = {...pace};
+  if (serverFraction > next.fraction + 1e-6) {
+    const seconds = Math.max(0.3, (now - next.at) / 1000);
+    const speed = (serverFraction - next.fraction) / seconds;
+    // میانگین وزنی با سرعت قبلی: یک نوار کند یا تند، نوار را پرشی نمی‌کند.
+    next.perSecond = next.perSecond > 0 ? next.perSecond * 0.4 + speed * 0.6 : speed;
+    next.fraction = serverFraction;
+    next.at = now;
+  }
+  // فاصلهٔ بی‌خبری حداکثر ۱۲ ثانیه با همان سرعت پر می‌شود؛ بعد از آن متوقف می‌ماند
+  // تا نوار جلوتر از واقعیت نرود.
+  const idle = Math.min(Math.max(0, (now - next.at) / 1000), 12);
+  const warming = next.perSecond <= 0;  // هنوز هیچ نوار کاملی خوانده نشده است
+  const rate = warming ? WARMUP_PACE : next.perSecond;
+  const ceiling = warming ? WARMUP_CEILING : PROGRESS_CEILING;
+  const projected = Math.min(ceiling, next.fraction + rate * idle * 0.8);
+  const fraction = Math.min(0.99, Math.max(next.fraction, serverFraction, projected));
+  return {pace: next, fraction};
+}
+
 /** نوار پیشرفتِ تشخیص خودکار متن؛ جای متن ساده را می‌گیرد و تا ۱۰۰٪ پر می‌شود. */
 function ProgressBar({progress}: {progress: Progress}) {
   const percent = Math.max(0, Math.min(100, Math.round(progress.fraction * 100)));
@@ -494,6 +533,8 @@ export function App() {
   const progressTimer = useRef<number | null>(null);
   const progressHideTimer = useRef<number | null>(null);
   const progressActive = useRef(false);
+  // سرعت واقعیِ مشاهده‌شدهٔ پیشرفت؛ برای پر کردن فاصلهٔ بین دو پاسخ سرور.
+  const progressPace = useRef<ProgressPace>({fraction: 0.02, at: 0, perSecond: 0});
 
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const dialogResolve = useRef<((ok: boolean) => void) | null>(null);
@@ -1118,7 +1159,7 @@ export function App() {
   function startProgress(jobId: string) {
     stopProgressTimers();
     progressActive.current = true;
-    const startedAt = Date.now();
+    progressPace.current = {fraction: 0.02, at: Date.now(), perSecond: 0};
     setOcrProgress({fraction: 0.02, stage: 'start', running: true});
     const poll = async () => {
       let server: Progress | null = null;
@@ -1129,14 +1170,15 @@ export function App() {
           if (typeof data.fraction === 'number') server = data as Progress;
         }
       } catch {
-        // سرور جواب نداد؛ تخمین زمانی نوار را جلو می‌برد.
+        // سرور جواب نداد؛ نوار روی همان مقدار (با حرکت آرام مرحلهٔ اول) می‌ماند.
       }
-      const seconds = (Date.now() - startedAt) / 1000;
-      // تخمین: سریع بالا می‌رود و آرام به ۹۶٪ می‌رسد تا پیش از پایانِ واقعی پر نشود.
-      const estimate = Math.min(0.96, 1 - Math.exp(-seconds / 5));
+      // عدد سرور ملاک است؛ بین دو گزارش، نوار با سرعتِ واقعیِ مشاهده‌شده پر می‌شود
+      // (نه با تخمین زمانیِ کور که زودتر از موعد به ۹۹٪ می‌رسید).
+      const advanced = advanceProgress(progressPace.current, server?.fraction ?? 0, Date.now());
+      progressPace.current = advanced.pace;
       setOcrProgress(previous => {
         if (!previous) return previous;
-        const fraction = Math.min(0.99, Math.max(previous.fraction, estimate, server?.fraction ?? 0));
+        const fraction = Math.min(0.99, Math.max(previous.fraction, advanced.fraction));
         const stage = server?.stage && server.stage !== 'idle' ? server.stage : previous.stage;
         return {fraction, stage, running: true};
       });
