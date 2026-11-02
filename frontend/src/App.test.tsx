@@ -1,7 +1,7 @@
 import {describe, expect, it, vi, beforeEach} from 'vitest';
 import {fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import {advanceProgress, App, PROGRESS_CEILING} from './App';
+import {advanceProgress, App, focusAreaView, PROGRESS_CEILING} from './App';
 
 type Handler = (init?: RequestInit) => Response | undefined;
 
@@ -1413,6 +1413,64 @@ describe('ناحیه‌های پاک‌سازی در مرحلهٔ ۳', () => {
   it('بدون انتخاب ناحیه، دکمهٔ پاک‌سازی مجدد غیرفعال است', async () => {
     await openCleaning();
     expect(screen.getByRole('button', {name: 'پاک‌سازی مجدد ناحیه‌های انتخاب‌شده'})).toBeDisabled();
+  });
+
+  it('کلیک روی ناحیه، پیش‌نمایش را باز و بلافاصله روی همان ناحیه زوم می‌کند', async () => {
+    const {user} = await openCleaning();
+
+    await user.click(screen.getByRole('button', {name: 'نمایش ناحیهٔ ۲ روی پیش‌نمایش'}));
+
+    const dialog = await screen.findByRole('dialog', {name: 'ناحیه‌های پاک‌سازی با شماره'});
+    // برچسب روشن می‌گوید کدام ناحیه دیده می‌شود.
+    expect(within(dialog).getByText('ناحیهٔ ۲')).toBeInTheDocument();
+    // از حالت «تناسب صفحه» بیرون آمده و زوم عددی دارد.
+    const stage = dialog.querySelector('.modal-stage');
+    expect(stage).not.toBeNull();
+    expect(stage).not.toHaveClass('fit');
+    expect(dialog.querySelector('.modal-zoom')?.textContent).toMatch(/٪$/);
+    // خود ردیف هم نشانه‌گذاری می‌شود.
+    expect(screen.getByRole('button', {name: 'نمایش ناحیهٔ ۲ روی پیش‌نمایش'}).closest('.area-row'))
+      .toHaveClass('is-focused');
+  });
+
+  it('انتخاب با چک‌باکس همچنان فقط انتخاب است و پیش‌نمایش را باز نمی‌کند', async () => {
+    const {user} = await openCleaning();
+    await user.click(screen.getByRole('checkbox', {name: 'ناحیهٔ ۱'}));
+    expect(screen.getByRole('checkbox', {name: 'ناحیهٔ ۱'})).toBeChecked();
+    expect(screen.queryByRole('dialog', {name: 'ناحیه‌های پاک‌سازی با شماره'})).not.toBeInTheDocument();
+  });
+});
+
+describe('focusAreaView — زوم و پیمایش روی یک ناحیه', () => {
+  it('ناحیهٔ کوچک را بزرگ می‌کند و مرکزش را وسط صحنه می‌آورد', () => {
+    const view = focusAreaView({
+      stageWidth: 1000, stageHeight: 800, pageWidth: 1000, pageHeight: 2000,
+      box: [400, 1400, 600, 1500],
+    });
+    expect(view.zoom).toBe(4);            // سقف زوم
+    expect(view.scrollLeft).toBe(1500);   // مرکز افقی ۵۰۰ × ۴ − ۵۰۰
+    expect(view.scrollTop).toBe(5400);    // مرکز عمودی ۱۴۵۰ × ۴ − ۴۰۰
+  });
+
+  it('برای ناحیهٔ بزرگ از کف زوم پایین‌تر نمی‌رود', () => {
+    const view = focusAreaView({
+      stageWidth: 1000, stageHeight: 800, pageWidth: 1000, pageHeight: 2000,
+      box: [0, 0, 1000, 2000],
+    });
+    expect(view.zoom).toBe(0.5);
+    expect(view.scrollTop).toBeGreaterThanOrEqual(0);
+    expect(view.scrollLeft).toBeGreaterThanOrEqual(0);
+  });
+
+  it('مختصات جابه‌جا (x2<x1) را هم می‌فهمد و اندازهٔ صفرِ صحنه را امن برمی‌گرداند', () => {
+    const flipped = focusAreaView({
+      stageWidth: 1000, stageHeight: 800, pageWidth: 1000, pageHeight: 2000,
+      box: [600, 1500, 400, 1400],
+    });
+    expect(flipped).toEqual({zoom: 4, scrollTop: 5400, scrollLeft: 1500});
+    expect(focusAreaView({
+      stageWidth: 0, stageHeight: 0, pageWidth: 1000, pageHeight: 2000, box: [0, 0, 10, 10],
+    })).toEqual({zoom: 1, scrollTop: 0, scrollLeft: 0});
   });
 });
 

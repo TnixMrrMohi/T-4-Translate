@@ -145,7 +145,45 @@ type PreviewProps = {
   downloadName?: string;
   /** نسبت ارتفاع به عرض صفحه؛ برای صفحات بلند (وب‌تون) حالت پیش‌فرض تغییر می‌کند. */
   aspect?: number;
+  /** اندازهٔ صفحهٔ اصلی (پیکسل)؛ برای پرش دقیق به یک ناحیه لازم است. */
+  pageWidth?: number;
+  pageHeight?: number;
+  /** درخواست «برو سراغ این ناحیه»؛ با هر کلیک nonce عوض می‌شود. */
+  focusRequest?: AreaFocus | null;
 };
+
+/** درخواست تمرکز روی یک ناحیهٔ صفحه (مثلاً یک ناحیهٔ پاک‌سازی). */
+type AreaFocus = {box: number[]; label: string; nonce: number};
+
+/**
+ * زوم و مقدار پیمایش لازم تا یک ناحیهٔ مشخص دقیقاً وسط مودال دیده شود.
+ *
+ * تصویر در حالت «عرض کامل/زوم» با عرض `zoom × عرض صحنه` نشان داده می‌شود؛ ناحیه
+ * حدود ۵۵٪ ارتفاع و ۸۰٪ عرض صحنه را پر می‌کند تا هم دیده شود و هم زمینه‌اش بماند.
+ */
+export function focusAreaView({stageWidth, stageHeight, pageWidth, pageHeight, box,
+                               minZoom = 0.5, maxZoom = 4}: {
+  stageWidth: number; stageHeight: number; pageWidth: number; pageHeight: number; box: number[];
+  minZoom?: number; maxZoom?: number;
+}): {zoom: number; scrollTop: number; scrollLeft: number} {
+  const width = Math.max(1, pageWidth);
+  const height = Math.max(1, pageHeight);
+  const boxWidth = Math.max(1, Math.abs(box[2] - box[0]));
+  const boxHeight = Math.max(1, Math.abs(box[3] - box[1]));
+  if (stageWidth <= 0 || stageHeight <= 0) return {zoom: 1, scrollTop: 0, scrollLeft: 0};
+
+  const byHeight = (0.55 * stageHeight * width) / (boxHeight * stageWidth);
+  const byWidth = (0.8 * width) / boxWidth;
+  const zoom = Math.max(minZoom, Math.min(maxZoom, Math.round(Math.min(byHeight, byWidth) * 100) / 100));
+  const scale = (zoom * stageWidth) / width;   // پیکسل نمایش به ازای هر پیکسل صفحه
+  const centerX = ((box[0] + box[2]) / 2) * scale;
+  const centerY = ((box[1] + box[3]) / 2) * scale;
+  return {
+    zoom,
+    scrollTop: Math.max(0, Math.round(centerY - stageHeight / 2)),
+    scrollLeft: Math.max(0, Math.round(centerX - stageWidth / 2)),
+  };
+}
 
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.25;
@@ -300,32 +338,77 @@ function Overlay({label, onBackdropClick, className = 'modal-backdrop', children
 }
 
 /** بندانگشتی ثابت‌اندازه؛ تصویر کامل (حتی ۱۵۰۰۰ پیکسل) فقط در مودال نمایش داده می‌شود. */
-function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1}: PreviewProps) {
+function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1,
+                        pageWidth = 0, pageHeight = 0, focusRequest = null}: PreviewProps) {
   const [open, setOpen] = useState(false);
   const [fit, setFit] = useState(true);
   const [zoom, setZoom] = useState(1);
+  // نام ناحیه‌ای که همین حالا در حال نمایش است (تا وقتی کاربر خودش زوم را عوض کند).
+  const [focusedLabel, setFocusedLabel] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const thumbRef = useRef<HTMLButtonElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   // فوکوس پس از بسته‌شدن لایه برمی‌گردد؛ کمی بعد، چون تا برداشتن inert از ریشه
   // فوکوس روی محتوای پشتِ لایه نادیده گرفته می‌شود.
   const close = () => {
     setOpen(false);
+    setFocusedLabel(null);
     window.setTimeout(() => thumbRef.current?.focus(), 0);
   };
   // پیش‌نمایش همیشه کل صفحه را نشان می‌دهد (حتی صفحهٔ ۱۵۰۰۰ پیکسلی که باریک می‌شود)
   // و برای دیدن جزئیات، مودال با زوم و «عرض کامل» باز می‌شود.
   const tall = aspect > 2.5;
-  const openModal = () => {setOpen(true); setFit(true); setZoom(1);};
+  const openModal = () => {setOpen(true); setFit(true); setZoom(1); setFocusedLabel(null);};
+
+  // «برو سراغ این ناحیه»: با هر کلیک روی یک ناحیه، مودال باز می‌شود و بلافاصله
+  // روی همان ناحیه زوم و پیمایش می‌شود تا معلوم باشد کدام ناحیه است.
+  const pendingFocus = useRef<AreaFocus | null>(null);
+  useEffect(() => {
+    if (!focusRequest) return;
+    pendingFocus.current = focusRequest;
+    setOpen(true);
+    setFit(false);
+    setZoom(FIRST_ZOOM);
+    setFocusedLabel(focusRequest.label);
+  }, [focusRequest?.nonce]);
+
+  // اندازه‌های صحنه فقط بعد از باز شدن لایه واقعی‌اند؛ پس زوم/پیمایش اینجا حساب
+  // می‌شود و بعد با یک فریم صبر، صحنه روی همان نقطه می‌نشیند.
+  useEffect(() => {
+    const request = pendingFocus.current;
+    if (!open || !request) return;
+    pendingFocus.current = null;
+    const stage = stageRef.current;
+    const view = focusAreaView({
+      stageWidth: Math.max(0, (stage?.clientWidth ?? 0) - 16),   // ۸ پیکسل حاشیهٔ دو طرف
+      stageHeight: Math.max(0, (stage?.clientHeight ?? 0) - 16),
+      pageWidth: pageWidth || 1,
+      pageHeight: pageHeight || 1,
+      box: request.box,
+      minZoom: FIRST_ZOOM,
+      maxZoom: MAX_ZOOM,
+    });
+    setZoom(view.zoom);
+    const frame = window.requestAnimationFrame(() => {
+      const live = stageRef.current;
+      if (!live) return;
+      live.scrollTop = view.scrollTop;
+      live.scrollLeft = view.scrollLeft;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, focusRequest?.nonce]);
 
   // زوم پله‌پله: اولین پله ۵۰٪ و بعد هر پله ۲۵٪ بیشتر؛ از بالاترین پله به
   // «تناسب صفحه» برمی‌گردد. «عرض کامل» هم پلهٔ ۱۰۰٪ است، نه پرش مستقیم.
   const zoomed = !fit;
   const zoomIn = () => {
+    setFocusedLabel(null);
     if (fit) {setFit(false); setZoom(FIRST_ZOOM); return;}
     const next = ZOOM_LADDER.find(step => step > zoom + 1e-9);
     if (next !== undefined) setZoom(next);
   };
   const zoomOut = () => {
+    setFocusedLabel(null);
     if (fit) return;
     const previous = [...ZOOM_LADDER].reverse().find(step => step < zoom - 1e-9);
     if (previous === undefined) {setFit(true); setZoom(1); return;} // پایان پله‌ها: تناسب صفحه
@@ -336,8 +419,8 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
     if (zoomed && zoom >= LAST_ZOOM - 1e-9) {setFit(true); setZoom(1); return;}
     zoomIn();
   };
-  const showWidth = () => {setFit(false); setZoom(1);};
-  const showFit = () => {setFit(true); setZoom(1);};
+  const showWidth = () => {setFit(false); setZoom(1); setFocusedLabel(null);};
+  const showFit = () => {setFit(true); setZoom(1); setFocusedLabel(null);};
   const toggleLabel = zoomed ? 'تصویر: پلهٔ بعدی زوم' : 'تصویر: زوم پله‌پله از ۵۰٪';
 
   // اگر بندانگشتی نیاید (۴۰۴/شبکه)، یک‌بار خودکار دوباره خواسته و بعد پیام روشن
@@ -421,7 +504,10 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
       {open && (
         <Overlay label={alt} onBackdropClick={close}>
           <div className="modal-bar">
-            <span className="grow">{alt} <span style={{color: '#7d9294', fontSize: '12px'}}>(Esc برای بستن)</span></span>
+            <span className="grow">
+              {focusedLabel ? <b className="modal-focus-badge">{focusedLabel}</b> : null}
+              {alt} <span style={{color: '#7d9294', fontSize: '12px'}}>(Esc برای بستن)</span>
+            </span>
             <span className="modal-actions">
               <button type="button" onClick={zoomOut} disabled={!zoomed} aria-label="کوچک‌تر">−</button>
               <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
@@ -440,7 +526,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
                 ? 'بالاترین پله (۴۰۰٪) — کلیک بعدی به تناسب صفحه برمی‌گردد'
                 : `${Math.round(zoom * 100)}٪ — کلیک روی تصویر: یک پله بالاتر`}
           </p>
-          <div className={`modal-stage${fit ? ' fit' : ''}`}>
+          <div className={`modal-stage${fit ? ' fit' : ''}`} ref={stageRef}>
             {/* کلیک روی تصویر عرض را به عرض صفحه می‌برد و کلیک دوم برمی‌گرداند. */}
             <div
               className="modal-image"
@@ -565,6 +651,8 @@ export function App() {
   // شمارهٔ نسخهٔ هر پیش‌نمایش؛ با هر بازسازی زیاد می‌شود تا کش بندانگشتی و تصویر دور زده شود.
   const [cleanVersion, setCleanVersion] = useState(0);
   const [cleanAreas, setCleanAreas] = useState<CleanArea[]>([]);
+  // «برو سراغ این ناحیه»: با هر کلیک روی یک ناحیه، preview روی همان ناحیه می‌رود.
+  const [areaFocus, setAreaFocus] = useState<AreaFocus | null>(null);
   const [areaPick, setAreaPick] = useState<number[]>([]);
   const [areasBusy, setAreasBusy] = useState(false);
   const [renderVersion, setRenderVersion] = useState(0);
@@ -1022,6 +1110,17 @@ export function App() {
     }
   }
 
+  /** پرش فوری پیش‌نمایش به یک ناحیه تا دقیقاً معلوم شود کدام ناحیه است. */
+  function focusArea(area: CleanArea) {
+    const box = (area.area && area.area.length === 4 ? area.area : area.bbox) || [];
+    if (box.length !== 4) return;
+    setAreaFocus(previous => ({
+      box,
+      label: `ناحیهٔ ${area.number.toLocaleString('fa-IR')}`,
+      nonce: (previous?.nonce ?? 0) + 1,
+    }));
+  }
+
   /** انتخاب/حذف یک ناحیه از فهرست. */
   function toggleArea(number: number) {
     setAreaPick(prev => prev.includes(number)
@@ -1380,6 +1479,9 @@ export function App() {
               aspect={job.height / job.width}
               alt="ناحیه‌های پاک‌سازی با شماره"
               downloadName={`t4-${job.jobId}-clean-areas.png`}
+              pageWidth={job.width}
+              pageHeight={job.height}
+              focusRequest={areaFocus}
               caption={<span>ناحیه‌های پاک‌سازی — شماره‌ها مثل فهرست کنار</span>}
             />
           )}
@@ -1689,9 +1791,10 @@ export function App() {
                       </p>
                       <div className="area-list" role="group" aria-label="ناحیه‌های پاک‌سازی">
                         {translatedAreas.map(area => (
-                          <label
+                          <div
                             key={area.number}
-                            className={`area-row${areaPick.includes(area.number) ? ' is-picked' : ''}`}
+                            className={`area-row${areaPick.includes(area.number) ? ' is-picked' : ''}`
+                              + `${areaFocus?.label === `ناحیهٔ ${area.number.toLocaleString('fa-IR')}` ? ' is-focused' : ''}`}
                           >
                             <input
                               type="checkbox"
@@ -1700,10 +1803,18 @@ export function App() {
                               disabled={busy || areasBusy}
                               aria-label={`ناحیهٔ ${area.number.toLocaleString('fa-IR')}`}
                             />
-                            <span className="area-number">{area.number.toLocaleString('fa-IR')}</span>
-                            <span className="area-kind">{area.kindLabel}</span>
-                            <span className="area-text" dir="rtl">{area.text}</span>
-                          </label>
+                            <button
+                              type="button"
+                              className="area-open"
+                              title="نمایش همین ناحیه روی پیش‌نمایش"
+                              aria-label={`نمایش ناحیهٔ ${area.number.toLocaleString('fa-IR')} روی پیش‌نمایش`}
+                              onClick={() => focusArea(area)}
+                            >
+                              <span className="area-number">{area.number.toLocaleString('fa-IR')}</span>
+                              <span className="area-kind">{area.kindLabel}</span>
+                              <span className="area-text" dir="rtl">{area.text}</span>
+                            </button>
+                          </div>
                         ))}
                       </div>
                       <div className="wizard-nav start">
