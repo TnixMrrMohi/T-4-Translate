@@ -1,0 +1,103 @@
+import {beforeEach, describe, expect, it, vi} from 'vitest';
+import {render, screen, waitFor, within} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import SystemPanel, {modelPercent, type ModelRow} from './SystemPanel';
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {status, headers: {'Content-Type': 'application/json'}});
+}
+
+const SYSTEM = {
+  platform: 'Windows-11',
+  machine: 'AMD64',
+  cpu: 'AMD Ryzen 7',
+  cores: 8,
+  ramMb: 16384,
+  gpu: {name: 'NVIDIA RTX 3060', memory: '12 GB', vendor: 'nvidia'},
+  providers: ['CUDAExecutionProvider', 'CPUExecutionProvider'],
+  accelerated: true,
+  libraries: {python: '3.11.9', pillow: '11.2.1', opencv: '4.10.0', onnxruntime: '1.20.1'},
+  disk: {path: '/data', freeMb: 51200, totalMb: 102400},
+  models: {dir: '/data/models', totalBytes: 208044594, installed: ['lama'], inpaint: true, ocrModel: false},
+};
+
+const LAMA: ModelRow = {
+  id: 'lama', title: 'پاک‌سازی هوشمند LaMa', purpose: 'پاک‌کردن متن از روی نقاشی',
+  revision: '1', approxMb: 200, installed: true, sizeBytes: 208044594,
+  files: ['lama_fp32.onnx'], progress: null,
+};
+
+const DETECTOR: ModelRow = {
+  id: 'comic-text-detector', title: 'تشخیص متن روی نقاشی', purpose: 'پیدا کردن متن و حباب',
+  revision: '1', approxMb: 90, installed: false, sizeBytes: 0, files: [], progress: null,
+};
+
+let calls: string[] = [];
+
+beforeEach(() => {
+  calls = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push(`${init?.method || 'GET'} ${url}`);
+    if (url === '/api/system') return json(SYSTEM);
+    if (url === '/api/models') {
+      return json({models: [LAMA, DETECTOR], progress: {id: null, fraction: 0, message: '', running: false, error: null},
+        totalBytes: LAMA.sizeBytes, dir: '/data/models', mirror: ''});
+    }
+    if (url === '/api/models/comic-text-detector' && init?.method === 'POST') {
+      return json({started: true, status: [LAMA, DETECTOR]});
+    }
+    return json({}, 404);
+  }));
+});
+
+describe('پنل سخت‌افزار و مدل‌ها', () => {
+  it('دکمهٔ تنظیمات کنار ریست، سخت‌افزار و مدل‌های در حال استفاده را نشان می‌دهد', async () => {
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    const open = screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'});
+    await user.click(open);
+    const dialog = await screen.findByRole('dialog', {name: 'سخت‌افزار و مدل‌ها'});
+    expect(await within(dialog).findByText(/AMD Ryzen 7/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/NVIDIA RTX 3060/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/CUDAExecutionProvider/)).toBeInTheDocument();
+    // مدل‌های در حال استفاده: LaMa نصب است، خواندن متن پیش‌فرض.
+    expect(within(dialog).getByText('LaMa (هوشمند، دقیق)')).toBeInTheDocument();
+    expect(within(dialog).getByText('PP-OCR پیش‌فرض برنامه')).toBeInTheDocument();
+    expect(within(dialog).getByText(/198 مگابایت/)).toBeInTheDocument();
+  });
+
+  it('مدل نصب‌نشده دکمهٔ نصب دارد و درخواست را به سرور می‌فرستد', async () => {
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    const dialog = await screen.findByRole('dialog');
+    const install = await within(dialog).findByRole('button', {name: 'نصب'});
+    await user.click(install);
+    await waitFor(() => expect(calls).toContain('POST /api/models/comic-text-detector'));
+  });
+
+  it('مدل نصب‌شده امکان حذف فایل‌ها را دارد', async () => {
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByRole('button', {name: 'حذف فایل‌ها'})).toBeInTheDocument();
+    expect(within(dialog).getByText('نصب‌شده')).toBeInTheDocument();
+  });
+
+  it('درصد مدل فقط برای همان مدلِ در حال دانلود برمی‌گردد', () => {
+    expect(modelPercent(DETECTOR)).toBeNull();
+    expect(modelPercent({...DETECTOR, progress: {id: 'lama', fraction: 0.4, message: '', running: true, error: null}})).toBeNull();
+    expect(modelPercent({...DETECTOR, progress: {id: DETECTOR.id, fraction: 0.42, message: '', running: true, error: null}})).toBeCloseTo(0.42);
+  });
+
+  it('با Escape بسته می‌شود', async () => {
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+});

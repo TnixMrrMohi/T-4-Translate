@@ -1,0 +1,220 @@
+"""تست‌های انبار مدل (دانلود یک‌باره، استفادهٔ دوباره، حذف) و گزارش سخت‌افزار."""
+import json
+import time
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import hardware, models, textdet
+from app.main import app
+
+FAKE_BYTES = b"t4-fake-model-bytes" * 64
+
+
+@pytest.fixture
+def store(monkeypatch, tmp_path):
+    """انبار مدل جدا و یک مدل ساختگی با آینهٔ محلی."""
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("T4_MODELS_DIR", str(tmp_path / "models"))
+    mirror = tmp_path / "mirror"
+    source = mirror / "demo" / "demo.onnx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(FAKE_BYTES)
+    monkeypatch.setenv("T4_MODEL_BASE_URL", str(mirror))
+    catalog = [{
+        "id": "demo",
+        "title": "مدل نمونه",
+        "purpose": "فقط برای تست",
+        "revision": "1",
+        "approxMb": 0,
+        "files": [{
+            "name": "demo.onnx",
+            "path": "demo/demo.onnx",
+            "url": "https://example.invalid/demo.onnx",
+            "size": len(FAKE_BYTES),
+        }],
+    }]
+    monkeypatch.setattr(models, "CATALOG", catalog)
+    monkeypatch.setattr(models, "BY_ID", {item["id"]: item for item in catalog})
+    return models.models_dir()
+
+
+def test_catalog_entries_are_complete():
+    for spec in models.CATALOG:
+        assert spec["id"] and spec["title"] and spec["purpose"]
+        assert str(spec["revision"])
+        assert spec["files"], "هر مدل باید حداقل یک فایل داشته باشد"
+        for item in spec["files"]:
+            assert item["name"].endswith((".onnx", ".pt", ".bin", ".zip"))
+            assert item["url"].startswith("https://")
+    ids = [spec["id"] for spec in models.CATALOG]
+    assert len(ids) == len(set(ids))
+
+
+def test_prepare_downloads_once_and_reuses_after_restart(store, monkeypatch):
+    assert models.is_installed("demo") is False
+    first = models.prepare("demo")
+    assert first["downloaded"] is True and first["installed"] is True
+    path = models.model_path("demo", "demo.onnx")
+    assert path is not None and path.read_bytes() == FAKE_BYTES
+    assert models.progress()["fraction"] == 1.0
+    assert models.total_size() == len(FAKE_BYTES)
+
+    # بازگشت به فایل‌های موجود = هیچ دانلودی رخ نمی‌دهد (بعد از آپدیت برنامه هم همین است).
+    second = models.prepare("demo")
+    assert second["downloaded"] is False
+    assert "دوباره دانلود نشد" in second["message"]
+
+
+def test_changed_revision_means_fresh_download(store, monkeypatch):
+    models.prepare("demo")
+    spec = dict(models.BY_ID["demo"])
+    spec["revision"] = "2"
+    monkeypatch.setattr(models, "BY_ID", {"demo": spec})
+    assert models.is_installed("demo") is False
+    again = models.prepare("demo")
+    assert again["downloaded"] is True
+    assert (store / "demo" / "2" / "demo.onnx").is_file()
+
+
+def test_missing_or_resized_file_is_not_trusted(store):
+    models.prepare("demo")
+    target = models.model_path("demo", "demo.onnx")
+    target.write_bytes(b"short")
+    assert models.is_installed("demo") is False
+    models.prepare("demo")
+    assert models.model_path("demo", "demo.onnx").read_bytes() == FAKE_BYTES
+
+
+def test_remove_frees_only_that_model(store):
+    models.prepare("demo")
+    result = models.remove("demo")
+    assert result["removed"] is True
+    assert models.is_installed("demo") is False
+    assert models.total_size() == 0
+    assert not (store / "demo").exists()
+
+
+def test_unknown_model_raises_displayable_error(store):
+    with pytest.raises(models.ModelError, match="در کاتالوگ نیست"):
+        models.prepare("nope")
+    with pytest.raises(models.ModelError):
+        models.remove("nope")
+
+
+def test_source_url_uses_mirror_then_catalog(store, monkeypatch):
+    item = models.BY_ID["demo"]["files"][0]
+    assert models._source_url(item) == str(store.parent / "mirror" / "demo" / "demo.onnx")
+    monkeypatch.delenv("T4_MODEL_BASE_URL")
+    assert models._source_url(item) == "https://example.invalid/demo.onnx"
+
+
+def test_background_prepare_finishes(store):
+    started = models.prepare_in_background("demo")
+    assert started["started"] is True
+    for _ in range(200):
+        if models.is_installed("demo"):
+            break
+        time.sleep(0.05)
+    assert models.is_installed("demo") is True
+    # وقتی نصب است، دوباره شروع نمی‌شود.
+    assert models.prepare_in_background("demo")["reason"] == "installed"
+
+
+def test_auto_prepare_respects_switch_and_runs_once(store, monkeypatch):
+    assert models.auto_prepare()["reason"] == "disabled"
+    monkeypatch.setenv("T4_AUTO_MODELS", "1")
+    monkeypatch.setattr(models, "_auto_started", {"done": False})
+    assert models.auto_prepare(delay=0)["started"] is True
+    assert models.auto_prepare()["reason"] == "already"
+    # رشتهٔ پس‌زمینه با کاتالوگ تست کار می‌کند؛ پیش از پایان تست صبر می‌کنیم.
+    for _ in range(200):
+        if models.is_installed("demo"):
+            break
+        time.sleep(0.05)
+
+
+def test_status_reports_progress_shape(store):
+    models.prepare("demo")
+    row = next(item for item in models.status() if item["id"] == "demo")
+    assert row["installed"] is True
+    assert row["sizeBytes"] == len(FAKE_BYTES)
+    assert row["files"] == ["demo.onnx"]
+    assert row["progress"] is None
+
+
+def test_hardware_report_has_displayable_fields(tmp_path):
+    report = hardware.report()
+    for key in ("platform", "machine", "cpu", "cores", "ramMb", "gpu", "providers",
+                "accelerated", "libraries", "disk"):
+        assert key in report
+    assert isinstance(report["cores"], int) and report["cores"] >= 1
+    assert report["ramMb"] >= 0
+    assert set(report["gpu"]) >= {"name", "memory", "vendor"}
+    assert report["disk"]["freeMb"] >= 0
+    assert isinstance(report["libraries"], dict)
+
+
+def test_models_api_lists_catalog_and_reports_hardware(store):
+    with TestClient(app) as client:
+        listing = client.get("/api/models")
+        assert listing.status_code == 200
+        body = listing.json()
+        assert [row["id"] for row in body["models"]] == ["demo"]
+        assert body["models"][0]["installed"] is False
+        assert body["dir"] == str(store)
+
+        system = client.get("/api/system")
+        assert system.status_code == 200
+        assert "models" in system.json()["models"] or "dir" in system.json()["models"]
+
+        prepared = client.post("/api/models/demo")
+        assert prepared.status_code == 200
+        assert client.get("/api/models").json()["models"][0]["installed"] is True
+
+        removed = client.delete("/api/models/demo")
+        assert removed.status_code == 200
+        assert client.get("/api/models").json()["models"][0]["installed"] is False
+
+        assert client.post("/api/models/nope").status_code == 404
+        assert client.delete("/api/models/nope").status_code == 404
+
+
+def test_detector_is_optional_and_falls_back(store):
+    assert textdet.available() is False
+    assert textdet.masks(None) is None
+    assert textdet.text_mask(Path("/nonexistent.png")) is None
+
+
+def test_cleaning_smart_masks_fall_back_without_model(store):
+    import cv2
+    import numpy as np
+
+    from app import cleaning
+
+    image = np.full((40, 40, 3), 255, np.uint8)
+    fallback = [np.zeros((40, 40), bool)]
+    result = cleaning._smart_masks(np, cv2, image, [(0, 0, 20, 20)], fallback)
+    assert result is fallback
+
+
+def test_rendering_shape_helpers_work():
+    from PIL import Image, ImageDraw
+
+    from app import rendering
+
+    assert isinstance(rendering.has_raqm(), bool)
+    font = rendering._font(20)
+    canvas = Image.new("RGB", (120, 60), "white")
+    draw = ImageDraw.Draw(canvas)
+    assert rendering.text_width(font, "سلام") > 0
+    ink = rendering.text_ink(draw, "سلام", font)
+    assert ink[2] > ink[0]
+    rendering.draw_text(draw, (4, 4), "سلام", font, (0, 0, 0))
+    assert canvas.getbbox() is not None
+    # بدون RAQM، متنِ نمایشی از reshape/bidi می‌آید و برای متن فارسی عوض می‌شود.
+    if not rendering.has_raqm():
+        assert rendering.shape_text("سلام") != "سلام"
+    else:
+        assert rendering.shape_text("سلام") == "سلام"

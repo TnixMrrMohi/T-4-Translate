@@ -19,6 +19,8 @@ ocr-experimental = [
     "python-bidi==0.6.6",
     "fonttools==4.59.1",
 ]
+# اجرای مدل‌های ONNX سنگین (LaMa و ComicTextDetector)؛ خودِ فایل مدل جداگانه دانلود می‌شود.
+quality = ["onnxruntime==1.20.1", "numpy==1.26.4", "opencv-python-headless==4.10.0.84"]
 test = ["pytest==8.3.5", "httpx==0.28.1", "fonttools==4.59.1"]
 
 [tool.setuptools.packages.find]

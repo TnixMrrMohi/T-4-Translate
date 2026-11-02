@@ -79,6 +79,10 @@ jobs:
           --hidden-import uvicorn.protocols.http.auto
           --hidden-import uvicorn.protocols.websockets.auto
           --hidden-import uvicorn.lifespan.on
+          --hidden-import app.textdet
+          --hidden-import app.inpaint
+          --hidden-import app.models
+          --hidden-import app.hardware
           desktop/launcher.py
 
       # نسخه و مخزن داخل بسته نوشته می‌شود تا برنامه بداند نسخهٔ فعلی چیست و

@@ -164,12 +164,20 @@ def installed_files(model_id: str) -> list[Path]:
 
 
 def is_installed(model_id: str) -> bool:
-    return bool(installed_files(model_id))
+    """پرسشِ وضعیت: مدل ناشناخته یعنی «نصب نیست»، نه خطا."""
+    try:
+        return bool(installed_files(model_id))
+    except ModelError:
+        return False
 
 
 def model_path(model_id: str, name: str) -> Path | None:
     """مسیر یک فایل مدل، اگر مدل کامل نصب شده باشد."""
-    for path in installed_files(model_id):
+    try:
+        files = installed_files(model_id)
+    except ModelError:
+        return None
+    for path in files:
         if path.name == name:
             return path
     return None
@@ -268,6 +276,27 @@ def _download_file(url: str, target: Path, on_bytes: Callable[[int, int], None])
     os.replace(partial, target)
 
 
+def _file_is_trusted(model_id: str, item: dict, target: Path) -> bool:
+    """فایل موجود قابل استفاده است؟ (اندازه با آنچه ثبت شده هم‌خوان باشد)
+
+    فایلِ نیمه‌کاره یا خراب نباید «موجود» شمرده شود، وگرنه مدل هرگز کامل نمی‌شود.
+    اندازهٔ ثبت‌شده در `installed.json` مقدم است؛ اگر نبود، اندازهٔ کاتالوگ.
+    """
+    if not target.is_file():
+        return False
+    size = target.stat().st_size
+    if size <= 0:
+        return False
+    recorded = ((_read_state(model_id).get("files") or {}).get(item["name"]) or {}).get("size")
+    expected = recorded or item.get("size")
+    if not expected:
+        return True   # اندازه‌ای اعلام نشده؛ به وجود فایل بسنده می‌کنیم
+    try:
+        return size == int(expected)
+    except (TypeError, ValueError):
+        return True
+
+
 def prepare(model_id: str, reporter: ProgressReporter | None = None) -> dict:
     """مدل را کامل می‌کند: اگر از قبل هست، کاری نمی‌کند؛ وگرنه یک‌بار می‌گیرد."""
     spec = entry(model_id)
@@ -299,7 +328,7 @@ def prepare(model_id: str, reporter: ProgressReporter | None = None) -> dict:
                 if reporter:
                     reporter(fraction, "download")
 
-            if not (target.is_file() and target.stat().st_size > 0):
+            if not _file_is_trusted(model_id, item, target):
                 _download_file(_source_url(item), target, on_bytes)
             size = target.stat().st_size
             record["files"][item["name"]] = {"size": size, "sha256": _sha256(target)}
@@ -350,8 +379,19 @@ def remove(model_id: str) -> dict:
 
 
 def total_size() -> int:
+    """حجم فایل‌های مدل روی دیسک (بدون فایل‌های وضعیت و دانلودهای نیمه‌کاره)."""
     root = models_dir()
-    return sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+    total = 0
+    for path in root.rglob("*"):
+        if not path.is_file() or path.name in {STATE_FILE, AUTO_FILE}:
+            continue
+        if path.suffix == ".part":
+            continue
+        try:
+            total += path.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
 # --------------------------------------------------------------------------- خودکار
@@ -383,19 +423,20 @@ def _auto_disabled() -> bool:
 def _auto_worker(delay: float = 3.0, retry_hours: float = 6.0) -> None:
     """همهٔ مدل‌های نبوده را پشت سر هم (نه هم‌زمان) می‌گیرد."""
     time.sleep(max(0.0, delay))  # اول رابط باز شود، بعد دانلود در پس‌زمینه
-    for spec in CATALOG:
-        if is_installed(spec["id"]):
+    for spec in list(CATALOG):
+        model_id = spec.get("id")
+        if not model_id:
             continue
-        last = (_auto_state().get(spec["id"]) or {}).get("failedAt")
-        if last and (time.time() - float(last)) < retry_hours * 3600:
-            continue  # تلاش ناموفقِ نزدیک را دوباره تکرار نمی‌کنیم
         try:
-            prepare(spec["id"])
-            _mark_auto(spec["id"], failed=False)
-        except ModelError:
-            _mark_auto(spec["id"], failed=True)
-        except Exception:  # noqa: BLE001
-            _mark_auto(spec["id"], failed=True)
+            if is_installed(model_id):
+                continue
+            last = (_auto_state().get(model_id) or {}).get("failedAt")
+            if last and (time.time() - float(last)) < retry_hours * 3600:
+                continue  # تلاش ناموفقِ نزدیک را دوباره تکرار نمی‌کنیم
+            prepare(model_id)
+            _mark_auto(model_id, failed=False)
+        except Exception:  # noqa: BLE001 - یک مدل خراب نباید بقیه را متوقف کند
+            _mark_auto(model_id, failed=True)
 
 
 _auto_started = {"done": False}
