@@ -711,7 +711,18 @@ export function App() {
       const savedSource: Source | null = sourceResponse.ok ? await sourceResponse.json() : null;
       const savedTranslation = translationResponse.ok ? await translationResponse.json() : null;
       const artifacts = artifactResponse.ok ? await artifactResponse.json() : null;
-      setSource(savedSource);
+      // ترجمه با همان تنظیم «متن تبلیغاتی» ذخیره شده؛ همان تنظیم را می‌خوانیم تا
+      // شماره‌گذاری بلوک‌ها با چیزی که کاربر ترجمه کرده یکی بماند.
+      let shownSource: Source | null = savedSource;
+      const storedPromo = savedTranslation?.promo;
+      if ((storedPromo === 'replace' || storedPromo === 'remove') && storedPromo !== promoAction) {
+        setPromoAction(storedPromo);
+        localStorage.setItem(PROMO_KEY, storedPromo);
+        const again = await fetch(`/api/jobs/${job.jobId}/translation-source?promo=${storedPromo}`,
+                                  {signal: controller.signal});
+        if (again.ok) shownSource = await again.json();
+      }
+      setSource(shownSource);
       if (savedTranslation) {
         setTranslation(savedTranslation.text);
         setHasSaved(true);
@@ -719,13 +730,13 @@ export function App() {
       } else {
         setHasSaved(false);
       }
-      if (savedSource) {
+      if (shownSource) {
         setOcrVersion(Date.now());
         if (artifacts?.render) setRenderVersion(Date.now());
         if (artifacts?.clean) setCleanVersion(Date.now());
       }
       // کاربر را به دورترین مرحله‌ای می‌بریم که داده‌اش آماده است.
-      const next = !savedSource ? 1
+      const next = !shownSource ? 1
         : !savedTranslation ? 2
           : !artifacts?.clean ? 3
             : !artifacts?.render ? 3 : 5;
@@ -733,6 +744,7 @@ export function App() {
     }).catch(e => {if (e.name !== 'AbortError') fail('بازیابی متن‌ها ممکن نشد.');})
       .finally(() => {if (!controller.signal.aborted) setLoadingData(false);});
     return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.jobId]);
 
   async function saveTranslation() {

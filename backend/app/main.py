@@ -116,7 +116,7 @@ def job_artifacts(job_id: str) -> dict:
     stale = None
     if translation is not None:
         try:
-            stale = translation.get("sourceRevision") != translation_source(job_id)["revision"]
+            stale = _translation_stale(job_id, translation)
         except HTTPException:
             stale = True
     return {
@@ -401,17 +401,47 @@ async def save_translation(job_id: str, body: TranslationInput) -> dict:
                 continue
             for line_number in item["lines"]:
                 line_translations[str(line_number)] = text
-        result = {"sourceRevision": source["revision"], "text": body.text,
+        # متن تبلیغاتیِ «حذف‌شده» شماره‌ای در فهرست ندارد (شماره‌گذاری دوباره شده)،
+        # پس برای این‌که از تصویر هم پاک شود، خط‌هایش جداگانه علامت می‌خورند.
+        promo_lines = sorted({line for item in translation_blocks(job_id, get_ocr(job_id)["lines"])
+                              if bubbles.is_promotional(item.get("text", ""))
+                              for line in item["lines"]})
+        result = {"sourceRevision": source["revision"], "promo": source["promo"], "text": body.text,
                   "translations": parsed.translations, "lineTranslations": line_translations,
                   "blocks": [{"number": item["number"], "lines": item["lines"], "bbox": item["bbox"],
                               "kind": item["kind"], "tone": item["tone"]} for item in source["items"]],
                   "missing": parsed.missing,
-                  "duplicates": parsed.duplicates, "unknown": parsed.unknown}
+                  "duplicates": parsed.duplicates, "unknown": parsed.unknown,
+                  # خط‌های متن تبلیغاتی که در حالت «حذف» باید از تصویر پاک شوند.
+                  "cleanLines": promo_lines if source["promo"] == "remove" else []}
         workspace = workspace_for(job_id)
         tmp = workspace / "translations.json.tmp"
         tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, workspace / "translations.json")
         return result
+
+
+def _translation_stale(job_id: str, translation: dict) -> bool:
+    """آیا ترجمه با منبع فعلی هم‌خوان است؟
+
+    نسخهٔ منبع به تنظیم «متن تبلیغاتی» (جانشینی با moonb.ir یا حذف) وابسته است؛
+    پس همان تنظیمی که ترجمه با آن ذخیره شده بررسی می‌شود، وگرنه ترجمهٔ سالم هم
+    «کهنه» گزارش می‌شد و پاک‌سازی/رندر با ۴۰۹ رد می‌شد. فایل‌های قدیمی که این
+    فیلد را ندارند با هر دو تنظیم سنجیده می‌شوند تا بی‌دلیل کهنه نشوند.
+    """
+    saved = translation.get("sourceRevision")
+    stored = translation.get("promo")
+    promos = [stored] if stored in ("replace", "remove") else ["replace", "remove"]
+    for promo in promos:
+        try:
+            revision = translation_source(job_id, promo)["revision"]
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return True
+            raise
+        if saved == revision:
+            return False
+    return True
 
 
 @app.get("/api/jobs/{job_id}/translations")
@@ -421,12 +451,7 @@ def read_translation(job_id: str) -> dict:
         result = json.loads((workspace / "translations.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise HTTPException(404, "ترجمه‌ای ذخیره نشده است.") from None
-    try:
-        result["stale"] = result["sourceRevision"] != translation_source(job_id)["revision"]
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
-        result["stale"] = True
+    result["stale"] = _translation_stale(job_id, result)
     return result
 
 
@@ -477,7 +502,8 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
         try:
             clean, mask = await run_native_safely(
                 partial(cleaning.clean_image, workspace / "source.img", source["lines"],
-                        line_translations, base=base, only=only, force=base is not None))
+                        line_translations, base=base, only=only, force=base is not None,
+                        extra=set(translation.get("cleanLines") or [])))
         except cleaning.CleaningError as exc:
             raise HTTPException(400, str(exc)) from None
         try:

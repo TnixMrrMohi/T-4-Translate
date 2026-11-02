@@ -126,3 +126,67 @@ def test_removed_promo_is_not_saved(monkeypatch, tmp_path):
         assert [block['number'] for block in saved['blocks']] == [1, 2]
         # خط تبلیغاتی هیچ ترجمه‌ای ندارد، پس هنگام درج چیزی روی آن نوشته نمی‌شود.
         assert '2' not in saved['lineTranslations']
+
+
+def _page_with_text():
+    """صفحهٔ سفید با سه نوار «متن» دقیقاً روی کادرهای OCR."""
+    import numpy as np
+    arr = np.full((200, 200, 3), 250, dtype=np.uint8)
+    for quad in (LINES[0]['quad'], LINES[1]['quad'], LINES[2]['quad']):
+        ys = [point[1] for point in quad]
+        xs = [point[0] for point in quad]
+        arr[ys[0] + 6:ys[2] - 6, xs[0] + 8:xs[2] - 8] = 20
+    return Image.fromarray(arr)
+
+
+def _job_with_text(client, tmp_path):
+    import io
+    buffer = io.BytesIO()
+    _page_with_text().save(buffer, format='PNG')
+    buffer.seek(0)
+    return client.post('/api/jobs', files={'file': ('page.png', buffer.getvalue(), 'image/png')}).json()['jobId']
+
+
+def _dark_pixels(client, job, quad):
+    import io
+    import numpy as np
+    image = Image.open(io.BytesIO(client.get(f'/api/jobs/{job}/clean').content)).convert('RGB')
+    arr = np.asarray(image).astype(int)
+    xs = [point[0] for point in quad]
+    ys = [point[1] for point in quad]
+    region = arr[int(ys[0]) + 6:int(ys[2]) - 6, int(xs[0]) + 8:int(xs[2]) - 8]
+    return int((region.max(axis=2) < 120).sum())
+
+
+def test_removed_promo_is_cleaned_from_the_image(monkeypatch, tmp_path):
+    """در حالت «حذف کامل»، متن تبلیغاتی باید از خود تصویر هم پاک شود."""
+    prepare(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        job = _job_with_text(client, tmp_path)
+        assert client.post(f'/api/jobs/{job}/ocr').status_code == 200
+        data = source(client, job, 'remove')
+        body = {'text': '[1] برو بیرون!\n[2] می‌مانم', 'sourceRevision': data['revision'], 'promo': 'remove'}
+        saved = client.post(f'/api/jobs/{job}/translations', json=body)
+        assert saved.status_code == 200, saved.text
+        assert saved.json()['cleanLines'] == [2]        # خط متن تبلیغاتی (خط دوم OCR)
+
+        assert client.post(f'/api/jobs/{job}/clean').status_code == 200
+        assert _dark_pixels(client, job, LINES[1]['quad']) == 0
+        # دیالوگ‌ها هم پاک شده‌اند (ترجمه دارند).
+        assert _dark_pixels(client, job, LINES[0]['quad']) == 0
+
+
+def test_replace_mode_cleans_and_writes_moonb_ir(monkeypatch, tmp_path):
+    """در حالت «جایگزینی»، همان بالن پاک می‌شود تا moonb.ir جای آن بنشیند."""
+    prepare(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        job = _job_with_text(client, tmp_path)
+        assert client.post(f'/api/jobs/{job}/ocr').status_code == 200
+        data = source(client, job, 'replace')
+        body = {'text': '[1] برو بیرون!\n[3] می‌مانم', 'sourceRevision': data['revision'], 'promo': 'replace'}
+        saved = client.post(f'/api/jobs/{job}/translations', json=body)
+        assert saved.status_code == 200, saved.text
+        assert saved.json()['translations']['2'] == 'moonb.ir'
+        assert client.post(f'/api/jobs/{job}/clean').status_code == 200
+        assert _dark_pixels(client, job, LINES[1]['quad']) == 0
+        assert client.post(f'/api/jobs/{job}/render').status_code == 200

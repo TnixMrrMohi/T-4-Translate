@@ -154,7 +154,10 @@ def test_grain_of_a_white_page_is_kept_so_no_smudge_shows(tmp_path):
     filled = result[m != 0].astype(np.float32)
     assert abs(filled.mean() - reference.mean()) < 3          # هم‌رنگ کاغذ
     assert filled.std() > reference.std() * 0.35              # دانه/بافت از دست نرفته
-    assert filled.max() < 255                                 # لکهٔ سفیدِ کامل نمانده
+    # لکهٔ سفیدِ کامل نمانده: چند پیکسل تصادفیِ ۲۵۵ خودِ کاغذ هم اندازه‌گیری می‌شود،
+    # پس معیار «تقریباً همه» است، نه تک‌تک پیکسل‌ها.
+    assert np.percentile(filled, 99.5) < 255
+    assert (filled == 255).mean() < 0.01
 
 
 def test_bubble_outline_stays_intact(tmp_path):

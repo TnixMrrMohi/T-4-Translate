@@ -38,6 +38,8 @@ function mockApi(options: {
   cleanAreas?: unknown;
   /** وضعیت موتور OCR؛ پیش‌فرض «آماده» است. */
   ocrStatus?: unknown;
+  /** تنظیم «متن تبلیغاتی» که ترجمهٔ ذخیره‌شده با آن ساخته شده است. */
+  translationPromo?: 'replace' | 'remove';
 } = {}) {
   const calls: {url: string; method: string; body?: unknown}[] = [];
   let ocrDone = false;
@@ -112,7 +114,8 @@ function mockApi(options: {
     }
     if (url.includes('/translations')) {
       return options.translation
-        ? json({sourceRevision: 'r'.repeat(64), text: options.translation, stale: false})
+        ? json({sourceRevision: 'r'.repeat(64), text: options.translation, stale: false,
+                promo: options.translationPromo ?? 'replace'})
         : json({detail: 'نیست'}, 404);
     }
     if (/\/api\/jobs\/[a-f0-9]{32}$/.test(url)) return options.job ? json(options.job) : json({detail: 'نیست'}, 404);
@@ -1252,5 +1255,25 @@ describe('آماده نبودن موتور OCR', () => {
 
     expect(await screen.findByRole('button', {name: 'ادامه (تشخیص خودکار متن)'})).toBeEnabled();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
+describe('تنظیم متن تبلیغاتی ترجمهٔ ذخیره‌شده', () => {
+  it('منبع با همان تنظیمی که ترجمه ذخیره شده خوانده می‌شود', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const {calls} = mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}], promo: 'remove'},
+      translation: '[1] سلام',
+      translationPromo: 'remove',
+    });
+    render(<App />);
+
+    await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'});
+    expect(calls.some(call => call.url.includes('translation-source?promo=remove'))).toBe(true);
+    // تنظیم انتخابی هم با ترجمهٔ ذخیره‌شده هم‌تراز می‌شود.
+    await userEvent.setup().click(screen.getByRole('button', {name: 'مرحلهٔ قبل (ترجمه)'}));
+    const removeButton = await screen.findByRole('button', {name: 'حذف کامل'});
+    expect(removeButton).toHaveAttribute('aria-pressed', 'true');
   });
 });

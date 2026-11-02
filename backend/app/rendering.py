@@ -19,6 +19,8 @@ class RenderError(Exception):
 
 
 MAX_FONT_SIZE = 96
+# اندازهٔ قلم فارسی نسبت به ارتفاع هر خط از متن اصلی (۱ = هم‌اندازه).
+FONT_TO_SOURCE_RATIO = 1.0
 MIN_FONT_SIZE = 8
 LINE_HEIGHT_RATIO = 1.45
 PADDING_RATIO = 0.08
@@ -164,8 +166,16 @@ def _quad_box(quad, width: int, height: int):
     return left, top, right, bottom
 
 
-def _fit(text: str, box_width: float, box_height: float, path: str | None = None):
+def _fit(text: str, box_width: float, box_height: float, path: str | None = None,
+         cap: float | None = None):
+    """بزرگ‌ترین اندازه‌ای که متن در کادر جا شود، ولی از `cap` بزرگ‌تر نباشد.
+
+    `cap` اندازهٔ قلمِ متن اصلیِ همان ناحیه است؛ بدون آن، هر بالن تا آخرین
+    پیکسل خالی پر می‌شد و اندازهٔ نوشته‌ها از بالنی به بالن دیگر می‌پرید.
+    """
     max_size = min(MAX_FONT_SIZE, max(MIN_FONT_SIZE, int(box_height)))
+    if cap is not None and cap > 0:
+        max_size = min(max_size, max(MIN_FONT_SIZE, int(round(cap))))
     previous: tuple[int, list[str]] | None = None
     for size in range(max_size, MIN_FONT_SIZE - 1, -1):
         font = _font(size, path)
@@ -199,7 +209,7 @@ KIND_INSET = {"shout": 0.16, "solar": 0.16, "monster": 0.18, "fear": 0.10, "clou
 
 
 def _draw_box(canvas, draw, box, text: str, path: str | None = None,
-              fill: float = 1.0, kind: str = "") -> bool:
+              fill: float = 1.0, kind: str = "", cap: float | None = None) -> bool:
     """متن فارسی را وسط کادر می‌کشد؛ اگر جای کافی نبود False برمی‌گرداند.
 
     `fill` نسبت مساحت شکل به کادر است و `kind` نوع بالن؛ برای شکل‌های دندانه‌دار
@@ -223,7 +233,7 @@ def _draw_box(canvas, draw, box, text: str, path: str | None = None,
     if path and not font_supports(path, text):
         path = None
     padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
-    font, wrapped = _fit(text, box_width - 2 * padding, box_height - 2 * padding, path)
+    font, wrapped = _fit(text, box_width - 2 * padding, box_height - 2 * padding, path, cap)
     if not font or not wrapped:
         return False
     shaped = [shape_text(logical_line) for logical_line in wrapped]
@@ -399,7 +409,11 @@ def render_blocks(image: Image.Image, blocks: list, translations: dict,
             fill = float(block.get("fill") or 1.0)
         except (TypeError, ValueError):
             fill = 1.0
-        if _draw_box(canvas, draw, box, text, fonts.get(kind), fill, kind):
+        # اندازهٔ نوشتهٔ فارسی، هم‌اندازهٔ نوشتهٔ اصلیِ همان ناحیه می‌ماند: ارتفاع
+        # کادر متن تقسیم بر تعداد خطوط OCR، ضرب در نسبت تنظیم‌شده.
+        line_count = max(1, len(block.get("lines") or []))
+        cap = (bottom - top) / line_count * FONT_TO_SOURCE_RATIO
+        if _draw_box(canvas, draw, box, text, fonts.get(kind), fill, kind, cap):
             drawn += 1
     if not drawn:
         raise RenderError("هیچ ترجمه‌ای برای نمایش روی تصویر وجود ندارد.")

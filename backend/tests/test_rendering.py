@@ -168,32 +168,53 @@ def _ink_box(image):
     return image.convert("L").point(lambda value: 255 if value < 200 else 0).getbbox()
 
 
-def test_font_size_follows_the_bubble_area_not_the_text_box():
-    """با کادر شکلِ بالن، قلم هم‌اندازهٔ بالن می‌شود نه کادر تنگِ متن اصلی."""
+def test_font_size_follows_the_source_text_not_the_bubble_area():
+    """اندازهٔ نوشتهٔ فارسی هم‌اندازهٔ نوشتهٔ اصلیِ همان بالن است.
+
+    قبلاً اندازه تا پر شدن شکلِ بالن بزرگ می‌شد؛ نتیجه این بود که یک «عجیبه.»
+    کوتاه غول‌آسا و یک دیالوگ بلند ریز می‌شد. حالا سقف اندازه از ارتفاع کادر متنِ
+    اصلی می‌آید، پس اندازه‌ها بین بالن‌ها یکدست می‌مانند.
+    """
     image = Image.new("RGB", (420, 300), "white")
-    text_box = [160, 140, 260, 165]
-    plain = {"number": 1, "lines": [1], "bbox": text_box, "kind": "speech"}
-    with_area = {"number": 2, "lines": [2], "bbox": text_box, "kind": "speech",
-                 "area": [40, 60, 380, 240]}
-    small, _ = rendering.render_blocks(image, [plain], {"1": "سلام"})
-    big, _ = rendering.render_blocks(image, [with_area], {"2": "سلام"})
+    area = [40, 60, 380, 240]
+    short_source = {"number": 1, "lines": [1], "bbox": [160, 140, 260, 165], "kind": "speech", "area": area}
+    tall_source = {"number": 2, "lines": [2], "bbox": [160, 120, 260, 195], "kind": "speech", "area": area}
+    small, _ = rendering.render_blocks(image, [short_source], {"1": "سلام"})
+    big, _ = rendering.render_blocks(image, [tall_source], {"2": "سلام"})
     small_ink, big_ink = _ink_box(small), _ink_box(big)
     assert small_ink and big_ink
+    # متن اصلیِ بلندتر، نوشتهٔ فارسیِ بلندتری هم می‌دهد.
     assert (big_ink[3] - big_ink[1]) > 1.6 * (small_ink[3] - small_ink[1])
-    # متن از شکلِ بالن بیرون نمی‌زند.
+    # و هیچ‌کدام از شکلِ بالن بیرون نمی‌زنند.
     assert big_ink[0] >= 40 and big_ink[1] >= 60
     assert big_ink[2] <= 380 and big_ink[3] <= 240
+    assert small_ink[0] >= 40 and small_ink[1] >= 60
+    assert small_ink[2] <= 380 and small_ink[3] <= 240
+
+
+def test_short_text_in_a_big_bubble_does_not_fill_it():
+    """متن کوتاه در بالن بزرگ، غول‌آسا نمی‌شود (سقف اندازه از متن اصلی می‌آید)."""
+    image = Image.new("RGB", (420, 300), "white")
+    block = {"number": 1, "lines": [1], "bbox": [190, 145, 230, 165], "kind": "speech",
+             "area": [40, 40, 380, 260]}
+    canvas, _ = rendering.render_blocks(image, [block], {"1": "عجیبه."})
+    ink = _ink_box(canvas)
+    assert ink
+    assert (ink[3] - ink[1]) <= 26          # نزدیک ارتفاع متن اصلی (۲۰)، نه ارتفاع بالن
+    assert (ink[2] - ink[0]) <= 120
 
 
 def test_text_box_grows_over_uniform_background():
-    """بدون کادر شکل، کادر متن تا لبهٔ ناحیهٔ یکدست بزرگ می‌شود تا قلم ریز نماند."""
+    """بدون کادر شکل، کادر متن تا لبهٔ ناحیهٔ یکدست بزرگ می‌شود تا متن جا شود."""
     image = Image.new("RGB", (420, 300), "white")
     block = {"number": 1, "lines": [1], "bbox": [190, 140, 230, 160], "kind": "speech"}
     canvas, drawn = rendering.render_blocks(image, [block], {"1": "سلام"})
     assert drawn == 1
     ink = _ink_box(canvas)
-    assert ink and (ink[3] - ink[1]) > 24          # بلندتر از کادر ۲۰ پیکسلی متن
-    assert ink[0] > 0 and ink[2] < canvas.width      # ولی از کل صفحه بزرگ‌تر نشده
+    assert ink
+    # اندازهٔ قلم از ارتفاع متن اصلی می‌آید (حدود ۲۰)، پس نه ریز است نه غول‌آسا.
+    assert 10 <= (ink[3] - ink[1]) <= 24
+    assert ink[0] > 0 and ink[2] < canvas.width      # از کل صفحه بزرگ‌تر نشده
 
 
 def test_growth_stops_at_a_bubble_border():
