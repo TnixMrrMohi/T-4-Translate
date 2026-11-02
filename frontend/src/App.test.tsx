@@ -42,6 +42,12 @@ function mockApi(options: {
   translationPromo?: 'replace' | 'remove';
   /** چیدمان متن‌ها (مرحلهٔ ۴). */
   layout?: unknown;
+  /** وضعیت آپدیت (نوار به‌روزرسانی). */
+  update?: () => unknown;
+  /** پاسخ دانلود/اعمال/بررسی آپدیت؛ می‌تواند بر اساس مسیر فرق کند. */
+  updateAction?: (path: string) => unknown | undefined;
+  /** تنظیم‌های آپدیت. */
+  updateSettings?: unknown;
 } = {}) {
   const calls: {url: string; method: string; body?: unknown}[] = [];
   let ocrDone = false;
@@ -101,6 +107,31 @@ function mockApi(options: {
     }
     if (url.endsWith('/api/ocr-status')) {
       return json(options.ocrStatus ?? {ready: true, provider: 'mock', detail: ''});
+    }
+    if (url.includes('/api/update/')) {
+      if (url.endsWith('/status')) {
+        return json(options.update?.() ?? {
+          channel: 'release', enabled: true, repo: 'owner/repo',
+          current: {version: '1.2.3'}, latest: null, updateAvailable: false,
+          checkSeconds: 300, pollSeconds: 60, lastCheckedAt: null, nextCheckAt: null,
+          rateRemaining: null, error: null, download: {}, pending: null,
+          applySupported: true, hasToken: false, anonymous: true,
+        });
+      }
+      const custom = options.updateAction?.(url);
+      if (custom) return typeof custom === 'object' && !(custom instanceof Response)
+        ? json(custom) : custom as Response;
+      if (url.endsWith('/check')) return json({checked: true, reason: 'updated', error: null, status: undefined});
+      if (url.endsWith('/download')) return json({status: undefined});
+      if (url.endsWith('/apply')) return json({version: '1.4.0', message: 'آپدیت آماده است؛ برنامه بسته و دوباره باز می‌شود.'});
+      if (url.endsWith('/settings')) {
+        if (method === 'PUT') return json({settings: {...(body as object)}, status: undefined});
+        return json(options.updateSettings ?? {
+          repo: 'owner/repo', enabled: true, checkSeconds: 300, pollSeconds: 60,
+          minCheckSeconds: 60, hasToken: false, anonymous: true,
+        });
+      }
+      return json({detail: 'نیست'}, 404);
     }
     if (url.includes('/layout')) {
       if (method === 'PUT') {
@@ -1387,5 +1418,128 @@ describe('ویرایش تک‌تک متن‌های درج‌شده (چیدمان
     expect(within(dialog).getByText(/ویرایش چیدمان متن‌ها/)).toBeInTheDocument();
     fireEvent.keyDown(window, {key: 'Escape'});
     await waitFor(() => expect(screen.queryByRole('dialog', {name: 'ویرایش بزرگ چیدمان متن‌ها'})).not.toBeInTheDocument());
+  });
+});
+
+describe('نوار به‌روزرسانی برنامه', () => {
+  const baseStatus = {
+    channel: 'release', enabled: true, repo: 'owner/repo',
+    current: {version: '1.2.3'}, latest: null, updateAvailable: false,
+    checkSeconds: 300, pollSeconds: 60, autoDownload: true,
+    lastCheckedAt: null, nextCheckAt: null,
+    rateRemaining: null, error: null, download: {}, pending: null,
+    applySupported: true, hasToken: false, anonymous: true,
+  };
+  const withUpdate = {
+    ...baseStatus,
+    updateAvailable: true,
+    latest: {
+      tag: 'v1.4.0', version: '1.4.0', name: 'بستهٔ v1.4.0', publishedAt: null, notes: '',
+      prerelease: false, hasManifest: true, deltaAsset: 'update-v1.4.0.zip',
+      assets: {'update-v1.4.0.zip': {size: 4 * 1024 * 1024, url: ''}},
+    },
+  };
+
+  function renderApp(extra: Parameters<typeof mockApi>[0] = {}) {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const api = mockApi({jobs: [], ...extra});
+    render(<App />);
+    return api;
+  }
+
+  it('نسخهٔ تازه را خودش و فقط یک بار دانلود می‌کند', async () => {
+    let pending: unknown = null;
+    const {calls} = renderApp({
+      update: () => ({...withUpdate, updateAvailable: pending === null,
+                      pending: pending as never}),
+      updateAction: path => {
+        if (!path.endsWith('/download')) return undefined;
+        pending = {version: '1.4.0', files: 2, bytes: 3 * 1024 * 1024, ready: true};
+        return {status: {...withUpdate, updateAvailable: false, pending}};
+      },
+    });
+
+    // کاربر دکمه‌ای نمی‌زند؛ نوار خودش بستهٔ تغییرات را می‌گیرد.
+    expect(await screen.findByRole('button', {name: 'اعمال و راه‌اندازی مجدد'})).toBeInTheDocument();
+    expect(screen.getByText(/آپدیت 1\.4\.0 دانلود شد/)).toBeInTheDocument();
+    expect(screen.getByText(/2 فایل، 3\.0 مگابایت/)).toBeInTheDocument();
+    const downloads = calls.filter(call => call.method === 'POST' && call.url.endsWith('/update/download'));
+    expect(downloads).toHaveLength(1);
+  });
+
+  it('اندازهٔ دانلود جزئی را نشان می‌دهد نه بستهٔ کامل', async () => {
+    renderApp({
+      update: () => ({...withUpdate, autoDownload: false}),
+    });
+    expect(await screen.findByText(/نسخهٔ 1\.4\.0 منتشر شده است/)).toBeInTheDocument();
+    expect(screen.getByText(/دانلود فقط 4\.0 مگابایت/)).toBeInTheDocument();
+  });
+
+  it('با خاموش‌کردن دانلود خودکار منتظر دکمهٔ کاربر می‌ماند', async () => {
+    const {calls} = renderApp({
+      update: () => ({...withUpdate, autoDownload: false}),
+    });
+    const user = userEvent.setup();
+    expect(await screen.findByText(/نسخهٔ 1\.4\.0 منتشر شده است/)).toBeInTheDocument();
+    expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/update/download'))).toBe(false);
+    await user.click(screen.getByRole('button', {name: 'دریافت آپدیت'}));
+    await waitFor(() => expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/update/download'))).toBe(true));
+  });
+
+  it('درخواست را هر چند ثانیه به سرور محلی می‌فرستد', {timeout: 20000}, async () => {
+    const {calls} = renderApp({update: () => ({...baseStatus, pollSeconds: 5})});
+    await screen.findByText(/برنامه به‌روز است/);
+    const first = calls.filter(call => call.url.endsWith('/api/update/status')).length;
+    expect(first).toBeGreaterThan(0);
+    await waitFor(() => {
+      const count = calls.filter(call => call.url.endsWith('/api/update/status')).length;
+      expect(count).toBeGreaterThan(first);
+    }, {timeout: 8000});
+  });
+
+  it('آپدیت آماده‌شده را با «اعمال» به میزبان دسکتاپ می‌سپارد', async () => {
+    const {calls} = renderApp({
+      update: () => ({...baseStatus, pending: {version: '1.4.0', files: 2, bytes: 1024, ready: true}}),
+    });
+    const user = userEvent.setup();
+    expect(await screen.findByText(/آپدیت 1\.4\.0 آماده است/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: 'اعمال و راه‌اندازی مجدد'}));
+    await waitFor(() => expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/update/apply'))).toBe(true));
+    expect(await screen.findByText(/برنامه بسته و دوباره باز می‌شود/)).toBeInTheDocument();
+  });
+
+  it('پیشرفت دانلود را نشان می‌دهد', async () => {
+    renderApp({
+      update: () => ({...baseStatus, updateAvailable: true, latest: withUpdate.latest,
+                      download: {running: true, received: 2 * 1024 * 1024, total: 4 * 1024 * 1024,
+                                 message: 'در حال دانلود بستهٔ تغییرات…'}}),
+    });
+    const bar = await screen.findByRole('progressbar', {name: 'پیشرفت دانلود آپدیت'});
+    expect(bar).toHaveAttribute('aria-valuenow', '50');
+    expect(screen.getByText('در حال دانلود بستهٔ تغییرات…')).toBeInTheDocument();
+  });
+
+  it('تنظیمات آپدیت (مخزن و توکن) ذخیره می‌شود', async () => {
+    const {calls} = renderApp({});
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', {name: 'تنظیمات آپدیت'}));
+    const repo = await screen.findByLabelText('مخزن (کاربر/مخزن)');
+    await user.clear(repo);
+    await user.type(repo, 'me/updates');
+    await user.type(screen.getByLabelText('توکن (اختیاری)'), 'ghp_' + 'x'.repeat(24));
+    await user.click(screen.getByRole('button', {name: 'ذخیرهٔ تنظیمات'}));
+    await waitFor(() => {
+      const put = calls.filter(call => call.method === 'PUT' && call.url.endsWith('/update/settings')).pop();
+      expect(put?.body).toMatchObject({repo: 'me/updates', enabled: true});
+      expect((put?.body as {token?: string}).token).toMatch(/^ghp_x+/);
+    });
+    expect(await screen.findByText('تنظیم‌های آپدیت ذخیره شد.')).toBeInTheDocument();
+  });
+
+  it('خطای بررسی آپدیت را نشان می‌دهد', async () => {
+    renderApp({
+      update: () => ({...baseStatus, error: 'سهمیهٔ درخواست گیت‌هاب تمام شده است؛ کمی بعد دوباره بررسی می‌شود.'}),
+    });
+    expect(await screen.findByText(/سهمیهٔ درخواست گیت‌هاب تمام شده است/)).toBeInTheDocument();
   });
 });

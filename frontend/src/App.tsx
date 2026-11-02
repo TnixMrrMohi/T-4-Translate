@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {CompareSlider} from './CompareSlider';
 import {TextLayoutEditor} from './TextLayoutEditor';
+import {UpdatePanel} from './UpdatePanel';
 import type {LayoutDoc, TextOverrides} from './TextLayoutEditor';
 import './style.css';
 
@@ -1184,6 +1185,8 @@ export function App() {
         <span className="brand" dir="ltr">T-4 TRANSLATE</span>
         <span className="status" role="status">{status}</span>
       </header>
+
+      <UpdatePanel />
 
       <div className="layout">
         {/* ستون راست: پنج مرحله و پیش‌نمایش تصویر همان مرحله */}

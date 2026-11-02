@@ -54,7 +54,7 @@ def _smoke_test(url: str) -> None:
     _log(log)
 
 
-def _browser_fallback(url: str) -> None:
+def _browser_fallback(url: str, stop: "threading.Event | None" = None) -> None:
     _log(f"[T4] Open this address in your browser: {url}")
     try:
         webbrowser.open(url)
@@ -62,9 +62,72 @@ def _browser_fallback(url: str) -> None:
         _log(f"[T4] could not open a browser automatically ({exc})")
     try:
         while True:
+            if stop is not None and stop.is_set():
+                return
             time.sleep(0.5)
     except KeyboardInterrupt:
         return
+
+
+def _apply_ready_update_on_start() -> bool:
+    """اگر آپدیت دانلودشده‌ای منتظر است، پیش از بالا آمدن برنامه اعمال می‌شود.
+
+    فایل `T4Translate.exe` در حال اجرا قابل جایگزینی نیست؛ پس اسکریپت اعمال را
+    جدا اجرا می‌کنیم و همین فرایند بلافاصله خارج می‌شود تا فایل آزاد شود.
+    """
+    try:
+        from app import updater
+    except Exception as exc:  # pragma: no cover - بستهٔ ناقص
+        _log(f"[T4] updater unavailable ({exc})")
+        return False
+    pending = None
+    try:
+        pending = updater.pending()
+    except Exception as exc:  # pragma: no cover
+        _log(f"[T4] pending update unreadable ({exc})")
+        return False
+    if not pending:
+        return False
+    if not updater.is_newer(str(pending.get("version") or ""), updater.current_version()):
+        # آپدیت کهنه (نسخهٔ فعلی دیگر تازه‌تر است) دور ریخته می‌شود.
+        updater.reset()
+        return False
+    try:
+        request = updater.request_apply()
+        updater.run_apply_script(str(request["script"]))
+    except Exception as exc:
+        _log(f"[T4] could not apply the staged update ({exc})")
+        return False
+    _log(f"[T4] update {pending.get('version')} is being applied; restarting")
+    return True
+
+
+def _watch_apply_request(window_box: dict, server, stop: threading.Event) -> None:
+    """منتظر «اعمال آپدیت» از رابط کاربری؛ بعد پنجره بسته و اسکریپت اجرا می‌شود."""
+    from app import updater
+
+    while not stop.is_set():
+        time.sleep(1)
+        try:
+            request = updater.take_apply_request()
+        except Exception:  # pragma: no cover - فایل نیمه‌نوشته
+            request = None
+        if not request:
+            continue
+        _apply_state["script"] = request.get("script")
+        _log("[T4] update requested; shutting down to replace files")
+        stop.set()
+        server.should_exit = True
+        window = window_box.get("window")
+        if window is not None:
+            try:
+                window.destroy()
+            except Exception:  # pragma: no cover - پنجرهٔ بسته‌شده
+                pass
+        return
+
+
+_apply_state: dict = {"script": None}
 
 
 def main():
@@ -75,6 +138,10 @@ def main():
         os.environ["T4_DATA_DIR"] = str(
             Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "T4Translate"
         )
+
+    # آپدیتِ دانلودشده همان اول اعمال می‌شود؛ خودِ اسکریپت برنامه را دوباره باز می‌کند.
+    if "--smoke-test" not in sys.argv and _apply_ready_update_on_start():
+        return
 
     import uvicorn
     from app.main import app
@@ -103,21 +170,41 @@ def main():
         _log(f"[T4] data: {os.environ['T4_DATA_DIR']}")
         _log(f"[T4] server: {url}")
         try:
+            from app import updater
+            _log(f"[T4] version: {updater.current_version()}")
+        except Exception:  # pragma: no cover - بستهٔ ناقص
+            pass
+
+        stop = threading.Event()
+        window_box: dict = {}
+        watcher = threading.Thread(target=_watch_apply_request,
+                                   args=(window_box, server, stop), daemon=True)
+        watcher.start()
+        try:
             import webview
         except Exception as exc:
             _log(f"[T4] window support unavailable ({exc}); using the browser")
-            _browser_fallback(url)
+            _browser_fallback(url, stop)
             return
         try:
-            webview.create_window("T-4 Translate", url, width=1200, height=820,
-                                  min_size=(720, 560))
+            window_box["window"] = webview.create_window(
+                "T-4 Translate", url, width=1200, height=820, min_size=(720, 560))
             webview.start()
         except Exception as exc:
             _log(f"[T4] window failed ({exc}); using the browser")
-            _browser_fallback(url)
+            _browser_fallback(url, stop)
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+        script = _apply_state.get("script")
+        if script:
+            # فایل‌های در حال اجرا الان آزاد شده‌اند؛ اسکریپت جابه‌جایی را انجام می‌دهد.
+            try:
+                from app import updater
+                updater.run_apply_script(str(script))
+                _log("[T4] applying update; the app will start again")
+            except Exception as exc:  # pragma: no cover
+                _log(f"[T4] update script failed ({exc})")
         sock.close()
 
 

@@ -20,7 +20,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
-from app import bubbles, cleaning, fonts, layout as layouts, ocr, preview, progress, rendering
+from app import bubbles, cleaning, fonts, layout as layouts, ocr, preview, progress, rendering, updater
 from app.translations import parse_translation
 
 app = FastAPI(title="T-4 Translate", version="0.1.0")
@@ -203,6 +203,108 @@ async def run_native_safely(func, *args):
             await task
         finally:
             raise
+
+
+class UpdateSettings(BaseModel):
+    """تنظیم آپدیت: مخزن، فعال بودن و فاصلهٔ بررسی (توکن فقط یک‌طرفه ذخیره می‌شود)."""
+
+    repo: str | None = None
+    enabled: bool | None = None
+    token: str | None = None
+    checkSeconds: int | None = None
+    pollSeconds: int | None = None
+    autoDownload: bool | None = None
+
+
+@app.get("/api/update/status")
+async def update_status() -> dict:
+    """وضعیت آپدیت برای پرسش ۱۰ ثانیه‌ای رابط؛ ارزان است و همیشه جواب می‌دهد.
+
+    اگر موعد بررسی تازه رسیده باشد، بررسی گیت‌هاب در پس‌زمینه آغاز می‌شود و همین
+    پاسخِ فوری برگردانده می‌شود؛ پس رابط هرگز روی شبکه معطل نمی‌ماند.
+    """
+    state = updater.status()
+    if updater.due_for_check() and not _update_check_running:
+        _update_background_check()
+    state["checking"] = _update_check_running
+    return state
+
+
+_update_check_running = False
+
+
+def _update_background_check(force: bool = False) -> None:
+    """بررسی گیت‌هاب بدون قفل‌کردن رابط کاربری."""
+    global _update_check_running
+    if _update_check_running:
+        return
+    _update_check_running = True
+
+    async def runner() -> None:
+        global _update_check_running
+        try:
+            await asyncio.to_thread(updater.check, force)
+        except Exception:  # noqa: BLE001 - وضعیت خطا در کش ذخیره شده است
+            pass
+        finally:
+            _update_check_running = False
+
+    asyncio.create_task(runner())
+
+
+@app.post("/api/update/check")
+async def update_check(force: bool = True) -> dict:
+    """بررسی اجباری ریلیز تازه (دکمهٔ «بررسی آپدیت»)."""
+    result = await asyncio.to_thread(updater.check, force)
+    return {"checked": result.get("checked"), "reason": result.get("reason"),
+            "error": result.get("error"), "status": updater.status()}
+
+
+@app.post("/api/update/download")
+async def update_download() -> dict:
+    """دانلود فقط فایل‌های تغییرکرده و آماده‌سازی برای اعمال."""
+    if updater.download_state().get("running"):
+        raise HTTPException(409, "دانلود آپدیت از قبل در جریان است.")
+    try:
+        result = await asyncio.to_thread(updater.download)
+    except updater.UpdateError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"status": result.get("status") or updater.status()}
+
+
+@app.post("/api/update/apply")
+async def update_apply() -> dict:
+    """اعمال آپدیتِ آماده؛ میزبان دسکتاپ برنامه را می‌بندد و دوباره اجرا می‌کند."""
+    if not updater.apply_supported():
+        raise HTTPException(400, "اعمال خودکار آپدیت فقط در نسخهٔ نصب‌شدهٔ ویندوز ممکن است؛ "
+                                 "در این محیط فایل‌ها را دستی جایگزین کنید.")
+    try:
+        request = await asyncio.to_thread(updater.request_apply)
+    except updater.UpdateError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"status": updater.status(), "version": request.get("version"),
+            "message": "آپدیت آماده است؛ برنامه بسته و با نسخهٔ تازه دوباره باز می‌شود."}
+
+
+@app.delete("/api/update/pending")
+def update_reset() -> dict:
+    """لغو آپدیت دانلودشده و پاک‌کردن فایل‌های آماده‌سازی."""
+    updater.reset()
+    return {"status": updater.status()}
+
+
+@app.get("/api/update/settings")
+def update_settings() -> dict:
+    return updater.public_settings()
+
+
+@app.put("/api/update/settings")
+def update_settings_save(body: UpdateSettings) -> dict:
+    try:
+        saved = updater.save_settings(body.model_dump(exclude_none=True))
+    except updater.UpdateError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"settings": saved, "status": updater.status()}
 
 
 @app.get("/api/ocr-status")

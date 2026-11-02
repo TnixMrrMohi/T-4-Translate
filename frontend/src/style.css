@@ -314,3 +314,32 @@
   .layout-field{flex:1 1 100%;min-width:0}
   .layout-actions{margin-inline-start:0;width:100%}
 }
+
+/* --- نوار به‌روزرسانی (پرسش ۱۰ ثانیه‌ای از سرور محلی) --- */
+.update-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:0 0 14px;padding:10px 14px;border:1px solid #ffffff1f;border-radius:12px;background:#0a1114;font-size:13px;color:#c9dcd8}
+.update-bar.is-available{border-color:#ffce6b55;background:#141008}
+.update-bar.is-ready{border-color:#00ffcc66;background:#07130f}
+.update-bar.is-error{border-color:#ff6b6b55;background:#150a0a}
+.update-bar.is-off{opacity:.85}
+.update-version{font-variant-numeric:tabular-nums;color:#7d9294;font-size:12px;border:1px solid #ffffff1f;border-radius:8px;padding:3px 8px}
+.update-label{font-weight:700;color:#e8fbf7;min-width:0;overflow-wrap:anywhere}
+.update-meta{color:#8fa8a4;font-size:12px;font-variant-numeric:tabular-nums}
+.update-actions{display:flex;gap:8px;flex-wrap:wrap;margin-inline-start:auto}
+.update-actions button{font-size:12px;padding:8px 12px}
+.update-progress{flex:1 1 160px;height:8px;border-radius:6px;background:#ffffff14;overflow:hidden;min-width:120px}
+.update-progress span{display:block;height:100%;background:#00ffcc;transition:width .25s ease}
+.update-message{flex:1 1 100%;margin:0;font-size:12px;color:#9bf3cc}
+.update-message.is-error{color:#ff9b9b}
+.update-settings{flex:1 1 100%;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:4px;padding-top:12px;border-top:1px solid #ffffff1f}
+.update-settings-note{flex:1 1 100%;margin:0;font-size:12px;color:#8fa8a4;line-height:1.8}
+.update-field{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#7d9294;flex:1 1 180px;min-width:140px}
+.update-field.is-narrow{flex:0 1 130px}
+.update-field input{font:inherit;font-size:13px;padding:8px 10px;border-radius:9px;border:1px solid #ffffff26;background:#050505;color:#e8fbf7;width:100%}
+.update-field input:focus-visible{outline:2px solid #00ffcc;outline-offset:1px}
+.update-check{display:flex;align-items:center;gap:8px;font-size:12px;color:#c9dcd8}
+.update-check input{width:16px;height:16px;accent-color:#00ffcc}
+.update-settings-actions{display:flex;gap:8px;margin-inline-start:auto}
+@media(max-width:720px){
+  .update-actions{margin-inline-start:0;width:100%}
+  .update-field,.update-field.is-narrow{flex:1 1 100%}
+}
