@@ -223,12 +223,18 @@ def _set_progress(**changes) -> None:
 
 
 def _source_url(item: dict) -> str:
-    """آدرس نهایی فایل: آینه (اگر تنظیم شده) یا آدرس پیش‌فرض کاتالوگ."""
+    """آدرس نهایی فایل: آینه (اگر تنظیم شده) یا آدرس پیش‌فرض کاتالوگ.
+
+    آینه می‌تواند آدرس وب، `file://` یا مسیر سادهٔ یک پوشه باشد؛ برای مسیر محلی،
+    جداکنندهٔ ویندوز (`\\`) حفظ می‌شود تا فایل واقعاً پیدا شود.
+    """
     base = mirror()
     if not base:
         return item["url"]
     relative = item.get("path") or item["name"]
-    return f"{base}/{relative}"
+    if "://" in base:
+        return f"{base.rstrip('/')}/{relative.lstrip('/')}"
+    return str(Path(base) / relative)
 
 
 def _sha256(path: Path) -> str:
