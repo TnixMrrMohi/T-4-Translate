@@ -410,6 +410,56 @@ def test_apply_request_is_taken_once(env, monkeypatch):
     assert updater.take_apply_request() is None
 
 
+def test_private_repo_assets_fall_back_to_the_api_url(env, monkeypatch):
+    """مخزن خصوصی: آدرس مرورگری ۴۰۴ می‌دهد؛ همان فایل از آدرس API با توکن می‌آید."""
+    install = env["install"]
+    changed = {"app.exe": b"new-exe"}
+    manifest = _manifest(install, "1.5.0", changed)
+    env["data"].mkdir(parents=True, exist_ok=True)
+    delta_path = env["data"] / "delta.zip"
+    with zipfile.ZipFile(delta_path, "w") as bundle:
+        for relative, payload in changed.items():
+            bundle.writestr(relative, payload)
+    release = _release("v1.5.0", {"update-manifest.json": "https://github.com/x/manifest",
+                                  "update-v1.5.0.zip": "https://github.com/x/delta"})
+    # آدرس API برای هر دارایی، مثل پاسخ واقعی گیت‌هاب.
+    api_base = "https://api.github.com/repos/owner/repo/releases/assets/"
+    api_manifest = api_base + "update-manifest.json"
+    api_delta = api_base + "update-v1.5.0.zip"
+    for asset in release["assets"]:
+        asset["url"] = api_base + asset["name"]
+
+    calls = _calls(monkeypatch, {
+        "https://api.github.com/repos/owner/repo/releases/latest":
+            FakeResponse(json.dumps(release).encode(), {"ETag": '"e"'}),
+        "https://github.com/x/manifest": FakeHTTPError(404),
+        "https://github.com/x/delta": FakeHTTPError(404),
+        api_manifest: FakeResponse(json.dumps(manifest).encode()),
+        api_delta: FakeResponse(delta_path.read_bytes(),
+                                {"Content-Length": str(delta_path.stat().st_size)}),
+    })
+    updater.download()
+    octet = [call for call in calls if call["headers"].get("Accept") == "application/octet-stream"]
+    assert len(octet) == 2  # هم فهرست، هم بستهٔ تغییرات از مسیر API گرفته شد
+    assert updater.pending()["version"] == "1.5.0"
+
+
+def test_failed_asset_download_explains_the_problem(env, monkeypatch):
+    release = _release("v1.6.0", {"update-manifest.json": "https://github.com/x/manifest"})
+    _calls(monkeypatch, {
+        "https://api.github.com/repos/owner/repo/releases/latest":
+            FakeResponse(json.dumps(release).encode(), {"ETag": '"e"'}),
+        "https://github.com/x/manifest": FakeHTTPError(404),
+    })
+    with pytest.raises(updater.UpdateError) as caught:
+        updater.download()
+    message = str(caught.value)
+    assert "update-manifest.json" in message
+    assert "توکن" in message  # راهنمای مخزن خصوصی
+    assert updater.pending() is None
+    assert updater.download_state().get("phase") == "error"
+
+
 def test_download_consumes_the_manifest_built_by_the_packaging_tool(env, monkeypatch):
     """بستهٔ واقعی CI (packaging/update_manifest.py) را همان مسیر دانلود مصرف می‌کند."""
     import importlib.util
