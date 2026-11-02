@@ -141,18 +141,18 @@ jobs:
           New-Item -ItemType Directory -Force -Path previous | Out-Null
           gh release download --repo "${{ github.repository }}" --pattern 'update-manifest.json' --dir previous
           if ($LASTEXITCODE -ne 0) { Write-Host 'previous release has no update-manifest.json yet' }
-          $args = @('packaging/update_manifest.py',
+          $build = @('packaging/update_manifest.py',
                     '--dist', 'dist/T4Translate',
                     '--version', $env:T4_VERSION,
                     '--out', 'dist/update-manifest.json',
                     '--summary', 'dist/update-summary.json',
                     '--delta', "dist/update-$env:T4_TAG.zip")
           if (Test-Path 'previous/update-manifest.json') {
-            $args += @('--previous', 'previous/update-manifest.json')
+            $build += @('--previous', 'previous/update-manifest.json')
           } else {
             Write-Host 'no previous manifest; this release ships a full manifest'
           }
-          python @args
+          python @build
           Get-Item "dist/update-$env:T4_TAG.zip" | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,2)}}
 
       - name: Publish release with the built app

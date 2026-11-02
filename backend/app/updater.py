@@ -799,6 +799,13 @@ def run_apply_script(script: str) -> None:
 
 # --------------------------------------------------------------------------- وضعیت
 
+def _installed_same_tag(latest: dict) -> bool:
+    """آیا نسخهٔ نصب‌شده از همین برچسب ریلیز ساخته شده است؟"""
+    installed = str(version_info().get("tag") or "").strip()
+    released = str((latest or {}).get("tag") or "").strip()
+    return bool(installed) and installed == released
+
+
 def _cached_status(cached: dict, conf: dict, now: float) -> dict:
     latest = cached.get("latest") or None
     staged = pending()
@@ -817,7 +824,10 @@ def _cached_status(cached: dict, conf: dict, now: float) -> dict:
                     "commit": version_info().get("commit"),
                     "builtAt": version_info().get("builtAt")},
         "latest": latest,
-        "updateAvailable": bool(latest) and is_newer(newest, current),
+        # اگر همین نسخه از همین برچسب نصب شده است، حتی با برچسب غیرعددی
+        # (مثل build-42) دوباره آپدیت پیشنهاد نمی‌شود.
+        "updateAvailable": bool(latest) and not _installed_same_tag(latest)
+        and is_newer(newest, current),
         "checkSeconds": conf["checkSeconds"],
         "pollSeconds": conf["pollSeconds"],
         "autoDownload": conf["autoDownload"],

@@ -462,6 +462,22 @@ def test_download_consumes_the_manifest_built_by_the_packaging_tool(env, monkeyp
     assert updater.pending()["version"] == "2.0.0"
 
 
+def test_same_release_tag_is_never_offered_again(env, monkeypatch):
+    """برچسب غیرعددی (build-42) پس از نصب، دوباره آپدیت پیشنهاد نمی‌شود."""
+    install = env["install"]
+    (install / "version.json").write_text(json.dumps(
+        {"version": "0.0.0-build-42", "tag": "build-42", "repo": "owner/repo"}), encoding="utf-8")
+    release = _release("build-42", {})
+    _calls(monkeypatch, {
+        "https://api.github.com/repos/owner/repo/releases/latest":
+            FakeResponse(json.dumps(release).encode(), {"ETag": '"e"'}),
+    })
+    updater.check(True)
+    state = updater.status()
+    assert state["latest"]["tag"] == "build-42"
+    assert state["updateAvailable"] is False
+
+
 def test_auto_download_setting_defaults_on_and_can_be_turned_off(env):
     assert updater.public_settings()["autoDownload"] is True
     assert updater.status()["autoDownload"] is True
