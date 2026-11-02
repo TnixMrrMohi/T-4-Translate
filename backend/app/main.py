@@ -19,7 +19,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
-from app import bubbles, cleaning, ocr, preview, rendering
+from app import bubbles, cleaning, fonts, ocr, preview, rendering
 from app.translations import parse_translation
 
 app = FastAPI(title="T-4 Translate", version="0.1.0")
@@ -406,8 +406,13 @@ def _render_files(clean_path: Path, translation: dict,
                   image_path: Path, meta_path: Path) -> int:
     """رندر در نخ کارگر انجام می‌شود؛ هر بلوک (بالن) یک متن فارسی می‌گیرد."""
     blocks = translation.get("blocks") or []
+    # فونت هر دستهٔ بالن از فونت‌های نصب‌شده انتخاب می‌شود؛ در نبود آن، وزیرمتن.
+    font_paths = {}
+    for kind, info in fonts.resolve_map().items():
+        if info.get("font"):
+            font_paths[kind] = info["font"]["path"]
     with Image.open(clean_path) as base:
-        rendered, drawn = rendering.render_blocks(base, blocks, translation["translations"])
+        rendered, drawn = rendering.render_blocks(base, blocks, translation["translations"], font_paths)
     tmp = image_path.with_name(image_path.name + ".tmp")
     try:
         rendered.save(tmp, format="PNG")
@@ -687,6 +692,52 @@ def bubble_types() -> dict:
                                         for variant, info in meta["variants"].items()]}
                           if "variants" in meta else {})}
                       for key, meta in bubbles.BUBBLE_TYPES.items()]}
+
+
+@app.get("/api/fonts")
+def list_fonts() -> dict:
+    """فونت‌های نصب‌شده و فونت واقعیِ هر نوع بالن."""
+    resolved = fonts.resolve_map()
+    return {
+        "fonts": [{key: value for key, value in font.items() if key != "path"}
+                  for font in fonts.list_fonts()],
+        "types": [{"kind": info["kind"], "label": info["label"], "suggestions": info["suggestions"],
+                   "missing": info["missing"], "fallback": info["fallback"],
+                   "resolved": info["font"]["name"] if info["font"] else None,
+                   "resolvedId": info["font"]["id"] if info["font"] else None,
+                   "resolvedFamily": info["font"]["family"] if info["font"] else None}
+                  for info in resolved.values()],
+    }
+
+
+@app.post("/api/fonts", status_code=201)
+async def upload_font(file: UploadFile = File(...)) -> dict:
+    """نصب فونت مخصوص تایپ؛ فایل در پوشهٔ داده‌های کاربر ذخیره و اعتبارسنجی می‌شود."""
+    data = bytearray()
+    while chunk := await file.read(1024 * 1024):
+        data.extend(chunk)
+        if len(data) > fonts.MAX_FONT_BYTES:
+            raise HTTPException(413, "حجم فونت بیش از ۲۴ مگابایت است.")
+    try:
+        record = await run_native_safely(fonts.install, file.filename or "", bytes(data))
+    except fonts.FontError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except Exception:
+        raise HTTPException(500, "نصب فونت ناموفق بود.") from None
+    finally:
+        await file.close()
+    return {"font": {key: value for key, value in record.items() if key != "path"}}
+
+
+@app.delete("/api/fonts/{font_id}")
+def delete_font(font_id: str) -> dict:
+    try:
+        fonts.remove(font_id)
+    except fonts.FontError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except OSError:
+        raise HTTPException(500, "حذف فونت ناموفق بود.") from None
+    return {"id": font_id, "deleted": True}
 
 
 # Only enabled by the packaged desktop launcher; development uses Vite separately.

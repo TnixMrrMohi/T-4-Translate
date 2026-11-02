@@ -52,12 +52,17 @@ def font_path() -> Path:
     raise RenderError("فونت فارسی برای نمایش روی تصویر پیدا نشد.")
 
 
-@lru_cache(maxsize=64)
-def _font(size: int) -> ImageFont.FreeTypeFont:
+@lru_cache(maxsize=256)
+def _font(size: int, path: str | None = None) -> ImageFont.FreeTypeFont:
+    """فونت با اندازهٔ مشخص؛ مسیر صریح برای فونتِ مخصوص هر نوع بالن."""
+    chosen = Path(path) if path else font_path()
     try:
-        return ImageFont.truetype(str(font_path()), size)
-    except OSError as exc:
-        raise RenderError("بارگذاری فونت فارسی ناموفق بود.") from exc
+        return ImageFont.truetype(str(chosen), size)
+    except OSError:
+        try:
+            return ImageFont.truetype(str(font_path()), size)
+        except OSError as exc:
+            raise RenderError("بارگذاری فونت فارسی ناموفق بود.") from exc
 
 
 @lru_cache(maxsize=1)
@@ -109,10 +114,10 @@ def _quad_box(quad, width: int, height: int):
     return left, top, right, bottom
 
 
-def _fit(text: str, box_width: float, box_height: float):
+def _fit(text: str, box_width: float, box_height: float, path: str | None = None):
     max_size = min(MAX_FONT_SIZE, max(MIN_FONT_SIZE, int(box_height)))
     for size in range(max_size, MIN_FONT_SIZE - 1, -1):
-        font = _font(size)
+        font = _font(size, path)
         lines = wrap_text(text, font, box_width)
         if not lines:
             return None, []
@@ -120,7 +125,7 @@ def _fit(text: str, box_width: float, box_height: float):
         needed = len(lines) * size * LINE_HEIGHT_RATIO
         if widest <= box_width and needed <= box_height:
             return font, lines
-    font = _font(MIN_FONT_SIZE)
+    font = _font(MIN_FONT_SIZE, path)
     return font, wrap_text(text, font, box_width)
 
 
@@ -136,13 +141,13 @@ def _contrast_color(image: Image.Image, box) -> tuple[int, int, int]:
     return (17, 17, 17) if mean > 128 else (245, 245, 245)
 
 
-def _draw_box(canvas, draw, box, text: str) -> bool:
+def _draw_box(canvas, draw, box, text: str, path: str | None = None) -> bool:
     """متن فارسی را وسط کادر می‌کشد؛ اگر جای کافی نبود False برمی‌گرداند."""
     left, top, right, bottom = box
     box_width = right - left
     box_height = bottom - top
     padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
-    font, wrapped = _fit(text, box_width - 2 * padding, box_height - 2 * padding)
+    font, wrapped = _fit(text, box_width - 2 * padding, box_height - 2 * padding, path)
     if not font or not wrapped:
         return False
     line_height = font.size * LINE_HEIGHT_RATIO
@@ -161,8 +166,14 @@ def _draw_box(canvas, draw, box, text: str) -> bool:
     return True
 
 
-def render_blocks(image: Image.Image, blocks: list, translations: dict) -> tuple[Image.Image, int]:
-    """هر بلوک (بالن) را با یک متن فارسی پر می‌کند؛ خروجی: تصویر و تعداد بلوک‌های رسم‌شده."""
+def render_blocks(image: Image.Image, blocks: list, translations: dict,
+                  fonts: dict | None = None) -> tuple[Image.Image, int]:
+    """هر بلوک (بالن) را با یک متن فارسی پر می‌کند؛ خروجی: تصویر و تعداد بلوک‌های رسم‌شده.
+
+    `fonts` نگاشتِ نوع بالن به مسیر فونت است؛ اگر خالی باشد فونت پیش‌فرض برنامه
+    استفاده می‌شود.
+    """
+    fonts = fonts or {}
     if image.mode != "RGB":
         image = image.convert("RGB")
     canvas = image.copy()
@@ -192,7 +203,8 @@ def render_blocks(image: Image.Image, blocks: list, translations: dict) -> tuple
         box = (left + inset_x, top + inset_y, right - inset_x, bottom - inset_y)
         if box[2] - box[0] < 8 or box[3] - box[1] < 8:
             continue
-        if _draw_box(canvas, draw, box, text):
+        kind = block.get("kind") or ""
+        if _draw_box(canvas, draw, box, text, fonts.get(kind)):
             drawn += 1
     if not drawn:
         raise RenderError("هیچ ترجمه‌ای برای نمایش روی تصویر وجود ندارد.")

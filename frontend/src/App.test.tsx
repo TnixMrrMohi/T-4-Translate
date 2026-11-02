@@ -24,6 +24,8 @@ function mockApi(options: {
   clean?: boolean;
   render?: boolean;
   bubbles?: unknown;
+  fonts?: unknown;
+  onFontUpload?: Handler;
 } = {}) {
   const calls: {url: string; method: string}[] = [];
   let ocrDone = false;
@@ -54,6 +56,14 @@ function mockApi(options: {
       const ready = Boolean(options.source) && (!options.sourceAfterOcr || ocrDone);
       return json({jobId: JOB_ID, source: ready, ocr: ready, translations: Boolean(options.translation),
                    stale: null, clean: Boolean(options.clean), render: Boolean(options.render)});
+    }
+    if (url.endsWith('/api/fonts')) {
+      if (method === 'POST') {
+        const custom = options.onFontUpload?.(init);
+        if (custom) return custom;
+        return json({font: {id: 'X', name: 'X', family: 'X', style: '', file: 'x.ttf', bundled: false}}, 201);
+      }
+      return json(options.fonts ?? {fonts: [], types: []});
     }
     if (url.endsWith('/bubbles')) {
       return options.bubbles ? json(options.bubbles) : json({detail: 'نیست'}, 404);
@@ -464,5 +474,77 @@ describe('لحن بالن‌ها در متن ترجمه', () => {
       expect(copied).toContain('با همان لحن بنویس');
       expect(copied).toContain('پرانتز لحن را در پاسخ تکرار نکن');
     });
+  });
+});
+
+describe('فونت هر نوع بالن در مرحلهٔ درج ترجمه', () => {
+  const source = {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]};
+  const fontsDoc = {
+    fonts: [
+      {id: 'Vazirmatn-Regular', name: 'Vazirmatn Regular', family: 'Vazirmatn', style: 'Regular',
+       file: 'Vazirmatn-Regular.ttf', bundled: true},
+      {id: 'Afsaneh', name: 'Afsaneh', family: 'Afsaneh', style: 'Regular', file: 'Afsaneh.ttf', bundled: false},
+    ],
+    types: [
+      {kind: 'speech', label: 'صحبت عادی', suggestions: ['Koodak Bold', 'Roya Bold'], missing: ['Koodak Bold'],
+       fallback: true, resolved: 'Vazirmatn Regular', resolvedId: 'Vazirmatn-Regular', resolvedFamily: 'Vazirmatn'},
+      {kind: 'shout', label: 'بالن فریاد', suggestions: ['Afsaneh', 'Kourush'], missing: [],
+       fallback: false, resolved: 'Afsaneh', resolvedId: 'Afsaneh', resolvedFamily: 'Afsaneh'},
+    ],
+  };
+
+  it('فونت هر نوع بالن و فونت‌های جانشین نشان داده می‌شود', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source,
+      translation: '[1] سلام',
+      fonts: fontsDoc,
+    });
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'});
+    await userEvent.setup().click(screen.getByRole('button', {name: 'ادامه (پاک‌سازی و درج ترجمه)'}));
+    await screen.findByRole('heading', {name: 'مرحله ۴: درج ترجمه روی تصویر'});
+
+    expect(await screen.findByRole('heading', {name: 'فونت هر نوع بالن'})).toBeInTheDocument();
+    expect(await screen.findByText('Afsaneh')).toBeInTheDocument();
+    expect(screen.getByText('Vazirmatn Regular')).toBeInTheDocument();
+    // دسته‌ای که فونت پیشنهادی‌اش نصب نیست، برچسب «جانشین» دارد.
+    expect(screen.getByText('جانشین')).toBeInTheDocument();
+    expect(screen.getByText(/پیشنهاد: Koodak Bold، Roya Bold/)).toBeInTheDocument();
+    expect(screen.getByLabelText('افزودن فونت')).toBeInTheDocument();
+    expect(screen.getByText(/۲ فونت موجود است|2 فونت موجود است/)).toBeInTheDocument();
+  });
+
+  it('نصب فونت خطاها را گزارش می‌کند و موفق‌ها را می‌شمارد', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const {calls} = mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source,
+      translation: '[1] سلام',
+      fonts: fontsDoc,
+      onFontUpload: init => {
+        const name = (init?.body as FormData | undefined)?.get('file');
+        const file = name instanceof File ? name.name : 'file';
+        return file.endsWith('.bad.ttf')
+          ? json({detail: 'فایل، فونت معتبری نیست.'}, 400)
+          : json({font: {id: 'Homa', name: 'Homa', family: 'Homa', style: '', file, bundled: false}}, 201);
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'});
+    await user.click(screen.getByRole('button', {name: 'ادامه (پاک‌سازی و درج ترجمه)'}));
+    await screen.findByRole('heading', {name: 'مرحله ۴: درج ترجمه روی تصویر'});
+
+    const input = screen.getByLabelText('افزودن فونت');
+    const good = new File(['x'], 'Homa.ttf', {type: 'font/ttf'});
+    const bad = new File(['x'], 'broken.bad.ttf', {type: 'font/ttf'});
+    await user.upload(input, [good, bad]);
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText(/فایل، فونت معتبری نیست/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: 'باشه'}));
+    expect(calls.filter(call => call.url.endsWith('/api/fonts') && call.method === 'POST')).toHaveLength(2);
   });
 });

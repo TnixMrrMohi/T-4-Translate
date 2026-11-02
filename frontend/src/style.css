@@ -167,3 +167,19 @@
 .bubble-lines{color:#cfe6e2;font-size:13px;margin-top:4px}
 .bubble-fonts{color:#9fb7b5;font-size:12px;margin-top:2px}
 .bubble-variants{color:#ffce6b;font-size:12px;margin-top:2px}
+
+/* فونت هر نوع بالن در مرحلهٔ درج ترجمه */
+.fonts-upload{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 10px}
+.file-button{position:relative;overflow:hidden;cursor:pointer;display:inline-block}
+.file-button input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.file-button.is-busy{opacity:.6;pointer-events:none}
+.fonts-note{color:#889ea0;font-size:12px}
+.font-types{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
+.font-type{display:grid;grid-template-columns:minmax(120px,1.2fr) minmax(120px,1fr) minmax(0,1.4fr);gap:8px;align-items:baseline;padding:6px 10px;border:1px solid #00ffcc22;border-radius:8px;background:#0a0f12;font-size:13px}
+.font-type.is-fallback{border-color:#ffce6b44}
+.font-type-kind{color:#cfe6e2}
+.font-type-name{color:#00ffcc;font-weight:600}
+.font-type.is-fallback .font-type-name{color:#ffce6b}
+.font-type-tag{margin-inline-start:6px;font-size:11px;padding:1px 6px;border-radius:6px;background:#ffce6b22;color:#ffce6b}
+.font-type-hint{color:#889ea0;font-size:12px}
+@media (max-width:640px){.font-type{grid-template-columns:1fr}}

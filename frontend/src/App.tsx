@@ -44,6 +44,20 @@ type Bubble = {
 
 type BubbleDoc = {jobId: string; provider: string; bubbles: Bubble[]; revision: string};
 
+/** فونت نصب‌شده و فونت واقعیِ هر نوع بالن. */
+type FontEntry = {id: string; name: string; family: string; style: string; file: string; bundled: boolean};
+type FontType = {
+  kind: string;
+  label: string;
+  suggestions: string[];
+  missing: string[];
+  fallback: boolean;
+  resolved: string | null;
+  resolvedId: string | null;
+  resolvedFamily: string | null;
+};
+type FontsDoc = {fonts: FontEntry[]; types: FontType[]};
+
 /** دستور ترجمه که همراه متن شماره‌گذاری‌شده کپی می‌شود. */
 const TRANSLATION_PROMPT = [
   'متن زیر از یک صفحهٔ مانگا/وب‌تون استخراج شده است. هر [شماره] یک بالن (یا یک متن بیرون بالن) است و',
@@ -284,6 +298,8 @@ export function App() {
   const [bubblesBusy, setBubblesBusy] = useState(false);
   const [bubbleVersion, setBubbleVersion] = useState(0);
   const bubblesRequested = useRef<string | null>(null);
+  const [fontsDoc, setFontsDoc] = useState<FontsDoc | null>(null);
+  const [fontsBusy, setFontsBusy] = useState(false);
 
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const dialogResolve = useRef<((ok: boolean) => void) | null>(null);
@@ -632,6 +648,50 @@ export function App() {
       if (error instanceof Error && error.name !== 'AbortError') fail(error.message);
     } finally {setBusy(false); currentRequest.current = null;}
   }
+
+  /** فهرست فونت‌ها و فونت واقعیِ هر نوع بالن. */
+  async function loadFonts() {
+    try {
+      const response = await fetch('/api/fonts');
+      if (!response.ok) return;
+      const data = await response.json();
+      if (Array.isArray(data.fonts) && Array.isArray(data.types)) setFontsDoc(data as FontsDoc);
+    } catch {
+      // فهرست فونت اختیاری است؛ رندر با فونت جانشین کار می‌کند.
+    }
+  }
+
+  /** نصب فونت‌های انتخاب‌شده و تازه‌سازی فهرست. */
+  async function uploadFonts(files: FileList | null) {
+    if (!files || files.length === 0 || fontsBusy) return;
+    setFontsBusy(true);
+    const failed: string[] = [];
+    let installed = 0;
+    for (const file of Array.from(files)) {
+      const body = new FormData();
+      body.append('file', file);
+      try {
+        const response = await fetch('/api/fonts', {method: 'POST', body});
+        const data = await response.json();
+        if (response.ok) installed += 1;
+        else failed.push(`${file.name}: ${typeof data.detail === 'string' ? data.detail : 'ناموفق'}`);
+      } catch {
+        failed.push(`${file.name}: خطای شبکه`);
+      }
+    }
+    await loadFonts();
+    setFontsBusy(false);
+    if (failed.length) {
+      fail(`نصب ${failed.length} فونت ناموفق بود.\n${failed.join('\n')}`);
+    } else if (installed) {
+      setMessage(`${installed} فونت نصب شد؛ فونت هر نوع بالن به‌روزرسانی شد.`);
+    }
+  }
+
+  // با ورود به مرحلهٔ ۴، فهرست فونت‌ها خوانده می‌شود تا فونت هر نوع بالن دیده شود.
+  useEffect(() => {
+    if (step === 4 && job) void loadFonts();
+  }, [step, job]);
 
   /** تشخیص نوع بالن‌ها برای مرحلهٔ ۲؛ نتیجه در بک‌اند کش می‌شود. */
   async function loadBubbles(jobId: string) {
@@ -1011,7 +1071,51 @@ export function App() {
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : (
                 <>
-                  <p className="wizard-help">متن فارسی با فونت وزیرمتن داخل کادر هر خط روی تصویر پاک‌سازی‌شده نوشته می‌شود.</p>
+                  <p className="wizard-help">
+                    متن فارسی داخل کادر هر بالن روی تصویر پاک‌سازی‌شده نوشته می‌شود؛ فونت هر نوع بالن از
+                    فهرست «فونت‌های مخصوص تایپ» انتخاب می‌شود و در نبود آن، وزیرمتن جانشین می‌شود.
+                  </p>
+
+                  <h3 className="wizard-subtitle">فونت هر نوع بالن</h3>
+                  <div className="fonts-upload">
+                    <label className={`ghost file-button${fontsBusy ? ' is-busy' : ''}`}>
+                      {fontsBusy ? 'در حال نصب…' : 'افزودن فونت (ttf / otf / ttc)'}
+                      <input
+                        type="file"
+                        accept=".ttf,.otf,.ttc,font/ttf,font/otf,font/collection"
+                        multiple
+                        aria-label="افزودن فونت"
+                        disabled={fontsBusy || busy}
+                        onChange={event => {
+                          void uploadFonts(event.target.files);
+                          event.target.value = '';
+                        }}
+                      />
+                    </label>
+                    <span className="fonts-note">
+                      {fontsDoc
+                        ? `${fontsDoc.fonts.length} فونت موجود است؛ نام فایل مهم است، مثل Koodak-Bold.ttf یا Afsaneh.otf`
+                        : 'فهرست فونت‌ها در حال بارگذاری…'}
+                    </span>
+                  </div>
+                  {fontsDoc && fontsDoc.types.length > 0 && (
+                    <ul className="font-types">
+                      {fontsDoc.types.map(item => (
+                        <li key={item.kind} className={`font-type${item.fallback ? ' is-fallback' : ''}`}>
+                          <span className="font-type-kind">{item.label}</span>
+                          <span className="font-type-name">
+                            {item.resolved ?? '—'}
+                            {item.fallback && <span className="font-type-tag">جانشین</span>}
+                          </span>
+                          <span className="font-type-hint">
+                            {item.fallback
+                              ? `پیشنهاد: ${item.suggestions.slice(0, 3).join('، ')}`
+                              : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   <div className="wizard-nav start">
                     <button type="button" className="ocr" disabled={busy || loadingData || cleanVersion === 0} onClick={() => void renderImage()}>
                       {renderVersion > 0 ? 'درج دوبارهٔ ترجمه' : 'درج ترجمه روی تصویر'}
