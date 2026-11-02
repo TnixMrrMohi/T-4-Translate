@@ -78,8 +78,38 @@ def overlay(path: Path, lines: list) -> Image.Image:
 THUMB_MAX_SIDE = 480
 
 
+# نسبت استاندارد کارت پیش‌نمایش (عرض:ارتفاع = ۳:۴)؛ همهٔ صفحه‌ها در همین قاب دیده می‌شوند.
+CARD_RATIO = 4 / 3
+
+
+def card(path: Path, width: int = THUMB_MAX_SIDE) -> Image.Image:
+    """کارت پیش‌نمایش با نسبت یکسان برای هر صفحه‌ای، مستقل از نسبت خود عکس.
+
+    * عرض همیشه `width` است (مگر عکس باریک‌تر باشد) تا متن خوانا بماند؛
+    * ارتفاع حداکثر `width * 4/3` می‌شود و صفحهٔ بلندِ وب‌تون از **بالا** بریده
+      می‌شود (مثل کارت صفحه)؛
+    * صفحهٔ کوتاه/پهن کامل می‌ماند و قاب با پس‌زمینه پر می‌شود.
+
+    قبلاً بزرگ‌ترین ضلع به ۴۸۰ محدود می‌شد؛ صفحهٔ ۶۹۰×۵۸۸۰ به نواری ۵۶ پیکسلی
+    تبدیل می‌شد و در قاب عملاً دیده نمی‌شد.
+    """
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGB") if source.mode not in ("RGB", "L") else source.copy()
+    except (OSError, ValueError) as exc:
+        raise PreviewError("خواندن تصویر برای ساخت بندانگشتی ناموفق بود.") from exc
+    width = max(1, int(width))
+    if image.width > width:
+        height = max(1, round(image.height * width / image.width))
+        image = image.resize((width, height), Image.LANCZOS)
+    limit = max(1, round(image.width * CARD_RATIO))
+    if image.height > limit:
+        image = image.crop((0, 0, image.width, limit))
+    return image
+
+
 def thumbnail(path: Path, max_side: int = THUMB_MAX_SIDE) -> Image.Image:
-    """نسخهٔ کوچک تصویر برای نمایش در فهرست؛ ابعاد بزرگ‌ترین ضلع محدود می‌شود."""
+    """نسخهٔ کوچک با محدودیت بزرگ‌ترین ضلع (برای استفاده‌های عمومی)."""
     try:
         with Image.open(path) as source:
             image = source.convert("RGB") if source.mode not in ("RGB", "L") else source.copy()

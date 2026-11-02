@@ -540,7 +540,7 @@ THUMB_SOURCES = {
 
 
 def _write_thumb(workspace: Path, kind: str, source: Path, image_path: Path, meta_path: Path) -> None:
-    image = preview.thumbnail(source)
+    image = preview.card(source)
     tmp = image_path.with_name(image_path.name + ".tmp")
     try:
         image.save(tmp, format="PNG")

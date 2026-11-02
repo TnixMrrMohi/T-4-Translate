@@ -121,6 +121,9 @@ type PreviewProps = {
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 
+/** نسبت استاندارد قاب پیش‌نمایش؛ همهٔ صفحه‌ها (هر عرض/ارتفاعی) در همین قاب یک‌اندازه دیده می‌شوند. */
+const PREVIEW_RATIO = '3 / 4';
+
 /** بندانگشتی ثابت‌اندازه؛ تصویر کامل (حتی ۱۵۰۰۰ پیکسل) فقط در مودال نمایش داده می‌شود. */
 function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1}: PreviewProps) {
   const [open, setOpen] = useState(false);
@@ -164,11 +167,15 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
 
   return (
     <>
-      <figure className="preview-card">
+      <figure
+        className="preview-card"
+        style={{'--preview-ratio': PREVIEW_RATIO} as React.CSSProperties}
+        data-preview-ratio={PREVIEW_RATIO}
+      >
         <button
           type="button"
           ref={thumbRef}
-          className={`preview-thumb${tall ? ' is-tall' : ''}`}
+          className="preview-thumb"
           onClick={openModal}
           aria-label={`بزرگ‌نمایی: ${alt}`}
           title="برای بزرگ‌نمایی کلیک کنید"

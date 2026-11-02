@@ -752,3 +752,24 @@ describe('فهرست «کارهای قبلی»', () => {
     expect(screen.getByText(/1500 × 15000/)).toBeInTheDocument();
   });
 });
+
+describe('قاب استاندارد پیش‌نمایش', () => {
+  const ratioOf = () => document.querySelector('.preview-card')?.getAttribute('data-preview-ratio');
+
+  it('برای صفحهٔ بلند و صفحهٔ پهن، کارت پیش‌نمایش یک نسبت یکسان دارد', async () => {
+    for (const job of [
+      {jobId: JOB_ID, width: 690, height: 5880, format: 'PNG', status: 'uploaded'},
+      {jobId: JOB_ID, width: 1600, height: 900, format: 'PNG', status: 'uploaded'},
+    ]) {
+      localStorage.setItem('t4-last-job', JOB_ID);
+      mockApi({job, source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]}});
+      const view = render(<App />);
+      await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+      expect(ratioOf()).toBe('3 / 4');
+      // کلاس ارتفاع اختصاصی صفحهٔ بلند حذف شده؛ قاب برای همه یکی است.
+      expect(document.querySelector('.preview-thumb')).not.toHaveClass('is-tall');
+      view.unmount();
+      localStorage.clear();
+    }
+  });
+});
