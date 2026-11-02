@@ -147,8 +147,18 @@ type PreviewProps = {
   aspect?: number;
 };
 
-const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
+const ZOOM_STEP = 0.25;
+/** اولین پلهٔ زوم ۵۰٪ است و بعد هر پله ۲۵٪ بالا می‌رود: ۵۰، ۷۵، ۱۰۰، … ۴۰۰. */
+const FIRST_ZOOM = 0.5;
+const ZOOM_LADDER: number[] = (() => {
+  const steps: number[] = [];
+  for (let value = FIRST_ZOOM; value <= MAX_ZOOM + 1e-9; value += ZOOM_STEP) {
+    steps.push(Math.round(value * 100) / 100);
+  }
+  return steps;
+})();
+const LAST_ZOOM = ZOOM_LADDER[ZOOM_LADDER.length - 1];
 
 /** نسبت استاندارد قاب پیش‌نمایش؛ همهٔ صفحه‌ها (هر عرض/ارتفاعی) در همین قاب یک‌اندازه دیده می‌شوند. */
 const PREVIEW_RATIO = '3 / 4';
@@ -207,14 +217,28 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   const tall = aspect > 2.5;
   const openModal = () => {setOpen(true); setFit(true); setZoom(1);};
 
-  // «عرض کامل» یعنی تصویر به اندازهٔ عرض صفحه (۱۰۰٪ قاب) دیده شود.
-  const widthMode = !fit && zoom === 1;
-  /** کلیک روی خود تصویر: بین «تناسب صفحه» و «عرض کامل» جابه‌جا می‌کند. */
-  const toggleWidth = () => {
-    if (widthMode) {setFit(true); setZoom(1);}
-    else {setFit(false); setZoom(1);}
+  // زوم پله‌پله: اولین پله ۵۰٪ و بعد هر پله ۲۵٪ بیشتر؛ از بالاترین پله به
+  // «تناسب صفحه» برمی‌گردد. «عرض کامل» هم پلهٔ ۱۰۰٪ است، نه پرش مستقیم.
+  const zoomed = !fit;
+  const zoomIn = () => {
+    if (fit) {setFit(false); setZoom(FIRST_ZOOM); return;}
+    const next = ZOOM_LADDER.find(step => step > zoom + 1e-9);
+    if (next !== undefined) setZoom(next);
   };
-  const toggleLabel = widthMode ? 'تصویر: برگشت به تناسب صفحه' : 'تصویر: نمایش به عرض صفحه';
+  const zoomOut = () => {
+    if (fit) return;
+    const previous = [...ZOOM_LADDER].reverse().find(step => step < zoom - 1e-9);
+    if (previous === undefined) {setFit(true); setZoom(1); return;} // پایان پله‌ها: تناسب صفحه
+    setZoom(previous);
+  };
+  /** کلیک روی خود تصویر: یک پله بزرگ‌تر؛ پس از ۴۰۰٪ به تناسب صفحه برمی‌گردد. */
+  const nextZoomStep = () => {
+    if (zoomed && zoom >= LAST_ZOOM - 1e-9) {setFit(true); setZoom(1); return;}
+    zoomIn();
+  };
+  const showWidth = () => {setFit(false); setZoom(1);};
+  const showFit = () => {setFit(true); setZoom(1);};
+  const toggleLabel = zoomed ? 'تصویر: پلهٔ بعدی زوم' : 'تصویر: زوم پله‌پله از ۵۰٪';
 
   // اگر بندانگشتی نیاید (۴۰۴/شبکه)، یک‌بار خودکار دوباره خواسته و بعد پیام روشن
   // نشان داده می‌شود؛ آیکون «عکس شکسته» مرورگر هرگز دیده نمی‌شود.
@@ -248,10 +272,10 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') close();
-      else if (event.key === '+' || event.key === '=') {setFit(false); setZoom(z => Math.min(MAX_ZOOM, +(z + 0.25).toFixed(2)));}
-      else if (event.key === '-') {setFit(false); setZoom(z => Math.max(MIN_ZOOM, +(z - 0.25).toFixed(2)));}
-      else if (event.key === '0') {setFit(true); setZoom(1);}
-      else if (event.key === 'w' || event.key === 'W') toggleWidth();
+      else if (event.key === '+' || event.key === '=') zoomIn();
+      else if (event.key === '-') zoomOut();
+      else if (event.key === '0') showFit();
+      else if (event.key === 'w' || event.key === 'W') (zoomed && zoom === 1 ? showFit() : showWidth());
     };
     window.addEventListener('keydown', onKey);
     return () => {window.removeEventListener('keydown', onKey); document.body.style.overflow = previous;};
@@ -305,32 +329,34 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
           <div className="modal-bar">
             <span className="grow">{alt} <span style={{color: '#7d9294', fontSize: '12px'}}>(Esc برای بستن)</span></span>
             <span className="modal-actions">
-              <button type="button" onClick={() => {setFit(false); setZoom(z => Math.max(MIN_ZOOM, +(z - 0.25).toFixed(2)));}} disabled={!fit && zoom <= MIN_ZOOM} aria-label="کوچک‌تر">−</button>
+              <button type="button" onClick={zoomOut} disabled={!zoomed} aria-label="کوچک‌تر">−</button>
               <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
-              <button type="button" onClick={() => {setFit(false); setZoom(z => Math.min(MAX_ZOOM, +(z + 0.25).toFixed(2)));}} disabled={!fit && zoom >= MAX_ZOOM} aria-label="بزرگ‌تر">+</button>
-              <button type="button" onClick={() => {setFit(false); setZoom(1);}} disabled={widthMode}>عرض کامل</button>
-              <button type="button" onClick={() => {setFit(true); setZoom(1);}} disabled={fit}>تناسب صفحه</button>
+              <button type="button" onClick={zoomIn} disabled={zoomed && zoom >= LAST_ZOOM} aria-label="بزرگ‌تر">+</button>
+              <button type="button" onClick={showWidth} disabled={zoomed && zoom === 1}>عرض کامل</button>
+              <button type="button" onClick={showFit} disabled={fit}>تناسب صفحه</button>
               <a href={fullUrl} download={downloadName ?? `${kind}.png`}>دانلود</a>
               <button type="button" ref={closeRef} onClick={close}>بستن ✕</button>
             </span>
           </div>
           {tall && <p style={{color: '#f2c14e', fontSize: '13px', margin: '0 0 8px'}}>این صفحه بلند است؛ کل صفحه نمایش داده می‌شود. برای خواندن متن روی «+» بزنید یا روی تصویر کلیک کنید تا به عرض صفحه در بیاید.</p>}
           <p className="modal-hint" aria-live="polite">
-            {widthMode
-              ? 'عرض کامل صفحه — برای برگشت به تناسب صفحه، روی تصویر کلیک کنید'
-              : 'تناسب صفحه — برای عرض کامل، روی تصویر کلیک کنید'}
+            {!zoomed
+              ? 'تناسب صفحه — روی تصویر کلیک کنید تا زوم پله‌پله از ۵۰٪ شروع شود (هر پله ۲۵٪)'
+              : zoom >= LAST_ZOOM
+                ? 'بالاترین پله (۴۰۰٪) — کلیک بعدی به تناسب صفحه برمی‌گردد'
+                : `${Math.round(zoom * 100)}٪ — کلیک روی تصویر: یک پله بالاتر`}
           </p>
-          <div className={`modal-stage${fit ? ' fit' : ''}${widthMode ? ' width' : ''}`}>
+          <div className={`modal-stage${fit ? ' fit' : ''}`}>
             {/* کلیک روی تصویر عرض را به عرض صفحه می‌برد و کلیک دوم برمی‌گرداند. */}
             <div
               className="modal-image"
               role="button"
               tabIndex={0}
               aria-label={toggleLabel}
-              title={widthMode ? 'کلیک: تناسب صفحه' : 'کلیک: عرض کامل صفحه'}
-              onClick={toggleWidth}
+              title={zoomed && zoom >= LAST_ZOOM ? 'کلیک: برگشت به تناسب صفحه' : 'کلیک: یک پله زوم بیشتر'}
+              onClick={nextZoomStep}
               onKeyDown={event => {
-                if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); toggleWidth();}
+                if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); nextZoomStep();}
               }}
             >
               <img
