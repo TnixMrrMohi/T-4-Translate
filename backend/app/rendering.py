@@ -141,38 +141,50 @@ def _contrast_color(image: Image.Image, box) -> tuple[int, int, int]:
     return (17, 17, 17) if mean > 128 else (245, 245, 245)
 
 
-def _draw_box(canvas, draw, box, text: str, path: str | None = None, fill: float = 1.0) -> bool:
+KIND_INSET = {"shout": 0.16, "solar": 0.16, "monster": 0.18, "fear": 0.10, "cloud": 0.10}
+
+
+def _draw_box(canvas, draw, box, text: str, path: str | None = None,
+              fill: float = 1.0, kind: str = "") -> bool:
     """متن فارسی را وسط کادر می‌کشد؛ اگر جای کافی نبود False برمی‌گرداند.
 
-    `fill` نسبت مساحت شکل به کادر است؛ برای بالن دندانه‌دار کمتر از یک است تا متن
-    داخل دندانه‌ها و بیرون از ناحیهٔ سفید نرود.
+    `fill` نسبت مساحت شکل به کادر است و `kind` نوع بالن؛ برای شکل‌های دندانه‌دار
+    (فریاد، خورشیدی، هیولا) کادر متن جمع‌تر می‌شود تا حروف داخل دندانه‌ها نروند.
+    جای‌گذاری بر اساس جعبهٔ واقعی حروف (ink) است، نه متریک فونت؛ چون فونت‌های
+    دست‌کشیده گاهی ascender/descender نامتعارف دارند.
     """
     left, top, right, bottom = box
+    inset = KIND_INSET.get(kind, 0.0)
     if 0.3 <= fill < 0.95:
-        shrink = 0.75 + 0.25 * (fill - 0.3) / 0.65   # بین ۰٫۷۵ و ۱ برابر کادر
-        inset_w = (right - left) * (1 - shrink) / 2
-        inset_h = (bottom - top) * (1 - shrink) / 2
-        left, top = left + inset_w, top + inset_h
-        right, bottom = right - inset_w, bottom - inset_h
+        inset = max(inset, 0.6 * (1 - fill))
+    if inset:
+        inset_x = (right - left) * inset / 2
+        inset_y = (bottom - top) * inset / 2
+        left, top, right, bottom = left + inset_x, top + inset_y, right - inset_x, bottom - inset_y
     box_width = right - left
     box_height = bottom - top
+    if box_width < 8 or box_height < 8:
+        return False
     padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
     font, wrapped = _fit(text, box_width - 2 * padding, box_height - 2 * padding, path)
     if not font or not wrapped:
         return False
-    line_height = font.size * LINE_HEIGHT_RATIO
-    block_height = len(wrapped) * line_height
+    shaped = [shape_text(logical_line) for logical_line in wrapped]
+    # اندازهٔ واقعی حروف هر خط و ارتفاع کل بلوک بر اساس ink، نه متریک فونت.
+    metrics = []
+    for line in shaped:
+        ink = draw.textbbox((0, 0), line, font=font)
+        metrics.append((ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]))
+    line_height = max(1.0, max(height for _, _, _, height in metrics) * 1.24)
+    block_height = line_height * len(shaped)
     start_y = top + (box_height - block_height) / 2
     center_x = left + box_width / 2
     color = _contrast_color(canvas, box)
-    for index, logical_line in enumerate(wrapped):
-        draw.text(
-            (center_x, start_y + index * line_height),
-            shape_text(logical_line),
-            font=font,
-            fill=color,
-            anchor="ma",
-        )
+    for index, line in enumerate(shaped):
+        ink_left, ink_top, ink_width, ink_height = metrics[index]
+        target_left = center_x - ink_width / 2
+        target_top = start_y + index * line_height + (line_height - ink_height) / 2
+        draw.text((target_left - ink_left, target_top - ink_top), line, font=font, fill=color)
     return True
 
 
@@ -218,7 +230,7 @@ def render_blocks(image: Image.Image, blocks: list, translations: dict,
             fill = float(block.get("fill") or 1.0)
         except (TypeError, ValueError):
             fill = 1.0
-        if _draw_box(canvas, draw, box, text, fonts.get(kind), fill):
+        if _draw_box(canvas, draw, box, text, fonts.get(kind), fill, kind):
             drawn += 1
     if not drawn:
         raise RenderError("هیچ ترجمه‌ای برای نمایش روی تصویر وجود ندارد.")
