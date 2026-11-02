@@ -26,9 +26,12 @@ function mockApi(options: {
   bubbles?: unknown;
   fonts?: unknown;
   onFontUpload?: Handler;
+  /** پاسخ آپلود؛ تابع، شمارهٔ آپلود (از ۱) را می‌گیرد تا هر بار کار تازه بسازد. */
+  uploadJob?: (index: number) => unknown;
 } = {}) {
   const calls: {url: string; method: string}[] = [];
   let ocrDone = false;
+  let uploadIndex = 0;
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const method = (init?.method ?? 'GET').toUpperCase();
@@ -40,6 +43,9 @@ function mockApi(options: {
       return json({jobId: url.split('/').pop(), deleted: true});
     }
     if (method === 'POST' && url.endsWith('/api/jobs')) {
+      uploadIndex += 1;
+      const custom = options.uploadJob?.(uploadIndex);
+      if (custom) return json(custom, 201);
       return json(options.upload ?? {jobId: JOB_ID, width: 1500, height: 15000, format: 'PNG', status: 'uploaded', createdAt: '2026-10-31T20:15:00+00:00'}, 201);
     }
     if (method === 'POST' && url.endsWith('/ocr')) {
@@ -652,5 +658,97 @@ describe('پیوند مستقیم به کار', () => {
 
     expect(await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'})).toBeInTheDocument();
     expect(calls.some(call => call.url === `/api/jobs/${JOB_ID}`)).toBe(true);
+  });
+});
+
+describe('فهرست «کارهای قبلی»', () => {
+  const A = {...jobItem, jobId: 'a'.repeat(32), width: 1500, height: 15000};
+  const B = {...jobItem, jobId: 'b'.repeat(32), width: 800, height: 600};
+
+  const jobsLoaded = (calls: {url: string; method: string}[], times: number) =>
+    waitFor(() => expect(calls.filter(call => call.url.includes('/api/jobs?limit=20')).length).toBeGreaterThanOrEqual(times));
+
+  it('عکس تازه در همان ابتدا در «کارهای قبلی» نمایش داده نمی‌شود', async () => {
+    let uploaded = false;
+    const {calls} = mockApi({
+      jobs: () => (uploaded ? [A] : []),
+      uploadJob: () => {uploaded = true; return A;},
+    });
+    const user = userEvent.setup();
+    const {container} = render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
+    expect(screen.queryByRole('region', {name: 'کارهای قبلی'})).not.toBeInTheDocument();
+
+    await user.upload(container.querySelector('#file-input') as HTMLInputElement,
+      new File(['x'], 'page.png', {type: 'image/png'}));
+    await jobsLoaded(calls, 2);  // بارگذاری اولیه + بازخوانی پس از آپلود
+
+    // کار تازه هنوز «کار قبلی» نیست؛ فهرست باید خالی بماند.
+    expect(screen.queryByRole('region', {name: 'کارهای قبلی'})).not.toBeInTheDocument();
+    expect(screen.queryByText('1500×15000 PNG')).not.toBeInTheDocument();
+  });
+
+  it('با انتخاب عکس دوم، عکس اول به «کارهای قبلی» می‌رود', async () => {
+    let uploads = 0;
+    const {calls} = mockApi({
+      jobs: () => (uploads === 0 ? [] : uploads === 1 ? [A] : [B, A]),
+      uploadJob: index => {uploads = index; return index === 1 ? A : B;},
+    });
+    const user = userEvent.setup();
+    const {container} = render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
+    const input = container.querySelector('#file-input') as HTMLInputElement;
+
+    await user.upload(input, new File(['x'], 'a.png', {type: 'image/png'}));
+    await jobsLoaded(calls, 2);
+    expect(screen.queryByRole('region', {name: 'کارهای قبلی'})).not.toBeInTheDocument();
+
+    await user.upload(input, new File(['y'], 'b.png', {type: 'image/png'}));
+    const region = await screen.findByRole('region', {name: 'کارهای قبلی'});
+    // عکس اول «کار قبلی» شده و عکس دوم (کار باز) در فهرست نیست.
+    expect(within(region).getByText('1500×15000 PNG')).toBeInTheDocument();
+    expect(within(region).queryByText('800×600 PNG')).not.toBeInTheDocument();
+    expect(within(region).getByRole('button', {name: 'بازکردن'})).toBeInTheDocument();
+  });
+
+  it('با «حذف انتخاب و شروع دوباره» کار در «کارهای قبلی» می‌آید', async () => {
+    let uploaded = false;
+    const {calls} = mockApi({
+      jobs: () => (uploaded ? [A] : []),
+      uploadJob: () => {uploaded = true; return A;},
+    });
+    const user = userEvent.setup();
+    const {container} = render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
+
+    await user.upload(container.querySelector('#file-input') as HTMLInputElement,
+      new File(['x'], 'page.png', {type: 'image/png'}));
+    await jobsLoaded(calls, 2);
+    expect(screen.queryByRole('region', {name: 'کارهای قبلی'})).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', {name: 'حذف انتخاب و شروع دوباره'}));
+    const region = await screen.findByRole('region', {name: 'کارهای قبلی'});
+    expect(within(region).getByText('1500×15000 PNG')).toBeInTheDocument();
+  });
+
+  it('کار قبلی که از فهرست باز می‌شود، از فهرست بیرون می‌رود', async () => {
+    const C = {...jobItem, jobId: 'c'.repeat(32), width: 900, height: 700};
+    mockApi({jobs: [A, C]});
+    const user = userEvent.setup();
+    render(<App />);
+
+    let region = await screen.findByRole('region', {name: 'کارهای قبلی'});
+    expect(within(region).getByText('1500×15000 PNG')).toBeInTheDocument();
+    expect(within(region).getByText('900×700 PNG')).toBeInTheDocument();
+
+    const row = within(region).getByText('1500×15000 PNG').closest('li') as HTMLElement;
+    await user.click(within(row).getByRole('button', {name: 'بازکردن'}));
+
+    // کار باز‌شده دیگر «کار قبلی» نیست؛ فقط دیگری می‌ماند.
+    await waitFor(() => expect(screen.queryByText('1500×15000 PNG')).not.toBeInTheDocument());
+    region = screen.getByRole('region', {name: 'کارهای قبلی'});
+    expect(within(region).getByText('900×700 PNG')).toBeInTheDocument();
+    // تصویر کار باز‌شده در مرحلهٔ ۱ دیده می‌شود.
+    expect(screen.getByText(/1500 × 15000/)).toBeInTheDocument();
   });
 });

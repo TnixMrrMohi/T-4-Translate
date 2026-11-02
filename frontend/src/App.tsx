@@ -375,6 +375,10 @@ export function App() {
     uploadStarted.current = false;
   }
 
+  // «کارهای قبلی» فقط کارهایی است که دیگر باز نیستند: عکسی که همین حالا اضافه شده
+  // هنوز «کار قبلی» نیست؛ به‌محض انتخاب عکس بعدی یا ریست/شروع دوباره، در فهرست می‌آید.
+  const previousJobs = job ? jobs.filter(entry => entry.jobId !== job.jobId) : jobs;
+
   // بالاترین مرحله‌ای که کاربر می‌تواند باز کند؛ بر اساس خروجی‌های موجود.
   const maxStep = !job ? 1
     : !source ? 1
@@ -886,12 +890,12 @@ export function App() {
                 </>
               )}
 
-              {jobs.length > 0 && (
+              {previousJobs.length > 0 && (
                 <section className="jobs" aria-label="کارهای قبلی">
                   <h3>کارهای قبلی روی این سیستم</h3>
                   <ul>
-                    {jobs.map(item => (
-                      <li key={item.jobId} className={item.jobId === job?.jobId ? 'is-open' : undefined}>
+                    {previousJobs.map(item => (
+                      <li key={item.jobId}>
                         <span className="jobs-meta">
                           {new Intl.DateTimeFormat('fa-IR', {dateStyle: 'short', timeStyle: 'short'}).format(new Date(item.createdAt))}
                           {' · '}
@@ -901,10 +905,10 @@ export function App() {
                           <button
                             type="button"
                             className="ocr"
-                            disabled={busy || loadingData || item.jobId === job?.jobId}
+                            disabled={busy || loadingData}
                             onClick={() => void openJob(item)}
                           >
-                            {item.jobId === job?.jobId ? 'باز است' : 'بازکردن'}
+                            بازکردن
                           </button>
                           <button
                             type="button"
