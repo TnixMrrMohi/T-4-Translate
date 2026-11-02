@@ -243,6 +243,34 @@ function ProgressBar({progress}: {progress: Progress}) {
   );
 }
 
+/**
+ * لایهٔ تمام‌صفحه (مودال) همیشه با پورتال مستقیم روی <body> رندر می‌شود.
+ *
+ * دلیل: ستون راست `position: sticky` است و هر عنصر sticky/fixed خودش بستر
+ * انباشتگی (stacking context) می‌سازد. مودالی که داخل ستون یا کارت رندر شود،
+ * حتی با z-index بالا، از بستر خودش بیرون نمی‌آید و عناصر بعدیِ DOM (کارت مرحله
+ * و نوار دکمه‌هایش) روی تصویر می‌افتند. پورتال این کلاس از خطا را حذف می‌کند.
+ */
+function Overlay({label, onBackdropClick, className = 'modal-backdrop', children}: {
+  label: string;
+  onBackdropClick?: () => void;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return createPortal(
+    <div
+      className={className}
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      onClick={event => {if (event.target === event.currentTarget) onBackdropClick?.();}}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 /** بندانگشتی ثابت‌اندازه؛ تصویر کامل (حتی ۱۵۰۰۰ پیکسل) فقط در مودال نمایش داده می‌شود. */
 function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1}: PreviewProps) {
   const [open, setOpen] = useState(false);
@@ -357,14 +385,8 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
         <figcaption>{caption}</figcaption>
       </figure>
 
-      {open && createPortal((
-        <div
-          className="modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-label={alt}
-          onClick={event => {if (event.target === event.currentTarget) close();}}
-        >
+      {open && (
+        <Overlay label={alt} onBackdropClick={close}>
           <div className="modal-bar">
             <span className="grow">{alt} <span style={{color: '#7d9294', fontSize: '12px'}}>(Esc برای بستن)</span></span>
             <span className="modal-actions">
@@ -409,8 +431,8 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
               />
             </div>
           </div>
-        </div>
-      ), document.body)}
+        </Overlay>
+      )}
     </>
   );
 }
@@ -1829,13 +1851,7 @@ export function App() {
       </div>
 
       {layoutModal && job && layoutDoc && (
-        <div
-          className="modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-label="ویرایش بزرگ چیدمان متن‌ها"
-          onClick={event => {if (event.target === event.currentTarget) setLayoutModal(false);}}
-        >
+        <Overlay label="ویرایش بزرگ چیدمان متن‌ها" onBackdropClick={() => setLayoutModal(false)}>
           <div className="modal-bar">
             <span className="grow">ویرایش چیدمان متن‌ها (Esc برای بستن)</span>
             <span className="modal-actions">
@@ -1855,7 +1871,7 @@ export function App() {
               disabled={layoutBusy || busy || loadingData}
             />
           </div>
-        </div>
+        </Overlay>
       )}
 
       {dialog && <Dialog request={dialog} onClose={closeDialog} />}

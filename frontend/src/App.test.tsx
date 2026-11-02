@@ -762,6 +762,32 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
     expect(document.body.querySelectorAll('.modal-backdrop')).toHaveLength(0);
   });
 
+  it('در مرحله ۲ نوارهای کارت روی مودال نمی‌افتند (دکمه‌ها بیرون از لایه‌اند)', async () => {
+    const user = await openPreview();
+    const dialog = screen.getByRole('dialog');
+
+    // مودال فرزند مستقیم body است و آخرین عنصر آن؛ پس از هر چیزی که در #root است
+    // بالاتر می‌نشیند (ریشهٔ گزارش: دکمه‌های «مرحلهٔ قبل» و «اجرای مجدد OCR» و نوار
+    // «جایگزینی/حذف کامل» روی تصویر دیده می‌شدند).
+    expect(dialog.parentElement).toBe(document.body);
+    expect(document.body.lastElementChild).toBe(dialog);
+    expect(dialog.closest('.sidebar')).toBeNull();
+    expect(dialog.closest('.workspace')).toBeNull();
+    expect(dialog.closest('.wizard-card')).toBeNull();
+
+    for (const name of ['مرحلهٔ قبل', 'اجرای دوبارهٔ OCR', 'حذف کامل']) {
+      const button = screen.getByRole('button', {name});
+      expect(dialog.contains(button)).toBe(false);
+      expect(button.closest('.wizard-card')).not.toBeNull();
+    }
+    expect(screen.getByRole('button', {name: /جایگزینی با/})).toBeInTheDocument();
+
+    // بستن مودال، کارت و دکمه‌هایش را دست‌نخورده برمی‌گرداند.
+    await user.click(within(dialog).getByRole('button', {name: 'بستن ✕'}));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'اجرای دوبارهٔ OCR'})).toBeInTheDocument();
+  });
+
   it('با صفحه‌کلید (Enter) هم یک پله زوم می‌شود', async () => {
     const user = await openPreview();
     const imageButton = screen.getByRole('button', {name: 'تصویر: زوم پله‌پله از ۵۰٪'});
@@ -1507,6 +1533,8 @@ describe('ویرایش تک‌تک متن‌های درج‌شده (چیدمان
     const {user} = await openEditor();
     await user.click(await screen.findByRole('button', {name: 'ویرایش در نمایش بزرگ'}));
     const dialog = await screen.findByRole('dialog', {name: 'ویرایش بزرگ چیدمان متن‌ها'});
+    // ویرایشگر بزرگ هم پورتال است: کارت مرحله و دکمه‌هایش روی آن نمی‌افتند.
+    expect(dialog.parentElement).toBe(document.body);
     expect(within(dialog).getByText(/ویرایش چیدمان متن‌ها/)).toBeInTheDocument();
     fireEvent.keyDown(window, {key: 'Escape'});
     await waitFor(() => expect(screen.queryByRole('dialog', {name: 'ویرایش بزرگ چیدمان متن‌ها'})).not.toBeInTheDocument());

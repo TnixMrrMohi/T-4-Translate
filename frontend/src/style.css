@@ -32,7 +32,9 @@
 .preview-card figcaption{color:#a8b9bb;font-size:13px;margin-top:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .preview-card figcaption a{color:#00ffcc}
 
-.modal-backdrop{position:fixed;inset:0;z-index:100;background:#000000e6;display:flex;flex-direction:column;padding:12px}
+/* لایهٔ مودال همیشه روی <body> پورتال می‌شود؛ z-index بالا و بستر مستقل تا هیچ
+   عنصری از کارت‌های مرحله روی تصویر نیفتد. */
+.modal-backdrop{position:fixed;inset:0;z-index:1000;isolation:isolate;background:#000000e6;display:flex;flex-direction:column;padding:12px}
 .modal-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between;color:#eef9f4;padding:4px 4px 10px}
 .modal-bar .grow{flex:1;min-width:180px;font-size:14px}
 .modal-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -52,7 +54,7 @@
 .modal-stage.fit .modal-image{height:100%;align-items:center;overflow:hidden}
 
 /* --- دیالوگ کاستوم (جای confirm/alert مرورگر) --- */
-.dialog-backdrop{position:fixed;inset:0;z-index:200;background:#000000cc;display:flex;align-items:center;justify-content:center;padding:20px}
+.dialog-backdrop{position:fixed;inset:0;z-index:1200;background:#000000cc;display:flex;align-items:center;justify-content:center;padding:20px}
 .dialog{width:100%;max-width:440px;background:#0b171d;border:1px solid #00ffcc55;border-radius:14px;padding:20px;box-shadow:0 20px 60px #000000b3;color:#eef9f4;text-align:right;direction:rtl}
 .dialog.is-danger{border-color:#ff6b6b88}
 .dialog h3{margin:0 0 10px;font-size:17px;color:#eef9f4}
