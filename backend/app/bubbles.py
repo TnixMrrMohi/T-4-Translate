@@ -275,22 +275,40 @@ def _fill_holes(blob):
     return ((blob == 1) | (holes == 1)).astype(np.uint8)
 
 
-def _grow_from(seed, bright, page_height: int, page_width: int, limit: int):
-    """ناحیهٔ روشنِ پیرامون یک نقطه را در پنجره‌ای روبه‌بزرگ‌شدن پر می‌کند.
+def _crop_blob(blob, origin: tuple[int, int]):
+    """ماسک را به کادر خودش می‌برد تا مقایسهٔ هم‌پوشانی سبک بماند."""
+    import numpy as np
 
-    خروجی: (ماسک ناحیه، مبدأ پنجره، محصور بودن). اگر ناحیه به لبهٔ پنجره بچسبد،
-    پنجره بزرگ‌تر می‌شود؛ اگر تا سقف هم محصور نشد، یعنی به پس‌زمینه راه دارد.
+    rows = np.flatnonzero(blob.any(axis=1))
+    columns = np.flatnonzero(blob.any(axis=0))
+    if not len(rows) or not len(columns):
+        return None, origin
+    top, bottom = int(rows[0]), int(rows[-1]) + 1
+    left, right = int(columns[0]), int(columns[-1]) + 1
+    return blob[top:bottom, left:right], (origin[0] + left, origin[1] + top)
+
+
+def _grow_from(seed, bright, page_height: int, page_width: int):
+    """ناحیهٔ روشنِ پیرامون یک نقطه را پر می‌کند و می‌گوید آیا محصور است.
+
+    پنجرهٔ جست‌وجو **نامتقارن** بزرگ می‌شود: فقط سمتی که ناحیه به آن چسبیده تا لبهٔ
+    صفحه باز می‌شود. پنجرهٔ متقارنِ قبلی وقتی متن در سمت راست بالنِ پهن بود، لبهٔ چپ
+    ناحیه را می‌برید و آن را تا آخر «محصور نشده» می‌دید؛ نتیجه این بود که خطوط یک
+    بالن «بیرون بالن» شمرده می‌شدند و ترجمه‌شان روی لبهٔ بالن می‌افتاد.
+
+    محصور بودن فقط با چسبیدن به لبهٔ *صفحه* سنجیده می‌شود، نه لبهٔ پنجره: ناحیه‌ای
+    که به پس‌زمینه راه دارد به لبهٔ صفحه می‌رسد، ولی ناحیهٔ محصور هرگز.
     """
     import cv2
     import numpy as np
 
     seed_x, seed_y = seed
-    size = 48
+    left = right = up = down = 48
     while True:
-        x0 = max(0, seed_x - size)
-        y0 = max(0, seed_y - size)
-        x1 = min(page_width, seed_x + size + 1)
-        y1 = min(page_height, seed_y + size + 1)
+        x0 = max(0, seed_x - left)
+        x1 = min(page_width, seed_x + right + 1)
+        y0 = max(0, seed_y - up)
+        y1 = min(page_height, seed_y + down + 1)
         window = bright[y0:y1, x0:x1]
         if window[seed_y - y0, seed_x - x0] == 0:
             return None, (x0, y0), False
@@ -298,13 +316,23 @@ def _grow_from(seed, bright, page_height: int, page_width: int, limit: int):
         cv2.floodFill(window.copy(), mask, (seed_x - x0, seed_y - y0), 1,
                       flags=4 | (1 << 8) | cv2.FLOODFILL_MASK_ONLY)
         blob = mask[1:-1, 1:-1]
-        touches = bool(blob[0, :].any() or blob[-1, :].any() or blob[:, 0].any() or blob[:, -1].any())
-        grown_to_page = (x1 - x0) >= page_width or (y1 - y0) >= page_height
-        if not touches:
-            return _fill_holes(blob), (x0, y0), True
-        if grown_to_page or size >= limit:
-            return _fill_holes(blob), (x0, y0), False
-        size = min(limit, size * 2)
+        touch_left = bool(blob[:, 0].any())
+        touch_right = bool(blob[:, -1].any())
+        touch_up = bool(blob[0, :].any())
+        touch_down = bool(blob[-1, :].any())
+        reaches_page = ((touch_left and x0 == 0) or (touch_right and x1 == page_width)
+                        or (touch_up and y0 == 0) or (touch_down and y1 == page_height))
+        if reaches_page or not (touch_left or touch_right or touch_up or touch_down):
+            cropped, origin = _crop_blob(_fill_holes(blob), (x0, y0))
+            return cropped, origin, not reaches_page
+        if touch_left:
+            left = seed_x
+        if touch_right:
+            right = page_width - seed_x
+        if touch_up:
+            up = seed_y
+        if touch_down:
+            down = page_height - seed_y
 
 
 def _line_bbox(quad, width: int, height: int):
@@ -320,7 +348,15 @@ def _line_bbox(quad, width: int, height: int):
 
 
 def _seed_point(bright, bbox, padding: int = 8):
-    """نزدیک‌ترین پیکسل روشن به مرکز کادر متن، در حلقهٔ اطراف آن."""
+    """پیکسل روشنی در فضای خالیِ کنار متن، نه یک لکهٔ ریزِ تصادفی.
+
+    قبلاً نزدیک‌ترین پیکسل روشن به مرکز کادر انتخاب می‌شد؛ اگر مرکز روی تیرگیِ حرف
+    می‌افتاد، آن پیکسل ممکن بود یک نقطهٔ نوری چندپیکسلی داخل حرف باشد و رشد ناحیه
+    همان لکهٔ ۱۶ پیکسلی شود؛ آن‌گاه خط «بیرون بالن» شمرده می‌شد. اینجا با تبدیل فاصله
+    پیکسلی انتخاب می‌شود که در دلِ یک ناحیهٔ روشنِ به‌قدر کافی بزرگ است و در عین حال
+    به مرکز متن نزدیک است.
+    """
+    import cv2
     import numpy as np
 
     height, width = bright.shape[:2]
@@ -329,7 +365,13 @@ def _seed_point(bright, bbox, padding: int = 8):
     x1 = min(width, bbox[2] + padding + 1)
     y1 = min(height, bbox[3] + padding + 1)
     window = bright[y0:y1, x0:x1]
-    ys, xs = np.nonzero(window)
+    if not window.any():
+        return None
+    distance = cv2.distanceTransform(window, cv2.DIST_L2, 5)
+    far = float(distance.max())
+    if far <= 0:
+        return None
+    ys, xs = np.nonzero(distance >= max(1.5, far * 0.6))
     if not len(xs):
         return None
     center_x = (bbox[2] - bbox[0]) / 2
@@ -387,13 +429,17 @@ def _has_companions(gray, bright, bubble: dict, height: int, width: int, forbidd
     return companions >= 2
 
 
-def _split_bubbles(mask, line_boxes: dict):
+def _split_bubbles(mask, line_boxes: dict, origin: tuple[int, int] = (0, 0)):
     """بالن‌های چسبیده را از هم جدا می‌کند.
 
     اگر دو بالن هم را لمس کنند، ناحیهٔ روشن یکپارچه می‌شود و متن هر دو در یک بلوک
     می‌افتد. اینجا از تبدیل فاصله استفاده می‌شود: هر لوب یک قلهٔ فاصله دارد، پس با
     بریدن قله‌ها و رشد دادنشان، ناحیه به لوب‌های جدا شکسته می‌شود. فقط وقتی جدا
     می‌کنیم که دست‌کم دو لوب هرکدام حداقل یک خط OCR داشته باشند؛ وگرنه یک بالن است.
+
+    `mask` محلی است؛ `line_boxes` مختصات صفحه است و با `origin` به محلی تبدیل می‌شود.
+    (بدون این تبدیل، کادر هر خط در جای غلطی از ماسک خوانده می‌شد و هیچ لوبی خط
+    نمی‌گرفت؛ نتیجه: دو بالنِ چسبیده هرگز جدا نمی‌شدند.)
     """
     import cv2
     import numpy as np
@@ -439,7 +485,11 @@ def _split_bubbles(mask, line_boxes: dict):
         part_numbers = []
         for number in numbers:
             top, bottom, left, right = line_boxes[number]
-            window = part[int(max(0, top)):int(bottom) + 1, int(max(0, left)):int(right) + 1]
+            local_top = int(max(0, top - origin[1]))
+            local_left = int(max(0, left - origin[0]))
+            local_bottom = int(min(part.shape[0], bottom - origin[1] + 1))
+            local_right = int(min(part.shape[1], right - origin[0] + 1))
+            window = part[local_top:local_bottom, local_left:local_right]
             if window.size and window.sum() >= 0.3 * window.size:
                 part_numbers.append(number)
         if not part_numbers:
@@ -484,7 +534,6 @@ def analyze(path: Path, lines: list) -> dict:
     height, width = gray.shape[:2]
     total = float(height * width)
     bright = (gray >= BRIGHT_THRESHOLD).astype(np.uint8)
-    limit = int(min(height, width) * 0.6)
 
     found = []          # (شمارهٔ خط، ماسک، مبدأ پنجره)
     outside_lines = []
@@ -498,7 +547,7 @@ def analyze(path: Path, lines: list) -> dict:
         if seed is None:
             outside_lines.append(number)
             continue
-        blob, origin, enclosed = _grow_from(seed, bright, height, width, limit)
+        blob, origin, enclosed = _grow_from(seed, bright, height, width)
         area = int(blob.sum()) if blob is not None else 0
         if not enclosed or area < total * MIN_AREA_RATIO or area > total * 0.35:
             outside_lines.append(number)
@@ -553,7 +602,7 @@ def analyze(path: Path, lines: list) -> dict:
                   origin[0] - x0:origin[0] - x0 + mask.shape[1]] |= mask
         line_boxes = {found[member]["line"]: _line_box(lines[found[member]["line"] - 1])
                       for member in members}
-        for part_mask, part_lines in _split_bubbles(union, line_boxes):
+        for part_mask, part_lines in _split_bubbles(union, line_boxes, (x0, y0)):
             try:
                 features = _contour_features(part_mask, total)
             except BubbleError:

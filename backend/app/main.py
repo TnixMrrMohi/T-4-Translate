@@ -261,7 +261,7 @@ class TranslationInput(BaseModel):
     sourceRevision: str = Field(min_length=64, max_length=64)
 
 
-BUBBLE_VERSION = 2
+BUBBLE_VERSION = 3  # با هر تغییر در هندسهٔ تشخیص/گروه‌بندی یک پله بالا می‌رود تا کش کهنه شود
 
 
 def bubbles_for(job_id: str, lines: list) -> dict:

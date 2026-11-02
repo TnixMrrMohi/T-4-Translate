@@ -212,3 +212,42 @@ def test_block_bbox_uses_bubble_geometry_only_when_it_contains_the_text():
     left, top, right, bottom = block["bbox"]
     assert right - left < 200 and bottom - top < 200
     assert left <= 150 and top <= 200 and right >= 250 and bottom >= 240
+
+
+def test_split_uses_page_origin_of_the_mask():
+    """رگرسیون: کادر خطوط صفحه‌ای است ولی ماسک محلی؛ بدون تبدیل، هیچ بالنِ چسبیده جدا نمی‌شد."""
+    import cv2
+    import numpy as np
+
+    mask = np.zeros((200, 260), np.uint8)
+    cv2.ellipse(mask, (80, 90), (70, 70), 0, 0, 360, 1, -1)
+    cv2.ellipse(mask, (180, 130), (65, 60), 0, 0, 360, 1, -1)
+    boxes = {1: (360, 380, 150, 210), 2: (420, 440, 250, 310)}  # (بالا، پایین، چپ، راست) صفحه
+    parts = bubbles._split_bubbles(mask, boxes, (100, 300))
+    assert len(parts) == 2
+    assert sorted(part_lines for _, part_lines in parts) == [[1], [2]]
+
+
+def test_growth_reaches_far_edge_of_a_wide_bubble():
+    """رگرسیون: پنجرهٔ متقارن، لبهٔ دورِ بالنِ پهن را می‌برید و خط را «بیرون بالن» می‌کرد."""
+    import cv2
+    import numpy as np
+
+    bright = np.zeros((300, 900), np.uint8)
+    cv2.ellipse(bright, (450, 150), (390, 130), 0, 0, 360, 1, -1)
+    blob, origin, enclosed = bubbles._grow_from((820, 150), bright, 300, 900)
+    assert enclosed
+    assert blob is not None
+    assert origin[0] <= 61 and blob.shape[1] >= 770
+
+
+def test_seed_point_ignores_tiny_bright_specks():
+    """رگرسیون: پیکسل روشنِ ریز داخل حرف، رشد ۱۶ پیکسلی می‌داد و خط بیرون بالن شمرده می‌شد."""
+    import numpy as np
+
+    bright = np.ones((120, 120), np.uint8)
+    bright[40:80, 40:80] = 0      # حرف تیره
+    bright[58:61, 58:61] = 1      # لکهٔ روشن ۳×۳ داخل حرف
+    seed = bubbles._seed_point(bright, [30, 30, 90, 90])
+    blob, _, _ = bubbles._grow_from(seed, bright, 120, 120)
+    assert blob is not None and int(blob.sum()) > 1000
