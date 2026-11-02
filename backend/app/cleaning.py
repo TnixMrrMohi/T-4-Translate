@@ -237,7 +237,8 @@ def _push_pull_fill(cv2, np, window, mask):
     return value
 
 
-def _context_fill(cv2, np, result, mask, pad: int, grain=None, seed: int = 0) -> bool:
+def _context_fill(cv2, np, result, mask, pad: int, grain=None, seed: int = 0,
+                  collector=None) -> bool:
     """جای متن را با ادامهٔ واقعیِ پس‌زمینه پر می‌کند؛ هرگز رنگِ تخت نمی‌گذارد.
 
     روی صفحهٔ سفید و بالنِ یکدست، پاک‌سازیِ حرف‌به‌حرف کارِ بهتری می‌کند؛ ولی وقتی
@@ -263,6 +264,10 @@ def _context_fill(cv2, np, result, mask, pad: int, grain=None, seed: int = 0) ->
         rng = np.random.default_rng(abs(int(seed)) % (2 ** 32))
         noise = rng.normal(0.0, 1.0, size=(filled.shape[0], filled.shape[1], 1))
         filled = filled + noise * np.asarray(scale, dtype=np.float32)[None, None, :]
+    if collector is not None:
+        # ماسک‌های سخت نگه داشته می‌شوند تا در پایان، اگر مدل هوشمند نصب بود،
+        # همین نواحی با LaMa بازسازی شوند (نتیجهٔ نرمِ فعلی جای خودش را می‌دهد).
+        collector.append(mask.copy())
     filled = np.clip(filled, 0.0, 255.0)
     # لبهٔ نرم: داخلِ ماسک کامل، دورِ آن با شیبِ کوتاه؛ مرزِ وصله دیده نمی‌شود.
     alpha = cv2.GaussianBlur(local.astype(np.float32), (0, 0), CONTEXT_FEATHER)
@@ -300,7 +305,7 @@ def _touches_frame(box, left, top, span_x, span_y, size) -> bool:
 
 
 def _fill_ink(cv2, np, image, result, box, background, mask_total,
-              force: bool = False, quad_mask=None, grain=None) -> bool:
+              force: bool = False, quad_mask=None, grain=None, collector=None) -> bool:
     """جوهرِ داخل کادر را تکه‌به‌تکه با رنگ پس‌زمینهٔ دورِ همان تکه پر می‌کند.
 
     `force` برای «پاک‌سازی مجدد» یک ناحیه است: تکه‌هایی که به لبهٔ کادر می‌رسند
@@ -373,7 +378,7 @@ def _fill_ink(cv2, np, image, result, box, background, mask_total,
             changed = np.zeros(result.shape[:2], bool)
             changed[wy0:wy1, wx0:wx1] = target
             seed = (wx0 * 73856093) ^ (wy0 * 19349663) ^ 0x27D4EB2F
-            if changed.any() and _context_fill(cv2, np, result, changed, CONTEXT_PAD, grain, seed):
+            if changed.any() and _context_fill(cv2, np, result, changed, CONTEXT_PAD, grain, seed, collector):
                 mask_total[changed] = 255
                 filled_any = True
             continue
@@ -404,7 +409,7 @@ def _fill_ink(cv2, np, image, result, box, background, mask_total,
             if not changed.any():
                 continue
             seed = (wx0 * 73856093) ^ (wy0 * 19349663) ^ 0x2545F491
-            if _context_fill(cv2, np, result, changed, CONTEXT_PAD, grain, seed):
+            if _context_fill(cv2, np, result, changed, CONTEXT_PAD, grain, seed, collector):
                 mask_total[changed] = 255
                 filled_any = True
             continue
@@ -458,12 +463,12 @@ def _fill_ink(cv2, np, image, result, box, background, mask_total,
         filled_any = True
     if quad_mask is not None and not force:
         filled_any |= _patch_residual(cv2, np, result, box, background, quad_mask,
-                                      mask_total, grain)
+                                      mask_total, grain, collector)
     return filled_any
 
 
 def _patch_residual(cv2, np, result, box, background, quad_mask, mask_total,
-                    grain=None) -> bool:
+                    grain=None, collector=None) -> bool:
     """اگر بخشی از خودِ چهارضلعیِ متن هنوز جوهر دارد، همان‌جا وصله می‌شود.
 
     حالت‌های واقعی مثل حروفِ سفیدِ درشت روی تصویرِ شلوغ (نویسهٔ صوتی/تیتر) با
@@ -514,7 +519,7 @@ def _patch_residual(cv2, np, result, box, background, quad_mask, mask_total,
     mask = np.zeros(result.shape[:2], bool)
     mask[y0:y1, x0:x1] = target
     seed = (x0 * 73856093) ^ (y0 * 19349663) ^ 0x5F3759DF
-    if not _context_fill(cv2, np, result, mask, CONTEXT_PAD, grain, seed):
+    if not _context_fill(cv2, np, result, mask, CONTEXT_PAD, grain, seed, collector):
         return False
     mask_total[mask] = 255
     return True
@@ -546,7 +551,8 @@ def _nearest_fill(cv2, np, region, mask, blur: float):
 
 def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
                 only: set[int] | None = None, force: bool = False,
-                extra: set[int] | None = None) -> tuple[Image.Image, Image.Image]:
+                extra: set[int] | None = None,
+                high_quality: bool = True) -> tuple[Image.Image, Image.Image]:
     """متن نواحی ترجمه‌شده را پاک می‌کند و تصویر و ماسک را برمی‌گرداند.
 
     * ``base``: تصویری که نتیجه روی آن نوشته می‌شود؛ برای «پاک‌سازی مجدد» یک ناحیه،
@@ -613,12 +619,27 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
     result = image.copy()
     mask_total = np.zeros((height, width), dtype=np.uint8)
     page_grain = None if force else _page_grain(cv2, np, image)
+    hard_masks: list = []
     for box, quad_only in zip(boxes, quads):
         background = _background(np, cv2, image, box, quad_only)
         if background is None:
             continue
         _fill_ink(cv2, np, image, result, box, background, mask_total,
-                  force=force, quad_mask=quad_only != 0, grain=page_grain)
+                  force=force, quad_mask=quad_only != 0, grain=page_grain,
+                  collector=hard_masks)
+
+    # جایی که الگوریتم رنگی نمی‌توانست پس‌زمینه را بسازد (نقاشی/عکس)، اگر مدل
+    # هوشمند نصب باشد همان ناحیه با آن بازسازی می‌شود؛ وگرنه نتیجهٔ فعلی می‌ماند.
+    if high_quality and hard_masks:
+        try:
+            from . import inpaint
+
+            if inpaint.available():
+                refined = inpaint.refine(image, result, hard_masks)
+                if refined is not None:
+                    result = refined
+        except Exception:  # noqa: BLE001 - نبودِ مدل نباید پاک‌سازی را بشکند
+            pass
 
     # پایهٔ خروجی: تصویر اصلی، یا تصویر پاک‌شدهٔ فعلی برای پاک‌سازی مجدد یک ناحیه.
     if base is not None:

@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import warnings
 import json
@@ -20,16 +21,75 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
-from app import bubbles, cleaning, fonts, layout as layouts, ocr, preview, progress, rendering, updater
+from app import (bubbles, cleaning, fonts, hardware, inpaint, layout as layouts, models,
+                 ocr, preview, progress, rendering, updater)
 from app.translations import parse_translation
 
-app = FastAPI(title="T-4 Translate", version="0.1.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """مدل‌های سنگین یک‌بار و در پس‌زمینه آماده می‌شوند (نصب اولیه سبک می‌ماند)."""
+    try:
+        models.auto_prepare()
+    except Exception:  # noqa: BLE001 - آماده‌سازی مدل نباید اجرای برنامه را بشکند
+        pass
+    yield
+
+
+app = FastAPI(title="T-4 Translate", version="0.1.0", lifespan=_lifespan)
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_PIXELS = 80_000_000
 FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
 _ocr_lock = asyncio.Lock()
 # Allow a small multipart envelope in addition to the image limit.
 app.add_middleware(RequestBodyLimit, max_bytes=MAX_UPLOAD_BYTES + 1024 * 1024)
+
+
+@app.get("/api/system")
+def system_report() -> dict:
+    """سخت‌افزار و کتابخانه‌های شناسایی‌شده، برای پنل «تنظیمات و مدل‌ها»."""
+    report = hardware.report()
+    report["models"] = {
+        "dir": str(models.models_dir()),
+        "totalBytes": models.total_size(),
+        "installed": [row["id"] for row in models.status() if row["installed"]],
+        "inpaint": inpaint.available(),
+        "ocrModel": ocr._model_options() != {},
+    }
+    return report
+
+
+@app.get("/api/models")
+def models_state() -> dict:
+    """فهرست مدل‌ها، وضعیت نصب/دانلود و حجم اشغال‌شده."""
+    return {
+        "models": models.status(),
+        "progress": models.progress(),
+        "totalBytes": models.total_size(),
+        "dir": str(models.models_dir()),
+        "mirror": models.mirror(),
+    }
+
+
+@app.post("/api/models/{model_id}")
+def prepare_model(model_id: str) -> dict:
+    """دانلود یک مدل در پس‌زمینه؛ اگر از قبل نصب باشد کاری نمی‌کند."""
+    try:
+        models.entry(model_id)
+    except models.ModelError as exc:
+        raise HTTPException(404, str(exc)) from None
+    result = models.prepare_in_background(model_id)
+    result["status"] = models.status()
+    return result
+
+
+@app.delete("/api/models/{model_id}")
+def delete_model(model_id: str) -> dict:
+    try:
+        result = models.remove(model_id)
+    except models.ModelError as exc:
+        raise HTTPException(404, str(exc)) from None
+    result["status"] = models.status()
+    return result
 
 
 @app.get("/healthz", response_class=PlainTextResponse)

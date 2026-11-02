@@ -77,6 +77,44 @@
 .app-header .brand{font-size:18px;letter-spacing:.1em;color:#fff;font-weight:800}
 .app-header .status{position:absolute;right:20px;font-size:13px;color:#eef9f4}
 .app-header .reset{position:absolute;left:20px;padding:6px 12px;font-size:12px;background:#1b2a2a;color:#9bf3cc;border:1px solid #00ffcc55}
+/* دکمه‌های گوشهٔ چپ هدر: ریست و «تنظیمات و مدل‌ها» کنار هم */
+.app-header .header-tools{position:absolute;left:20px;display:flex;gap:8px;align-items:center}
+.app-header .header-tools .reset{position:static;left:auto}
+.app-header .settings-open{padding:6px 12px;font-size:12px;background:#10202a;color:#9be9f3;border:1px solid #00c8ff55}
+@media(max-width:720px){
+  .app-header .header-tools{left:8px;gap:6px}
+  .app-header .header-tools button{padding:5px 8px;font-size:11px}
+}
+/* --- پنل سخت‌افزار و مدل‌ها (کنار ریست) --- */
+.system-dialog{max-width:560px;max-height:86vh;overflow:auto}
+.system-block{border-top:1px solid #ffffff1a;margin-top:14px;padding-top:12px}
+.system-block:first-of-type{border-top:0;margin-top:6px;padding-top:0}
+.system-block h4{margin:0 0 8px;font-size:14px;color:#00ffcc;font-weight:700}
+.system-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;margin:0;font-size:13px}
+.system-grid dt{color:#8fb0ac}
+.system-grid dd{margin:0;color:#eef9f4;overflow-wrap:anywhere}
+.system-note{font-size:12px;color:#8fb0ac;line-height:1.8;margin:8px 0 0;overflow-wrap:anywhere}
+.system-inuse{list-style:none;margin:0;padding:0;display:grid;gap:6px;font-size:13px}
+.system-inuse li{display:flex;justify-content:space-between;gap:10px;background:#0f1e24;border-radius:8px;padding:7px 10px}
+.system-inuse b{color:#eef9f4;font-weight:600}
+.system-inuse span{color:#9bf3cc}
+.system-error{margin:0 0 10px;padding:8px 10px;border-radius:8px;background:#3a1414;color:#ffb4b4;font-size:13px}
+.model-list{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.model-row{border:1px solid #ffffff1f;border-radius:10px;padding:10px}
+.model-row.is-installed{border-color:#00ffcc55;background:#0b1a19}
+.model-head{display:flex;justify-content:space-between;gap:10px;font-size:13px}
+.model-head b{color:#eef9f4}
+.model-head span{color:#8fb0ac;white-space:nowrap}
+.model-purpose{margin:4px 0 8px;font-size:12px;color:#a9c2be;line-height:1.7}
+.model-actions{display:flex;justify-content:flex-start;gap:8px}
+.model-actions button{padding:6px 12px;font-size:12px;border-radius:8px;cursor:pointer;opacity:1}
+.model-actions button.primary{background:#00ffcc;color:#050505}
+.model-actions button.ghost{background:transparent;color:#ffb4b4;border:1px solid #ff6b6b66}
+.model-actions button:disabled{opacity:.5;cursor:wait}
+.model-status{font-size:12px;color:#9bf3cc}
+.model-progress{position:relative;height:18px;border-radius:9px;background:#0a1418;overflow:hidden;margin:0 0 8px}
+.model-progress i{position:absolute;inset:0 auto 0 0;background:#00ffcc55;transition:width .3s}
+.model-progress span{position:relative;display:block;text-align:center;font-size:11px;line-height:18px;color:#eef9f4}
 /* --- چیدمان دو ستونی: کارت سمت چپ صفحه، مراحل و پیش‌نمایش سمت راست --- */
 /* در RTL اولین ستون سمت راست است؛ پس ستون کنار (مراحل + پیش‌نمایش) اول می‌آید و
    کارت مرحله با ستون دوم به لبهٔ چپ صفحه می‌چسبد. */

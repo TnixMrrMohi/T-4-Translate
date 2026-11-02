@@ -51,9 +51,33 @@ def _engine():
             f'جزئیات: {exc}'
         ) from exc
     try:
-        return RapidOCR()
+        return RapidOCR(**_model_options())
     except Exception as exc:
         raise OcrUnavailable(f'بارگذاری مدل OCR ناموفق بود: {exc}') from exc
+
+
+def _model_options() -> dict:
+    """مسیر مدل‌های دقیق‌تر، اگر یک‌بار دانلود شده باشند.
+
+    مدل‌های سنگین‌تر (PP-OCR server) در انبار مدل‌ها نگه‌داری می‌شوند؛ چون بیرون از
+    پوشهٔ نصب‌اند، با آپدیت برنامه دوباره دانلود نمی‌شوند. اگر نبودند، همان مدل
+    پیش‌فرضِ بستهٔ RapidOCR استفاده می‌شود.
+    """
+    try:
+        from . import models
+
+        if not models.is_installed('ocr-server'):
+            return {}
+        det = models.model_path('ocr-server', 'ch_PP-OCRv4_det_server_infer.onnx')
+        rec = models.model_path('ocr-server', 'ch_PP-OCRv4_rec_server_infer.onnx')
+    except Exception:  # noqa: BLE001
+        return {}
+    options = {}
+    if det is not None:
+        options['det_model_path'] = str(det)
+    if rec is not None:
+        options['rec_model_path'] = str(rec)
+    return options
 
 
 def engine_status() -> dict:
