@@ -16,7 +16,10 @@ from PIL import ImageFont
 from app.bubbles import BUBBLE_TYPES
 
 FONT_EXTENSIONS = {".ttf", ".otf", ".ttc"}
+ARCHIVE_EXTENSIONS = {".zip"}
 MAX_FONT_BYTES = 24 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
+MAX_ARCHIVE_FONTS = 300
 FALLBACK_FAMILY = "vazirmatn"
 
 
@@ -182,3 +185,45 @@ def remove(font_id: str) -> None:
             path.unlink()
             return
     raise FontError("این فونت نصب نشده است.")
+
+
+def is_archive(filename: str, data: bytes) -> bool:
+    """آیا ورودی یک آرشیو ZIP است؟ (پسوند یا امضای فایل)"""
+    if Path(filename or "").suffix.lower() in ARCHIVE_EXTENSIONS:
+        return True
+    return data[:4] == b"PK\x03\x04"
+
+
+def install_archive(data: bytes) -> dict:
+    """همهٔ فونت‌های داخل یک ZIP را نصب می‌کند.
+
+    مسیر فایل‌های داخل آرشیو نادیده گرفته می‌شود (همه در یک پوشه تخت می‌نشینند)،
+    پس آرشیو نمی‌تواند بیرون از پوشهٔ فونت چیزی بنویسد.
+    """
+    import io
+    import zipfile
+
+    if len(data) > MAX_ARCHIVE_BYTES:
+        raise FontError("حجم آرشیو بیش از ۲۰۰ مگابایت است.")
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise FontError("فایل آرشیو معتبر نیست.") from exc
+    entries = [item for item in archive.infolist()
+               if not item.is_dir() and Path(item.filename).suffix.lower() in FONT_EXTENSIONS]
+    if not entries:
+        raise FontError("داخل آرشیو هیچ فایل فونتی (ttf/otf/ttc) نبود.")
+    if len(entries) > MAX_ARCHIVE_FONTS:
+        raise FontError(f"تعداد فونت‌های آرشیو بیش از {MAX_ARCHIVE_FONTS} است.")
+    installed: list[dict] = []
+    failed: list[dict] = []
+    for item in entries:
+        name = Path(item.filename).name
+        try:
+            payload = archive.read(item)
+            installed.append(install(name, payload))
+        except FontError as exc:
+            failed.append({"file": name, "error": str(exc)})
+        except (OSError, RuntimeError, zipfile.BadZipFile):
+            failed.append({"file": name, "error": "خواندن فایل از آرشیو ناموفق بود."})
+    return {"fonts": installed, "failed": failed, "total": len(entries)}

@@ -716,10 +716,18 @@ async def upload_font(file: UploadFile = File(...)) -> dict:
     data = bytearray()
     while chunk := await file.read(1024 * 1024):
         data.extend(chunk)
-        if len(data) > fonts.MAX_FONT_BYTES:
-            raise HTTPException(413, "حجم فونت بیش از ۲۴ مگابایت است.")
+        if len(data) > fonts.MAX_ARCHIVE_BYTES:
+            raise HTTPException(413, "حجم فایل آپلودشده بیش از حد مجاز است.")
+    filename = file.filename or ""
+    raw = bytes(data)
     try:
-        record = await run_native_safely(fonts.install, file.filename or "", bytes(data))
+        if fonts.is_archive(filename, raw):
+            # آرشیو ZIP: همهٔ فونت‌های داخلش یکجا نصب می‌شوند.
+            result = await run_native_safely(fonts.install_archive, raw)
+            return {"fonts": [{key: value for key, value in font.items() if key != "path"}
+                              for font in result["fonts"]],
+                    "failed": result["failed"], "total": result["total"]}
+        record = await run_native_safely(fonts.install, filename, raw)
     except fonts.FontError as exc:
         raise HTTPException(400, str(exc)) from None
     except Exception:

@@ -661,7 +661,7 @@ export function App() {
     }
   }
 
-  /** نصب فونت‌های انتخاب‌شده و تازه‌سازی فهرست. */
+  /** نصب فونت‌های انتخاب‌شده (یا همهٔ فونت‌های یک ZIP) و تازه‌سازی فهرست. */
   async function uploadFonts(files: FileList | null) {
     if (!files || files.length === 0 || fontsBusy) return;
     setFontsBusy(true);
@@ -673,8 +673,19 @@ export function App() {
       try {
         const response = await fetch('/api/fonts', {method: 'POST', body});
         const data = await response.json();
-        if (response.ok) installed += 1;
-        else failed.push(`${file.name}: ${typeof data.detail === 'string' ? data.detail : 'ناموفق'}`);
+        if (!response.ok) {
+          failed.push(`${file.name}: ${typeof data.detail === 'string' ? data.detail : 'ناموفق'}`);
+          continue;
+        }
+        if (Array.isArray(data.fonts)) {
+          // آرشیو ZIP: چند فونت با هم نصب می‌شوند و ممکن است بعضی رد شوند.
+          installed += data.fonts.length;
+          for (const item of data.failed ?? []) {
+            failed.push(`${item.file}: ${item.error}`);
+          }
+        } else if (data.font) {
+          installed += 1;
+        }
       } catch {
         failed.push(`${file.name}: خطای شبکه`);
       }
@@ -1079,10 +1090,10 @@ export function App() {
                   <h3 className="wizard-subtitle">فونت هر نوع بالن</h3>
                   <div className="fonts-upload">
                     <label className={`ghost file-button${fontsBusy ? ' is-busy' : ''}`}>
-                      {fontsBusy ? 'در حال نصب…' : 'افزودن فونت (ttf / otf / ttc)'}
+                      {fontsBusy ? 'در حال نصب…' : 'افزودن فونت (ttf / otf / ttc یا ZIP)'}
                       <input
                         type="file"
-                        accept=".ttf,.otf,.ttc,font/ttf,font/otf,font/collection"
+                        accept=".ttf,.otf,.ttc,.zip,font/ttf,font/otf,font/collection,application/zip"
                         multiple
                         aria-label="افزودن فونت"
                         disabled={fontsBusy || busy}
@@ -1094,7 +1105,7 @@ export function App() {
                     </label>
                     <span className="fonts-note">
                       {fontsDoc
-                        ? `${fontsDoc.fonts.length} فونت موجود است؛ نام فایل مهم است، مثل Koodak-Bold.ttf یا Afsaneh.otf`
+                        ? `${fontsDoc.fonts.length} فونت موجود است؛ نام فایل مهم است (مثل Koodak-Bold.ttf یا Afsaneh.otf). یک ZIP از همهٔ فونت‌ها را هم می‌شود یک‌جا فرستاد.`
                         : 'فهرست فونت‌ها در حال بارگذاری…'}
                     </span>
                   </div>

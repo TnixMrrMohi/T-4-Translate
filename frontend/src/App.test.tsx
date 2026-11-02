@@ -516,6 +516,34 @@ describe('فونت هر نوع بالن در مرحلهٔ درج ترجمه', ()
     expect(screen.getByText(/۲ فونت موجود است|2 فونت موجود است/)).toBeInTheDocument();
   });
 
+  it('آپلود یک ZIP همهٔ فونت‌های داخلش را نصب می‌کند', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source,
+      translation: '[1] سلام',
+      fonts: fontsDoc,
+      onFontUpload: () => json({
+        fonts: [
+          {id: 'Afsaneh', name: 'Afsaneh', family: 'Afsaneh', style: '', file: 'Afsaneh.ttf', bundled: false},
+          {id: 'Koodak', name: 'Koodak Bold', family: 'Koodak', style: 'Bold', file: 'Koodak-Bold.ttf', bundled: false},
+        ],
+        failed: [{file: 'broken.ttf', error: 'فایل، فونت معتبری نیست.'}],
+        total: 3,
+      }, 201),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'});
+    await user.click(screen.getByRole('button', {name: 'ادامه (پاک‌سازی و درج ترجمه)'}));
+    await screen.findByRole('heading', {name: 'مرحله ۴: درج ترجمه روی تصویر'});
+
+    await user.upload(screen.getByLabelText('افزودن فونت'), new File(['PK'], 'Fonts.zip', {type: 'application/zip'}));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText(/broken\.ttf/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: 'باشه'}));
+  });
+
   it('نصب فونت خطاها را گزارش می‌کند و موفق‌ها را می‌شمارد', async () => {
     localStorage.setItem('t4-last-job', JOB_ID);
     const {calls} = mockApi({

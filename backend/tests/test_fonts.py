@@ -139,3 +139,64 @@ def test_font_upload_through_api_is_used_in_render(client, tmp_path, monkeypatch
     assert rendered.status_code == 200
     assert rendered.json()["drawn"] == 1
     assert client.get(f"/api/jobs/{job}/render").status_code == 200
+
+
+def _zip_with(files: dict[str, bytes]) -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+def test_install_archive_installs_fonts_and_reports_failures(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    payload = _zip_with({
+        "fonts/Afsaneh.ttf": VAZIR_BOLD.read_bytes(),
+        "fonts/nested/Koodak Bold.ttf": VAZIR.read_bytes(),
+        "readme.txt": b"not a font",
+        "fonts/broken.ttf": b"definitely not a font",
+    })
+    result = fonts.install_archive(payload)
+    assert result["total"] == 3
+    assert {font["id"] for font in result["fonts"]} == {"Afsaneh", "Koodak Bold"}
+    assert [item["file"] for item in result["failed"]] == ["broken.ttf"]
+    assert (tmp_path / "fonts" / "Afsaneh.ttf").is_file()
+
+
+def test_archive_paths_are_flattened(tmp_path, monkeypatch):
+    """مسیر داخل آرشیو نادیده گرفته می‌شود تا فایل بیرون پوشهٔ فونت نوشته نشود."""
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    payload = _zip_with({"../../evil/Homa.ttf": VAZIR.read_bytes()})
+    result = fonts.install_archive(payload)
+    assert result["fonts"][0]["file"] == "Homa.ttf"
+    assert (tmp_path / "fonts" / "Homa.ttf").is_file()
+    assert not (tmp_path.parent / "evil").exists()
+
+
+def test_archive_without_fonts_and_bad_archive(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    with pytest.raises(fonts.FontError):
+        fonts.install_archive(_zip_with({"a.txt": b"x"}))
+    with pytest.raises(fonts.FontError):
+        fonts.install_archive(b"not a zip at all")
+    assert fonts.is_archive("Fonts.zip", b"") is True
+    assert fonts.is_archive("x.rar", b"Rar!\x1a") is False
+
+
+def test_zip_upload_endpoint_installs_every_font(client, tmp_path):
+    payload = _zip_with({
+        "Afsaneh.ttf": VAZIR_BOLD.read_bytes(),
+        "Koodak.ttf": VAZIR.read_bytes(),
+        "notes.md": b"ignored",
+    })
+    response = client.post("/api/fonts", files={"file": ("Fonts.zip", payload, "application/zip")})
+    assert response.status_code in (200, 201), response.text
+    body = response.json()
+    assert body["total"] == 2
+    assert {font["id"] for font in body["fonts"]} == {"Afsaneh", "Koodak"}
+    listed = client.get("/api/fonts").json()
+    assert {"Afsaneh", "Koodak"} <= {font["id"] for font in listed["fonts"]}
