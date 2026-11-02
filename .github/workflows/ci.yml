@@ -164,8 +164,12 @@ jobs:
           $assets = @("T4Translate-$env:T4_TAG-windows-x64.zip", 'dist/update-manifest.json')
           $delta = "dist/update-$env:T4_TAG.zip"
           if (Test-Path $delta) { $assets += $delta }
+          # بیلدهای دستی (build-*) به‌صورت prerelease منتشر می‌شوند تا جای «آخرین
+          # ریلیز» را نگیرند و به کاربران عادی به‌عنوان آپدیت پیشنهاد نشوند.
+          $flags = @()
+          if ($env:T4_TAG -like 'build-*') { $flags += '--prerelease' }
           $notes = "بستهٔ خودکار ویندوز ۶۴بیتی. فایل ZIP را دانلود کنید، کامل از حالت فشرده خارج کنید و T4Translate.exe را اجرا کنید. تست دودِ بسته (سرور، رابط، مدل OCR، فونت‌ها و رندر فارسی) در همین اجرا موفق بوده است.`n`nبرنامه از همین ریلیز به‌روزرسانی خودکار می‌گیرد: update-manifest.json فهرست فایل‌ها و update-$env:T4_TAG.zip فقط فایل‌های تغییرکرده است."
-          gh release create $env:T4_TAG @assets `
+          gh release create $env:T4_TAG @assets @flags `
             --repo "${{ github.repository }}" `
             --title "T-4 Translate — بستهٔ ویندوز ($env:T4_TAG)" `
             --notes $notes

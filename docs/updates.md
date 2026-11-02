@@ -92,7 +92,9 @@ smoke test بسته، ساخت zip کامل، ساخت `update-manifest.json` و
 نسبت به ریلیز قبلی، و `gh release create` با هر سه فایل. اگر smoke test رد شود،
 ریلیزی منتشر نمی‌شود.
 
-`workflow_dispatch` هم یک ریلیز `build-<run_number>` می‌سازد (برای آزمون).
+`workflow_dispatch` هم یک ریلیز `build-<run_number>` می‌سازد (برای آزمون) و آن را
+`prerelease` علامت می‌زند؛ ریلیزهای prerelease در «آخرین ریلیز» نمی‌آیند، پس کاربران
+عادی فقط نسخه‌های تگ‌دار را آپدیت می‌بینند.
 
 ## آزمون دستی
 
