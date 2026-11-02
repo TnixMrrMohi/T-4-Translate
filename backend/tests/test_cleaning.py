@@ -64,3 +64,119 @@ def test_translated_quad_is_padded_but_untranslated_is_not(tmp_path):
     # کادر ترجمه‌نشده بزرگ نمی‌شود و متنش دست‌نخورده می‌ماند.
     assert not mask_pixels[70:85, :].any()
     assert np.array_equal(result[72:76, 20:120], arr[72:76, 20:120])
+
+
+def test_colored_background_is_filled_with_its_own_color(tmp_path):
+    """پاک‌سازی روی پس‌زمینهٔ رنگی نباید لکهٔ سفید بگذارد؛ دقیقاً هم‌رنگ همان ناحیه می‌شود."""
+    background = np.array([32, 118, 176], dtype=np.uint8)
+    arr = np.empty((90, 120, 3), dtype=np.uint8)
+    arr[:, :] = background
+    arr[35:55, 25:95] = 0                      # متن تیره روی پس‌زمینهٔ آبی
+    path = tmp_path / 'page.png'; Image.fromarray(arr).save(path)
+    lines = [{'quad': [[20, 30], [100, 30], [100, 60], [20, 60]]}]
+    clean, mask = clean_image(path, lines, {'1': 'ترجمه'})
+    result, m = np.array(clean), np.array(mask)
+
+    assert m[35:55, 25:95].all()                            # همهٔ متن پاک شده است
+    assert (result[35:55, 25:95] == background).all()        # دقیقاً هم‌رنگ پس‌زمینه
+    assert not (result[35:55, 25:95] > 240).any()           # هیچ سفیدی‌ای نمانده است
+    # بیرون از کادر دست‌نخورده است.
+    assert np.array_equal(result[0:10, :], arr[0:10, :])
+
+
+def test_white_background_has_no_whiteout_smudge(tmp_path):
+    """روی پس‌زمینهٔ سفید هم لبهٔ خاکستری حروف (حالت غلط‌گیر) نباید بماند."""
+    arr = np.full((80, 120, 3), 255, dtype=np.uint8)
+    arr[30:45, 25:95] = 0        # مغز حروف
+    arr[45:48, 25:95] = 128      # لبهٔ نرم/ضدپیکسل حروف
+    path = tmp_path / 'page.png'; Image.fromarray(arr).save(path)
+    lines = [{'quad': [[20, 25], [100, 25], [100, 50], [20, 50]]}]
+    clean, _ = clean_image(path, lines, {'1': 'ترجمه'})
+    result = np.array(clean)
+
+    assert (result[30:48, 25:95] == 255).all()   # نه مغز، نه لبهٔ خاکستری
+    assert np.array_equal(result[0:15, :], arr[0:15, :])
+
+
+def test_light_text_on_dark_background_is_cleaned(tmp_path):
+    """متن روشن روی پس‌زمینهٔ تیره هم باید پاک شود (فیلتر قبلی فقط پیکسل تیره را می‌دید)."""
+    background = np.array([22, 22, 26], dtype=np.uint8)
+    arr = np.empty((80, 120, 3), dtype=np.uint8)
+    arr[:, :] = background
+    arr[30:48, 25:95] = 240
+    path = tmp_path / 'page.png'; Image.fromarray(arr).save(path)
+    lines = [{'quad': [[20, 25], [100, 25], [100, 50], [20, 50]]}]
+    clean, mask = clean_image(path, lines, {'1': 'ترجمه'})
+    result, m = np.array(clean), np.array(mask)
+
+    assert m[30:48, 25:95].all()
+    assert (result[30:48, 25:95] == background).all()
+
+
+def test_gradient_background_stays_a_gradient(tmp_path):
+    """روی پس‌زمینهٔ گرادیانی، جای متن با درون‌یابی رنگی پر می‌شود نه با سفید."""
+    arr = np.zeros((100, 120, 3), dtype=np.uint8)
+    for y in range(100):
+        value = int(round(40 + y * 0.7))          # گرادیان عمودی ملایم
+        arr[y, :] = (value, value, min(255, value + 25))
+    for y in range(40, 58):
+        arr[y, 25:95] = 5                          # متن تیره روی گرادیان
+    path = tmp_path / 'page.png'; Image.fromarray(arr).save(path)
+    lines = [{'quad': [[20, 35], [100, 35], [100, 62], [20, 62]]}]
+    clean, mask = clean_image(path, lines, {'1': 'ترجمه'})
+    result, m = np.array(clean), np.array(mask)
+
+    filled = result[m != 0]
+    assert filled.size > 0
+    assert not (filled > 240).any()                # سفید نشده است
+    # رنگ هر سطرِ پرشده نزدیک گرادیان همان سطر است.
+    for y in range(40, 58):
+        row_mask = m[y] != 0
+        if not row_mask.any():
+            continue
+        expected = int(round(40 + y * 0.7))
+        assert abs(int(result[y][row_mask].mean()) - expected) <= 14
+
+
+def test_grain_of_a_white_page_is_kept_so_no_smudge_shows(tmp_path):
+    """روی صفحهٔ سفیدِ دانه‌دار، جای متن هم باید همان دانه را داشته باشد نه یک وصلهٔ تخت."""
+    rng = np.random.default_rng(11)
+    base = 244 + rng.normal(0, 4, size=(140, 180, 1))
+    arr = np.clip(np.repeat(base, 3, axis=2), 0, 255).astype(np.uint8)
+    arr[50:70, 30:150] = 25
+    path = tmp_path / 'page.png'; Image.fromarray(arr).save(path)
+    lines = [{'quad': [[25, 46], [155, 46], [155, 74], [25, 74]]}]
+    clean, mask = clean_image(path, lines, {'1': 'ترجمه'})
+    result, m = np.array(clean), np.array(mask)
+
+    assert m[50:70, 30:150].all()
+    reference = arr[100:130, 20:160].astype(np.float32)
+    filled = result[m != 0].astype(np.float32)
+    assert abs(filled.mean() - reference.mean()) < 3          # هم‌رنگ کاغذ
+    assert filled.std() > reference.std() * 0.35              # دانه/بافت از دست نرفته
+    assert filled.max() < 255                                 # لکهٔ سفیدِ کامل نمانده
+
+
+def test_bubble_outline_stays_intact(tmp_path):
+    """خط دور بالن نباید همراه متن پاک شود؛ فقط داخل حروف روشن/تیره شده پر می‌شود."""
+    from PIL import ImageDraw
+    background = np.array([26, 62, 112], dtype=np.uint8)
+    canvas = np.empty((180, 260, 3), dtype=np.uint8)
+    canvas[:, :] = background
+    page = Image.fromarray(canvas)
+    draw = ImageDraw.Draw(page)
+    draw.ellipse([30, 25, 230, 155], fill=(252, 252, 250), outline=(10, 200, 120), width=3)
+    draw.rectangle([75, 70, 165, 95], fill=(0, 0, 0))          # نقش «متن» داخل بالن
+    path = tmp_path / 'page.png'; page.save(path)
+    before = np.array(page)
+    lines = [{'quad': [[70, 65], [170, 65], [170, 100], [70, 100]]}]
+    clean, mask = clean_image(path, lines, {'1': 'ترجمه'})
+    result, m = np.array(clean), np.array(mask)
+
+    outline = (np.abs(before.astype(int) - np.array([10, 200, 120])).max(axis=2) < 40)
+    assert int(outline.sum()) > 150                            # خط دور وجود دارد
+    assert np.array_equal(result[outline], before[outline])     # و دست‌نخورده می‌ماند
+    filled = result[72:93, 77:163].astype(int)
+    bubble = np.array([252, 252, 250])
+    assert np.abs(filled - bubble).max() <= 1                   # جای متن شده رنگ خود بالن
+    assert not (filled == 255).all(axis=2).any()                # نه سفیدِ غلط‌گیر
