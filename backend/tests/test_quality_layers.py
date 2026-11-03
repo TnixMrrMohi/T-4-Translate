@@ -166,3 +166,52 @@ def test_inpaint_binds_second_input_as_mask():
     assert set(session.seen) == {"image", "mask_image"}
     # ماسکِ صفر و یک (نه ۰..۲۵۵) به مدل داده می‌شود.
     assert float(session.seen["mask_image"].max()) == 1.0
+
+
+def test_ocr_model_options_point_to_installed_server_model(tmp_path, monkeypatch):
+    """وقتی مدل دقیق نصب است، مسیر هر سه فایل (det/rec/فهرست نویسه‌ها) داده می‌شود."""
+    import json
+
+    monkeypatch.setenv("T4_MODELS_DIR", str(tmp_path / "models"))
+    root = tmp_path / "models" / "ocr-server" / "1"
+    root.mkdir(parents=True)
+    names = ["ch_PP-OCRv4_det_server_infer.onnx", "ch_PP-OCRv4_rec_server_infer.onnx", "ch_dict.txt"]
+    for name in names:
+        (root / name).write_bytes(b"x")
+    (tmp_path / "models" / "ocr-server" / "installed.json").write_text(json.dumps({
+        "revision": "1",
+        "files": {name: {"size": 1, "sha256": "0" * 64} for name in names},
+    }), encoding="utf-8")
+
+    options = ocr._model_options()
+    assert set(options) == {"det_model_path", "rec_model_path", "rec_keys_path"}
+    assert options["rec_keys_path"].endswith("ch_dict.txt")
+
+    # نصفه‌کاره (بدون فهرست نویسه‌ها) هم کار می‌کند ولی rec_keys_path ندارد.
+    (root / "ch_dict.txt").unlink()
+    trimmed = ocr._model_options()
+    assert "rec_keys_path" not in trimmed and len(trimmed) == 2
+
+
+def test_ocr_engine_uses_detailed_model_and_falls_back(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    calls: list[dict] = []
+
+    class FakeRapid:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs:
+                raise RuntimeError("مدل دقیق بارگذاری نشد")
+
+    module = types.ModuleType("rapidocr_onnxruntime")
+    module.RapidOCR = FakeRapid
+    monkeypatch.setitem(sys.modules, "rapidocr_onnxruntime", module)
+    monkeypatch.setattr(ocr, "_model_options", lambda: {"det_model_path": "d", "rec_model_path": "r"})
+    getattr(ocr._engine, "cache_clear", lambda: None)()
+    engine = ocr._engine()
+    assert isinstance(engine, FakeRapid)
+    # اول با مدل دقیق تلاش شد، بعد مدل پیش‌فرض ساخته شد.
+    assert calls == [{"det_model_path": "d", "rec_model_path": "r"}, {}]
+    getattr(ocr._engine, "cache_clear", lambda: None)()

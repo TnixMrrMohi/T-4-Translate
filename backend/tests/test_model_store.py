@@ -286,3 +286,16 @@ def test_all_sources_failing_reports_file_name(monkeypatch, tmp_path):
     with pytest.raises(models.ModelError) as error:
         models._download_with_fallback(item, tmp_path / "x.onnx", lambda done, total: None)
     assert "demo.onnx" in str(error.value)
+
+
+def test_optional_file_missing_keeps_model_installed(store, monkeypatch):
+    """نبودِ فایل کمکی (فهرست نویسه‌ها) مدل را از کار نمی‌اندازد."""
+    spec = dict(models.BY_ID["demo"])
+    spec["files"] = [dict(spec["files"][0]),
+                     {"name": "extra.txt", "path": "demo/extra.txt",
+                      "url": "https://example.invalid/extra.txt", "size": 12,
+                      "optional": True}]
+    monkeypatch.setattr(models, "BY_ID", {"demo": spec})
+    models.prepare("demo")
+    assert models.is_installed("demo") is True
+    assert models.model_path("demo", "extra.txt") is None

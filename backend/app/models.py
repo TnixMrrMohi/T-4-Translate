@@ -142,6 +142,9 @@ CATALOG: list[dict] = [
                      "resolve/main/ch_dict.txt"),
                 ],
                 "size": 32_873,
+                # فهرست نویسه‌ها «کمکی» است: اگر نبود، مدل هم فهرست خودش را دارد و
+                # نبودنش نباید مدل را «نصب‌نشده» یا دانلود را ناموفق نشان دهد.
+                "optional": True,
             },
         ],
     },
@@ -182,6 +185,8 @@ def installed_files(model_id: str) -> list[Path]:
     for item in spec["files"]:
         path = root / item["name"]
         if not path.is_file():
+            if item.get("optional"):
+                continue
             return []
         expected = (state.get("files") or {}).get(item["name"]) or {}
         if expected.get("size") and path.stat().st_size != int(expected["size"]):
@@ -400,7 +405,12 @@ def prepare(model_id: str, reporter: ProgressReporter | None = None) -> dict:
                     reporter(fraction, "download")
 
             if not _file_is_trusted(model_id, item, target):
-                _download_with_fallback(item, target, on_bytes)
+                try:
+                    _download_with_fallback(item, target, on_bytes)
+                except ModelError:
+                    if item.get("optional"):
+                        continue   # فایل کمکی؛ مدل بدون آن هم کار می‌کند
+                    raise
             size = target.stat().st_size
             record["files"][item["name"]] = {"size": size, "sha256": _sha256(target)}
             _set_progress(fraction=round(index / len(files) * 0.99, 3),
