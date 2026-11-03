@@ -158,17 +158,37 @@ def _read_json(path: Path) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+_JSON_WRITE_LOCK = threading.RLock()
+
+
 def _write_json(path: Path, payload: dict, private: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    # نام موقت یکتا: بررسی پس‌زمینه و ذخیرهٔ تنظیم‌ها ممکن است هم‌زمان بنویسند.
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-    try:
-        if private:
-            os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    tmp.replace(path)
+    # وضعیت بررسیِ پس‌زمینه و تنظیم‌های کاربر ممکن است هم‌زمان نوشته شوند.
+    # قفل، جایگزینی‌های هم‌زمان روی Windows را سریالی می‌کند.
+    with _JSON_WRITE_LOCK:
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+            try:
+                if private:
+                    os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            # Windows Defender/Indexing گاهی فایل مقصد را برای لحظه‌ای نگه می‌دارد.
+            # بازآزمایی کوتاه از تبدیل یک قفل گذرا به خطای ذخیرهٔ تنظیم‌ها جلوگیری می‌کند.
+            for attempt in range(5):
+                try:
+                    tmp.replace(path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.025 * (2 ** attempt))
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def settings() -> dict:
