@@ -97,12 +97,23 @@
 تصمیم: در هر لایه **بهترین گزینه** استفاده می‌شود؛ حجم مدل و زمان پردازش محدودیت نیست.
 تنها چیزی که سبک می‌ماند فایل دانلودی است: مدل‌های سنگین در اولین اجرا گرفته می‌شوند.
 
-| لایه | مدل/موتور | جای ذخیره | جایگزین در نبود مدل |
-|---|---|---|---|
-| پاک‌سازی | LaMa ONNX (۲۰۸ مگابایت) | `~/.t4-translate/models/lama/` | پاک‌سازی داخلی (fill/patch) |
-| تشخیص متن/حباب | ComicTextDetector ONNX | `…/models/comic-text-detector/` | تحلیل ناحیهٔ روشن در `bubbles.py` |
-| بازخوانی متن | PP-OCRv4 **server** det+rec | `…/models/ocr-server/` | مدل پیش‌فرض بستهٔ RapidOCR |
-| نمایش فارسی | RAQM/HarfBuzz اگر Pillow داشته باشد | — | `arabic-reshaper` + `python-bidi` |
+| لایه | مدل/موتور | حجم دقیق | جای ذخیره | جایگزین در نبود مدل |
+|---|---|---|---|---|
+| پاک‌سازی | LaMa fp32 ONNX | ۲۰۸٬۰۴۴٬۸۱۶ بایت | `~/.t4-translate/models/lama/1/` | پاک‌سازی داخلی (fill/patch) |
+| تشخیص متن/حباب | ComicTextDetector ONNX | ۹۴٬۶۶۹٬۷۵۶ بایت | `…/models/comic-text-detector/1/` | تحلیل ناحیهٔ روشن در `bubbles.py` |
+| بازخوانی متن | PP-OCRv4 **server** det+rec + `ch_dict.txt` | ۱۱۳٬۳۵۰٬۱۸۳ + ۹۰٬۴۹۹٬۴۳۷ + ۳۲٬۸۷۳ | `…/models/ocr-server/1/` | مدل پیش‌فرض بستهٔ RapidOCR |
+| نمایش فارسی | RAQM/HarfBuzz اگر Pillow داشته باشد | — | — | `arabic-reshaper` + `python-bidi` |
+
+منابع (همه روی Hugging Face، بدون نیاز به توکن):
+
+* `Carve/LaMa-ONNX` → `lama_fp32.onnx`
+* `mayocream/comic-text-detector-onnx` → `comic-text-detector.onnx`
+* `cycloneboy/ch_PP-OCRv4_det_server_infer` و `cycloneboy/ch_PP-OCRv4_rec_server_infer` → `model.onnx`
+  (+ `ch_dict.txt`؛ بدون این فهرست نویسه‌ها، متن خروجی بی‌معنا می‌شود)
+
+هر فایل علاوه بر آدرس اصلی، آینهٔ `hf-mirror.com` را هم در کاتالوگ دارد؛ اگر یکی ۴۰۴/قطعی
+داد، بعدی امتحان می‌شود و حجم نهایی با عدد کاتالوگ مقایسه می‌شود تا فایل ناقص یا صفحهٔ خطا
+پذیرفته نشود. شمارهٔ `revision` هر مدل با تغییر فایل‌ها بالا می‌رود.
 
 قاعده‌های انبار مدل:
 

@@ -101,3 +101,48 @@ describe('پنل سخت‌افزار و مدل‌ها', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });
+
+describe('پنل مدل‌ها · حالت‌های لبه', () => {
+  it('اگر دانلود دیگری در جریان باشد پیام روشن می‌دهد', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/system') return json(SYSTEM);
+      if (url === '/api/models') {
+        return json({models: [DETECTOR], progress: {id: null, fraction: 0, message: '', running: false, error: null},
+          totalBytes: 0, dir: '/data/models', mirror: ''});
+      }
+      if (url.endsWith('/comic-text-detector') && init?.method === 'POST') {
+        return json({started: false, reason: 'busy'});
+      }
+      return json({}, 404);
+    }));
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(await within(dialog).findByRole('button', {name: 'نصب'}));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/در حال دانلود است/);
+  });
+
+  it('درصد دانلود مدل جاری روی همان ردیف نشان داده می‌شود', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/system') return json(SYSTEM);
+      if (url === '/api/models') {
+        return json({
+          models: [{...DETECTOR, progress: {id: 'comic-text-detector', fraction: 0.42, running: true,
+                                            message: 'دانلود «comic-text-detector.onnx» — ۴۰ مگابایت', error: null}}],
+          progress: {id: 'comic-text-detector', fraction: 0.42, message: 'در حال دانلود', running: true, error: null},
+          totalBytes: 0, dir: '/data/models', mirror: '',
+        });
+      }
+      return json({}, 404);
+    }));
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    const dialog = await screen.findByRole('dialog');
+    const bar = await within(dialog).findByRole('progressbar');
+    expect(bar).toHaveAttribute('aria-valuenow', '42');
+  });
+});

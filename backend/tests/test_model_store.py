@@ -46,8 +46,14 @@ def test_catalog_entries_are_complete():
         assert str(spec["revision"])
         assert spec["files"], "هر مدل باید حداقل یک فایل داشته باشد"
         for item in spec["files"]:
-            assert item["name"].endswith((".onnx", ".pt", ".bin", ".zip"))
+            assert item["name"].endswith((".onnx", ".txt"))
             assert item["url"].startswith("https://")
+            assert int(item["size"]) > 0, "حجم دقیق لازم است تا فایل ناقص پذیرفته نشود"
+            for url in item.get("urls") or []:
+                assert url.startswith("https://")
+        # اندازه‌های اعلام‌شده باید واقعی باشند (وقتی اینترنت نیست، حداقل شکل را می‌سنجیم).
+        for item in spec["files"]:
+            assert int(item["size"]) >= 1024
     ids = [spec["id"] for spec in models.CATALOG]
     assert len(ids) == len(set(ids))
 
@@ -222,3 +228,61 @@ def test_rendering_shape_helpers_work():
         assert rendering.shape_text("سلام") != "سلام"
     else:
         assert rendering.shape_text("سلام") == "سلام"
+
+
+def test_download_falls_back_to_next_source(monkeypatch, tmp_path):
+    """آینهٔ خراب نباید کل مدل را از کار بیندازد؛ آدرس بعدی گرفته می‌شود."""
+    monkeypatch.setenv("T4_MODELS_DIR", str(tmp_path / "models"))
+    good = tmp_path / "good.onnx"
+    good.write_bytes(FAKE_BYTES)
+    item = {"name": "demo.onnx", "path": "demo/demo.onnx",
+            "url": "https://first.invalid/demo.onnx",
+            "urls": [check := str(good)],
+            "size": len(FAKE_BYTES)}
+    target = tmp_path / "models" / "demo" / "demo.onnx"
+    calls = []
+
+    def fake_download(url, path, on_bytes):
+        calls.append(url)
+        if url == "https://first.invalid/demo.onnx":
+            raise models.ModelError("شبکه در دسترس نیست")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(good.read_bytes())
+        on_bytes(len(FAKE_BYTES), len(FAKE_BYTES))
+
+    monkeypatch.setattr(models, "_download_file", fake_download)
+    models._download_with_fallback(item, target, lambda done, total: None)
+    assert calls == ["https://first.invalid/demo.onnx", check]
+    assert target.read_bytes() == FAKE_BYTES
+
+
+def test_wrong_size_from_mirror_is_rejected(monkeypatch, tmp_path):
+    """فایل ناقص (صفحهٔ خطا) پذیرفته نمی‌شود و آدرس بعدی امتحان می‌شود."""
+    item = {"name": "demo.onnx", "path": "demo/demo.onnx",
+            "url": "https://truncated.invalid/demo.onnx",
+            "urls": ["https://good.invalid/demo.onnx"],
+            "size": len(FAKE_BYTES)}
+    target = tmp_path / "demo.onnx"
+    seen = []
+
+    def fake_download(url, path, on_bytes):
+        seen.append(url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"<html>not a model</html>" if "truncated" in url else FAKE_BYTES)
+
+    monkeypatch.setattr(models, "_download_file", fake_download)
+    models._download_with_fallback(item, target, lambda done, total: None)
+    assert seen == ["https://truncated.invalid/demo.onnx", "https://good.invalid/demo.onnx"]
+    assert target.read_bytes() == FAKE_BYTES
+
+
+def test_all_sources_failing_reports_file_name(monkeypatch, tmp_path):
+    item = {"name": "demo.onnx", "url": "https://a.invalid/x", "urls": [], "size": 10}
+
+    def broken(url, path, on_bytes):
+        raise models.ModelError("۴۰۴")
+
+    monkeypatch.setattr(models, "_download_file", broken)
+    with pytest.raises(models.ModelError) as error:
+        models._download_with_fallback(item, tmp_path / "x.onnx", lambda done, total: None)
+    assert "demo.onnx" in str(error.value)

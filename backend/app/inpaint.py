@@ -16,7 +16,7 @@ PAD = 32                # حاشیهٔ نمونه‌برداری دور ماسک
 MIN_SIDE = 64
 
 _session_lock = threading.Lock()
-_session_cache: dict = {"session": None, "failed": False, "input": None, "output": None}
+_session_cache: dict = {"session": None, "failed": False, "inputs": [], "output": None}
 
 
 def model_id() -> str:
@@ -53,9 +53,12 @@ def _session():
             providers = [name for name in onnxruntime.get_available_providers()
                          if name != "CPUExecutionProvider"]
             session = onnxruntime.InferenceSession(str(path), providers=providers or None)
-            inputs = session.get_inputs()
+            inputs = [item.name for item in session.get_inputs()]
             outputs = session.get_outputs()
-            _session_cache.update(session=session, input=inputs[0].name,
+            if not inputs:
+                _session_cache["failed"] = True
+                return None
+            _session_cache.update(session=session, inputs=inputs,
                                   output=outputs[0].name, failed=False)
         except Exception:  # noqa: BLE001 - هر خطایی یعنی «مدل در دسترس نیست»
             _session_cache["failed"] = True
@@ -81,20 +84,26 @@ def _run(np, cv2, image, mask):
     pixels = image.astype(np.float32) / 255.0
     tensor = np.transpose(pixels, (2, 0, 1))[None, ...]
     mask_tensor = (mask > 0).astype(np.float32)[None, None, ...]
-    try:
-        raw = session.run([_session_cache["output"]], {
-            _session_cache["input"]: tensor,
-            "mask": mask_tensor,
-        })[0]
-    except Exception:  # noqa: BLE001
+    names = _session_cache["inputs"]
+    image_name = names[0]
+    # نام ورودی ماسک در صادرات‌های مختلف «mask» یا «mask_image» است؛ اگر مدل دو
+    # ورودی داشته باشد، همان ورودی دوم استفاده می‌شود.
+    mask_name = next((name for name in names[1:] if "mask" in name.lower()),
+                     names[1] if len(names) > 1 else None)
+    if mask_name is None:
+        return None
+    raw = None
+    for scale in (1.0, 255.0):
         try:
-            # بعضی صادرات LaMa ماسک را به‌صورت ۰..۲۵۵ می‌گیرند.
             raw = session.run([_session_cache["output"]], {
-                _session_cache["input"]: tensor,
-                "mask": mask_tensor * 255.0,
+                image_name: tensor,
+                mask_name: mask_tensor * scale,
             })[0]
+            break
         except Exception:  # noqa: BLE001
-            return None
+            raw = None
+    if raw is None:
+        return None
     out = np.asarray(raw, dtype=np.float32)
     if out.ndim == 4:
         out = out[0]

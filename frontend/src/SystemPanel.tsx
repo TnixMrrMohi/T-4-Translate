@@ -122,6 +122,9 @@ export default function SystemPanel() {
       const response = await fetch(path, {method});
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || 'درخواست ناموفق بود.');
+      if (body.started === false && body.reason === 'busy') {
+        throw new Error('یک مدل دیگر در حال دانلود است؛ بعد از تمام‌شدن آن دوباره بزنید.');
+      }
       if (Array.isArray(body.status)) {
         setStore(current => (current ? {...current, models: body.status as ModelRow[]} : current));
       }
@@ -226,6 +229,10 @@ export default function SystemPanel() {
                 مدل‌ها {store ? `· ${installedCount} از ${store.models.length} نصب‌شده` : ''}
                 {store && store.totalBytes > 0 ? ` · ${formatSize(store.totalBytes)} روی دیسک` : ''}
               </h4>
+              <p className="system-note">
+                این فایل‌ها یک‌بار دانلود می‌شوند و بیرون از پوشهٔ نصب می‌مانند؛ آپدیت برنامه
+                دوباره دانلودشان نمی‌کند. تا وقتی نصب نشده‌اند، هر مرحله با روش پیش‌فرض کار می‌کند.
+              </p>
               <ul className="model-list">
                 {store?.models.map(row => {
                   const percent = modelPercent(row);
