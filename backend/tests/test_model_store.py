@@ -1,5 +1,6 @@
 """تست‌های انبار مدل (دانلود یک‌باره، استفادهٔ دوباره، حذف) و گزارش سخت‌افزار."""
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -299,3 +300,84 @@ def test_optional_file_missing_keeps_model_installed(store, monkeypatch):
     models.prepare("demo")
     assert models.is_installed("demo") is True
     assert models.model_path("demo", "extra.txt") is None
+
+
+def test_status_shows_progress_of_the_model_being_downloaded(store, monkeypatch):
+    """نوار دانلود: پیشرفت باید روی ردیف همان مدل بیاید و بقیه خالی بمانند.
+
+    پیش‌تر `status()` کلیدِ نام مدل را در دیکشنری پیشرفت جست‌وجو می‌کرد (کلید واقعی
+    `id` است) و نتیجه همیشه «بدون پیشرفت» بود؛ نوار دانلود هرگز در رابط نمی‌آمد.
+    """
+    other = {"id": "second", "title": "مدل دوم", "purpose": "تست", "revision": "1",
+             "files": []}
+    monkeypatch.setattr(models, "CATALOG", [*models.CATALOG, other])
+    monkeypatch.setattr(models, "BY_ID", {item["id"]: item for item in models.CATALOG})
+    models._set_progress(id="demo", fraction=0.37, running=True,
+                         message="دانلود «demo.onnx» — ۲ مگابایت", error=None)
+    try:
+        rows = {row["id"]: row for row in models.status()}
+    finally:
+        models._set_progress(id=None, fraction=0.0, running=False, message="", error=None)
+    assert rows["demo"]["progress"]["fraction"] == 0.37
+    assert rows["demo"]["progress"]["running"] is True
+    assert "demo.onnx" in rows["demo"]["progress"]["message"]
+    assert rows["second"]["progress"] is None
+
+
+def test_prepare_in_background_reports_running_immediately(store):
+    """پاسخ سرور باید همان لحظه «در حال دانلود» باشد، نه بعد از بیدار شدن نخ."""
+    result = models.prepare_in_background("demo")
+    assert result["started"] is True
+    assert result["progress"]["running"] is True
+    assert result["progress"]["id"] == "demo"
+    assert result["progress"]["fraction"] == 0.0
+    # ردیف مدل هم بی‌درنگ پیشرفت دارد.
+    row = next(item for item in models.status() if item["id"] == "demo")
+    assert row["progress"] is not None and row["progress"]["running"] is True
+    for _ in range(200):
+        if models.is_installed("demo"):
+            break
+        time.sleep(0.05)
+    assert models.is_installed("demo") is True
+
+
+def test_second_install_while_one_is_running_is_refused(store, monkeypatch):
+    monkeypatch.setattr(models, "CATALOG", [*models.CATALOG])
+    monkeypatch.setattr(models, "BY_ID", {item["id"]: item for item in models.CATALOG})
+    blocker = threading.Event()
+    real_download = models._download_file
+
+    def slow(url, target, on_bytes):
+        blocker.wait(timeout=5)
+        return real_download(url, target, on_bytes)
+
+    monkeypatch.setattr(models, "_download_file", slow)
+    try:
+        assert models.prepare_in_background("demo")["started"] is True
+        second = models.prepare_in_background("demo")
+        assert second["started"] is False and second["reason"] == "busy"
+    finally:
+        blocker.set()
+    for _ in range(200):
+        if not models.progress()["running"]:
+            break
+        time.sleep(0.05)
+
+
+def test_failed_download_leaves_a_visible_error(store, monkeypatch):
+    def broken(url, path, on_bytes):
+        raise models.ModelError("شبکه در دسترس نیست")
+
+    monkeypatch.setattr(models, "_download_file", broken)
+    models.prepare_in_background("demo")
+    for _ in range(200):
+        if not models.progress()["running"]:
+            break
+        time.sleep(0.05)
+    state = models.progress()
+    assert state["running"] is False
+    assert "شبکه در دسترس نیست" in (state["error"] or "")
+    # ردیف مدل هم دیگر «در حال دانلود» نیست تا دکمهٔ نصب برگردد.
+    row = next(item for item in models.status() if item["id"] == "demo")
+    assert row["progress"] is None
+    assert row["installed"] is False

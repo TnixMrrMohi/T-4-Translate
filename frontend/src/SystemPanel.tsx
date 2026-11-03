@@ -75,6 +75,8 @@ export default function SystemPanel() {
   const [store, setStore] = useState<ModelsState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // مدلی که همین حالا «نصب» زده شده ولی سرور هنوز درصد نداده است.
+  const [starting, setStarting] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async () => {
@@ -97,13 +99,15 @@ export default function SystemPanel() {
     return undefined;
   }, [open, load]);
 
-  // تا وقتی دانلودی در جریان است، درصد و حجم را تازه نگه می‌داریم.
-  const running = Boolean(store?.progress?.running);
+  // تا وقتی دانلودی در جریان است، درصد و حجم را تازه نگه می‌داریم. تا وقتی هم که
+  // درخواستِ «نصب» در راه است، تازه‌سازی ادامه دارد تا نوار پیشرفت زودتر ظاهر شود.
+  const running = Boolean(store?.progress?.running) || starting !== null;
   useEffect(() => {
     if (!open || !running) return undefined;
-    const timer = window.setInterval(() => { void load(); }, 1500);
+    const timer = window.setInterval(() => { void load(); }, 1200);
     return () => window.clearInterval(timer);
   }, [open, running, load]);
+
 
   useEffect(() => {
     if (!open) return undefined;
@@ -118,11 +122,13 @@ export default function SystemPanel() {
   const call = async (method: 'POST' | 'DELETE', path: string, id: string) => {
     setBusyId(id);
     setError(null);
+    if (method === 'POST') setStarting(id);
     try {
       const response = await fetch(path, {method});
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || 'درخواست ناموفق بود.');
       if (body.started === false && body.reason === 'busy') {
+        setStarting(null);
         throw new Error('یک مدل دیگر در حال دانلود است؛ بعد از تمام‌شدن آن دوباره بزنید.');
       }
       if (Array.isArray(body.status)) {
@@ -130,13 +136,20 @@ export default function SystemPanel() {
       }
       await load();
     } catch (problem) {
+      setStarting(null);
       setError(problem instanceof Error ? problem.message : 'درخواست ناموفق بود.');
     } finally {
+      // از این لحظه وضعیت واقعیِ سرور (درصد دانلود) نمایش داده می‌شود؛ سرور پیش از
+      // روشن‌کردن نخِ دانلود، پیشرفت را ثبت می‌کند، پس نوار یک لحظه هم خالی نمی‌ماند.
+      setStarting(null);
       setBusyId(null);
     }
   };
 
   const installedCount = store ? store.models.filter(row => row.installed).length : 0;
+  // دانلود هم‌زمان دو مدل پشتیبانی نمی‌شود؛ دکمه‌های بقیه تا پایان غیرفعال می‌مانند
+  // تا به‌جای پیام خطا، از همان اول معلوم باشد چه اتفاقی می‌افتد.
+  const busyDownload = Boolean(store?.progress?.running) || starting !== null;
   const gpu = report?.gpu;
   const hasGpu = Boolean(gpu && gpu.vendor !== 'none' && gpu.name);
 
@@ -165,6 +178,11 @@ export default function SystemPanel() {
             <h3>سخت‌افزار و مدل‌ها</h3>
 
             {error && <p className="system-error" role="alert">{error}</p>}
+            {!error && store?.progress?.error && !store.progress.running && (
+              <p className="system-error" role="alert">
+                دانلود مدل ناموفق بود: {store.progress.error}
+              </p>
+            )}
 
             {!report && !error && <p className="dialog-message">در حال خواندن اطلاعات…</p>}
 
@@ -236,7 +254,10 @@ export default function SystemPanel() {
               <ul className="model-list">
                 {store?.models.map(row => {
                   const percent = modelPercent(row);
-                  const downloading = percent !== null && (row.progress?.running ?? false);
+                  // «downloading» یعنی یا سرور درصد می‌دهد، یا همین حالا نصب زده شده
+                  // و پاسخ هنوز نرسیده؛ در هر دو حالت نوار باید دیده شود.
+                  const downloading = (percent !== null && (row.progress?.running ?? false))
+                    || (starting === row.id && !row.installed);
                   return (
                     <li key={row.id} className={row.installed ? 'model-row is-installed' : 'model-row'}>
                       <div className="model-head">
@@ -246,10 +267,14 @@ export default function SystemPanel() {
                       <p className="model-purpose">{row.purpose}</p>
                       {downloading && (
                         <div className="model-progress" role="progressbar"
+                          aria-label={`پیشرفت دانلود ${row.title}`}
                           aria-valuemin={0} aria-valuemax={100}
                           aria-valuenow={Math.round((percent ?? 0) * 100)}>
                           <i style={{width: `${Math.round((percent ?? 0) * 100)}%`}} />
-                          <span>{PERCENT(percent ?? 0)} · {row.progress?.message || 'در حال دانلود'}</span>
+                          <span>
+                            {PERCENT(percent ?? 0)} ·{' '}
+                            {row.progress?.message || 'شروع دانلود…'}
+                          </span>
                         </div>
                       )}
                       <div className="model-actions">
@@ -261,7 +286,9 @@ export default function SystemPanel() {
                         ) : downloading ? (
                           <span className="model-status">{row.progress?.message || 'در حال دانلود…'}</span>
                         ) : (
-                          <button type="button" className="primary" disabled={busyId === row.id}
+                          <button type="button" className="primary"
+                            disabled={busyId === row.id || busyDownload}
+                            title={busyDownload ? 'یک مدل دیگر در حال دانلود است' : undefined}
                             onClick={() => void call('POST', `/api/models/${row.id}`, row.id)}>
                             نصب
                           </button>
