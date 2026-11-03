@@ -54,6 +54,23 @@ export type SystemReport = {
 
 const PERCENT = (fraction: number) => `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}٪`;
 
+/** پاسخ خطای API را نگه می‌داریم تا روی دستگاه خراب، علت واقعی قابل تشخیص باشد. */
+async function readApi<T>(path: string, label: string): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(path);
+  } catch (problem) {
+    const detail = problem instanceof Error ? problem.message : String(problem);
+    throw new Error(`${label}: اتصال به برنامه برقرار نشد${detail ? ` (${detail})` : ''}`);
+  }
+  const body = await response.json().catch(() => null) as {detail?: unknown} | null;
+  if (!response.ok) {
+    const detail = typeof body?.detail === 'string' ? body.detail : '';
+    throw new Error(`${label} (HTTP ${response.status})${detail ? `: ${detail}` : ''}`);
+  }
+  return body as T;
+}
+
 /** درصد نصب به شکل خوانا؛ نبود عدد یعنی نامعلوم. */
 export function modelPercent(row: ModelRow): number | null {
   const progress = row.progress;
@@ -80,17 +97,17 @@ export default function SystemPanel() {
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async () => {
-    try {
-      const [system, models] = await Promise.all([
-        fetch('/api/system').then(r => (r.ok ? r.json() : Promise.reject(new Error('سخت‌افزار خوانده نشد.')))),
-        fetch('/api/models').then(r => (r.ok ? r.json() : Promise.reject(new Error('فهرست مدل‌ها خوانده نشد.')))),
-      ]);
-      setReport(system as SystemReport);
-      setStore(models as ModelsState);
-      setError(null);
-    } catch (problem) {
-      setError(problem instanceof Error ? problem.message : 'خواندن تنظیمات ناموفق بود.');
-    }
+    // خرابی یکی از APIها نباید دادهٔ موفقِ دیگری را هم پنهان کند.
+    const [systemResult, modelsResult] = await Promise.allSettled([
+      readApi<SystemReport>('/api/system', 'خواندن سخت‌افزار ناموفق بود'),
+      readApi<ModelsState>('/api/models', 'خواندن فهرست مدل‌ها ناموفق بود'),
+    ]);
+    const errors: string[] = [];
+    if (systemResult.status === 'fulfilled') setReport(systemResult.value);
+    else errors.push(systemResult.reason instanceof Error ? systemResult.reason.message : 'خواندن سخت‌افزار ناموفق بود.');
+    if (modelsResult.status === 'fulfilled') setStore(modelsResult.value);
+    else errors.push(modelsResult.reason instanceof Error ? modelsResult.reason.message : 'خواندن فهرست مدل‌ها ناموفق بود.');
+    setError(errors.length ? errors.join(' · ') : null);
   }, []);
 
   useEffect(() => {

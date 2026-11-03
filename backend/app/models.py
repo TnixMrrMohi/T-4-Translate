@@ -44,11 +44,13 @@ def data_dir() -> Path:
 
 
 def models_dir() -> Path:
-    """ریشهٔ مدل‌ها؛ با `T4_MODELS_DIR` قابل جداسازی است (مثلاً روی درایو دیگر)."""
+    """مسیر ریشهٔ مدل‌ها (بدون ساخت پوشه هنگام خواندن وضعیت).
+
+    با `T4_MODELS_DIR` قابل جداسازی است. خواندن فهرست/سخت‌افزار نباید به قابل‌نوشتن
+    بودن دیسک وابسته باشد؛ پوشه فقط هنگام نصب مدل ساخته می‌شود.
+    """
     override = os.environ.get("T4_MODELS_DIR")
-    root = Path(override) if override else data_dir() / "models"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return Path(override) if override else data_dir() / "models"
 
 
 def mirror() -> str:
@@ -169,29 +171,37 @@ def _state_path(model_id: str) -> Path:
 
 def _read_state(model_id: str) -> dict:
     try:
-        return json.loads(_state_path(model_id).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        state = json.loads(_state_path(model_id).read_text(encoding="utf-8"))
+        return state if isinstance(state, dict) else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
 
 def installed_files(model_id: str) -> list[Path]:
-    """فایل‌های نصب‌شدهٔ یک مدل، اگر کامل و هم‌خوان با revision فعلی باشند."""
+    """فایل‌های نصب‌شدهٔ یک مدل، اگر کامل و هم‌خوان با revision فعلی باشند.
+
+    مسیر داده ممکن است روی دستگاه تازه وجود نداشته باشد یا موقتاً در دسترس نباشد؛
+    این حالت یعنی «مدلی نصب نیست»، نه خطای خواندنِ کل فهرست.
+    """
     spec = entry(model_id)
     state = _read_state(model_id)
     if str(state.get("revision")) != str(spec["revision"]):
         return []
     root = models_dir() / model_id / str(spec["revision"])
     found = []
-    for item in spec["files"]:
-        path = root / item["name"]
-        if not path.is_file():
-            if item.get("optional"):
-                continue
-            return []
-        expected = (state.get("files") or {}).get(item["name"]) or {}
-        if expected.get("size") and path.stat().st_size != int(expected["size"]):
-            return []
-        found.append(path)
+    try:
+        for item in spec["files"]:
+            path = root / item["name"]
+            if not path.is_file():
+                if item.get("optional"):
+                    continue
+                return []
+            expected = (state.get("files") or {}).get(item["name"]) or {}
+            if expected.get("size") and path.stat().st_size != int(expected["size"]):
+                return []
+            found.append(path)
+    except (OSError, TypeError, ValueError):
+        return []
     return found
 
 
@@ -229,7 +239,12 @@ def status() -> list[dict]:
     current = running if running.get("id") else None
     for spec in CATALOG:
         files = installed_files(spec["id"])
-        size = sum(path.stat().st_size for path in files) if files else 0
+        try:
+            size = sum(path.stat().st_size for path in files) if files else 0
+        except OSError:
+            # اگر دیسک در زمان خواندن جدا شد، این ردیف نصب‌نشده/حجم نامعلوم است؛
+            # یک فایل غیرقابل‌دسترسی نباید کل API مدل‌ها یا گزارش سخت‌افزار را ۵۰۰ کند.
+            files, size = [], 0
         rows.append({
             "id": spec["id"],
             "title": spec["title"],
@@ -390,13 +405,13 @@ def prepare(model_id: str, reporter: ProgressReporter | None = None) -> dict:
     files = spec["files"]
     total_expected = sum(int(item.get("size") or 0) for item in files)
     root = models_dir() / model_id / str(spec["revision"])
-    root.mkdir(parents=True, exist_ok=True)
     started = time.time()
     _set_progress(id=model_id, fraction=0.0, running=True, error=None, startedAt=started,
                   message=f"در حال آماده‌سازی «{spec['title']}»…")
     if reporter:
         reporter(0.0, "start")
     try:
+        root.mkdir(parents=True, exist_ok=True)
         record = {"revision": str(spec["revision"]), "files": {}, "installedAt": time.time()}
         for index, item in enumerate(files, 1):
             target = root / item["name"]
@@ -433,6 +448,12 @@ def prepare(model_id: str, reporter: ProgressReporter | None = None) -> dict:
     except ModelError as exc:
         _set_progress(running=False, error=str(exc), id=None)
         raise
+    except OSError as exc:
+        detail = getattr(exc, "strerror", None) or type(exc).__name__
+        message = (f"پوشهٔ ذخیرهٔ مدل قابل دسترسی یا نوشتن نیست: {models_dir()} "
+                   f"({detail}). مسیر و فضای آزاد دیسک را بررسی کنید.")
+        _set_progress(running=False, error=message, id=None)
+        raise ModelError(message) from exc
     except Exception as exc:  # noqa: BLE001
         _set_progress(running=False, error=f"آماده‌سازی مدل ناموفق بود ({type(exc).__name__}).",
                       id=None)
@@ -480,15 +501,20 @@ def total_size() -> int:
     """حجم فایل‌های مدل روی دیسک (بدون فایل‌های وضعیت و دانلودهای نیمه‌کاره)."""
     root = models_dir()
     total = 0
-    for path in root.rglob("*"):
-        if not path.is_file() or path.name in {STATE_FILE, AUTO_FILE}:
-            continue
-        if path.suffix == ".part":
-            continue
-        try:
-            total += path.stat().st_size
-        except OSError:
-            continue
+    try:
+        paths = root.rglob("*")
+        for path in paths:
+            if not path.is_file() or path.name in {STATE_FILE, AUTO_FILE}:
+                continue
+            if path.suffix == ".part":
+                continue
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        # دیسک ناموجود/غیرقابل‌خواندن نباید پنل تنظیمات را از کار بیندازد.
+        return 0
     return total
 
 
@@ -509,8 +535,11 @@ def _mark_auto(model_id: str, failed: bool) -> None:
     state[model_id] = {"failedAt": time.time() if failed else None,
                        "ok": not failed}
     try:
-        (models_dir() / AUTO_FILE).write_text(json.dumps(state), encoding="utf-8")
+        path = models_dir() / AUTO_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
     except OSError:
+        # وضعیت خودکارسازی کمکی است و نباید مانع اجرای برنامه شود.
         pass
 
 
