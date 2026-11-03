@@ -50,6 +50,7 @@ export type SystemReport = {
     inpaint: boolean;
     ocrModel: boolean;
   };
+  diagnosticsLog?: string | null;
 };
 
 const PERCENT = (fraction: number) => `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}٪`;
@@ -228,6 +229,12 @@ export default function SystemPanel() {
                   کتابخانه‌ها: پایتون {report.libraries.python || '—'} · Pillow {report.libraries.pillow || '—'} ·
                   OpenCV {report.libraries.opencv || '—'} · onnxruntime {report.libraries.onnxruntime || '—'}
                 </p>
+                {report.diagnosticsLog && (
+                  <p className="system-note">
+                    فایل گزارش عیب‌یابی (برای بررسی کندی یا خطا):{' '}
+                    <span dir="ltr" style={{unicodeBidi: 'plaintext'}}>{report.diagnosticsLog}</span>
+                  </p>
+                )}
               </section>
             )}
 

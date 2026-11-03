@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 import warnings
 import json
 import os
+import platform
 import shutil
+import time
 import uuid
 from functools import partial
 from pathlib import Path
@@ -21,18 +23,30 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
-from app import (bubbles, cleaning, fonts, hardware, inpaint, layout as layouts, models,
+from app import (bubbles, cleaning, diagnostics, fonts, hardware, inpaint, layout as layouts, models,
                  ocr, preview, progress, rendering, updater)
 from app.translations import parse_translation
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     """مدل‌های سنگین یک‌بار و در پس‌زمینه آماده می‌شوند (نصب اولیه سبک می‌ماند)."""
+    diagnostics.log_event(
+        "app.start",
+        dataDir=os.environ.get("T4_DATA_DIR") or str(Path.home() / ".t4-translate"),
+        modelsDir=str(models.models_dir()),
+        logFile=diagnostics.log_file(),
+    )
+    diagnostics.log_event(
+        "system.runtime", os=platform.platform(), machine=platform.machine(),
+        processor=platform.processor(), cores=os.cpu_count(), ramMb=hardware.total_ram_mb(),
+    )
     try:
-        models.auto_prepare()
-    except Exception:  # noqa: BLE001 - آماده‌سازی مدل نباید اجرای برنامه را بشکند
-        pass
+        result = models.auto_prepare()
+        diagnostics.log_event("models.auto_prepare", result=result)
+    except Exception:
+        diagnostics.log_exception("models.auto_prepare.failed")
     yield
+    diagnostics.log_event("app.stop")
 
 
 app = FastAPI(title="T-4 Translate", version="0.1.0", lifespan=_lifespan)
@@ -42,6 +56,34 @@ FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
 _ocr_lock = asyncio.Lock()
 # Allow a small multipart envelope in addition to the image limit.
 app.add_middleware(RequestBodyLimit, max_bytes=MAX_UPLOAD_BYTES + 1024 * 1024)
+
+
+@app.middleware("http")
+async def diagnostics_http(request, call_next):
+    """Log every local API request's timing/result, never its body or secret headers."""
+    request_id = uuid.uuid4().hex[:12]
+    started = time.perf_counter()
+    content_length = request.headers.get("content-length")
+    diagnostics.log_event(
+        "http.start", requestId=request_id, method=request.method, path=request.url.path,
+        contentLength=content_length, client=request.client.host if request.client else None,
+    )
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        diagnostics.log_exception(
+            "http.exception", requestId=request_id, method=request.method,
+            path=request.url.path, elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+            errorType=type(exc).__name__, error=str(exc),
+        )
+        raise
+    elapsed = round((time.perf_counter() - started) * 1000, 1)
+    response.headers["X-T4-Request-ID"] = request_id
+    diagnostics.log_event(
+        "http.finish", requestId=request_id, method=request.method, path=request.url.path,
+        status=response.status_code, elapsedMs=elapsed,
+    )
+    return response
 
 
 @app.get("/api/system")
@@ -55,6 +97,8 @@ def system_report() -> dict:
         "inpaint": inpaint.available(),
         "ocrModel": ocr._model_options() != {},
     }
+    report["diagnosticsLog"] = diagnostics.log_file()
+    diagnostics.log_event("system.report", report=report)
     return report
 
 
@@ -99,7 +143,10 @@ def health() -> str:
 
 async def _read_image(file: UploadFile, save: bool = False) -> dict:
     """Validate a single image and return dimensions; do not persist or decode it fully."""
+    started = time.perf_counter()
     size = 0
+    diagnostics.log_event("image.upload.start", filename=file.filename, contentType=file.content_type,
+                          save=save)
     try:
         with SpooledTemporaryFile(max_size=1024 * 1024) as temp:
             while chunk := await file.read(1024 * 1024):
@@ -138,7 +185,26 @@ async def _read_image(file: UploadFile, save: bool = False) -> dict:
                 except Exception:
                     shutil.rmtree(workspace, ignore_errors=True)
                     raise
+            diagnostics.log_event(
+                "image.upload.accepted", jobId=info.get("jobId"), filename=file.filename,
+                imageFormat=image_format, width=width, height=height, sizeBytes=size,
+                elapsedMs=round((time.perf_counter() - started) * 1000, 1), saved=save,
+            )
             return info
+    except HTTPException as exc:
+        diagnostics.log_event(
+            "image.upload.rejected", level=30, filename=file.filename, sizeBytes=size,
+            status=exc.status_code, detail=exc.detail,
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+        )
+        raise
+    except Exception as exc:
+        diagnostics.log_exception(
+            "image.upload.failed", filename=file.filename, sizeBytes=size,
+            errorType=type(exc).__name__, error=str(exc),
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+        )
+        raise
     finally:
         await file.close()
 
@@ -370,7 +436,13 @@ def update_settings_save(body: UpdateSettings) -> dict:
 @app.get("/api/ocr-status")
 def ocr_status() -> dict:
     """آیا موتور آزمایشی OCR نصب و قابل اجراست؟ (برای نمایش زودهنگام در رابط.)"""
-    return ocr.engine_status()
+    started = time.perf_counter()
+    result = ocr.engine_status()
+    diagnostics.log_event(
+        "ocr.status", ready=result.get("ready"), provider=result.get("provider"),
+        detail=result.get("detail"), elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+    )
+    return result
 
 
 @app.post("/api/jobs/{job_id}/ocr")
@@ -381,20 +453,57 @@ async def run_ocr(job_id: str) -> dict:
     workspace = root / job_id
     async with _ocr_lock:
         # پیشرفت زنده تا رابط کاربری نوار پیشرفت را پر کند.
-        progress.begin(job_id)
+        started = time.perf_counter()
+        source_path = workspace / "source.img"
         try:
-            lines = await run_native_safely(ocr.recognize, workspace / "source.img", progress.callback(job_id))
+            image_bytes = source_path.stat().st_size
+        except OSError:
+            image_bytes = None
+        diagnostics.log_event("ocr.job.start", jobId=job_id, imageBytes=image_bytes)
+        progress.begin(job_id)
+        report_progress = progress.callback(job_id)
+        last_log = {"stage": None, "percent": -1, "at": time.monotonic()}
+
+        def report_ocr_progress(fraction: float, stage: str | None = None) -> None:
+            report_progress(fraction, stage)
+            percent = int(max(0.0, min(1.0, fraction)) * 100)
+            now = time.monotonic()
+            if (stage != last_log["stage"] or percent >= last_log["percent"] + 5
+                    or now - last_log["at"] >= 10):
+                diagnostics.log_event(
+                    "ocr.job.progress", jobId=job_id, stage=stage, percent=percent,
+                    elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+                    sinceLastMs=round((now - last_log["at"]) * 1000, 1),
+                )
+                last_log.update(stage=stage, percent=percent, at=now)
+
+        try:
+            lines = await run_native_safely(ocr.recognize, source_path, report_ocr_progress)
         except ocr.OcrUnavailable as exc:
+            diagnostics.log_event(
+                "ocr.job.unavailable", level=30, jobId=job_id, detail=str(exc),
+                elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+            )
             progress.fail(job_id, str(exc))
             raise HTTPException(503, str(exc)) from None
-        except Exception:
+        except Exception as exc:
+            diagnostics.log_exception(
+                "ocr.job.failed", jobId=job_id, errorType=type(exc).__name__, error=str(exc),
+                elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+            )
             progress.fail(job_id, "پردازش OCR ناموفق بود.")
             raise HTTPException(500, "پردازش OCR ناموفق بود.") from None
         progress.finish(job_id)
         result = {"jobId": job_id, "provider": "rapidocr-experimental", "lines": lines, "revision": ocr_revision(lines)}
         tmp = workspace / "ocr.json.tmp"
+        save_started = time.perf_counter()
         tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, workspace / "ocr.json")
+        diagnostics.log_event(
+            "ocr.job.done", jobId=job_id, lineCount=len(lines),
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+            saveMs=round((time.perf_counter() - save_started) * 1000, 1),
+        )
         return result
 
 
@@ -525,19 +634,25 @@ def blocks_revision(lines: list, block_list: list, promo: str = "replace") -> st
 @app.get("/api/jobs/{job_id}/translation-source")
 def translation_source(job_id: str, promo: str = "replace") -> dict:
     """متن شماره‌گذاری‌شده؛ با تنظیم ``promo`` متن تبلیغاتی حذف یا با moonb.ir عوض می‌شود."""
+    started = time.perf_counter()
     action = _check_promo(promo)
     result = get_ocr(job_id)
     lines = result["lines"]
     if len(lines) > 9999:
         raise HTTPException(400, "تعداد خطوط برای ترجمهٔ شماره‌گذاری‌شده بیش از حد مجاز است.")
     block_list = apply_promo(translation_blocks(job_id, lines), action)
-    return {"revision": blocks_revision(lines, block_list, action), "blockCount": len(block_list),
-            "promo": action,
-            "items": [{"number": item["number"], "text": item["text"], "tone": item["tone"],
-                       "kind": item["kind"], "kindLabel": item["kindLabel"],
-                       "lines": item["lines"], "bbox": item["bbox"],
-                       "promo": bool(item.get("promo"))}
-                      for item in block_list]}
+    response = {"revision": blocks_revision(lines, block_list, action), "blockCount": len(block_list),
+                "promo": action,
+                "items": [{"number": item["number"], "text": item["text"], "tone": item["tone"],
+                           "kind": item["kind"], "kindLabel": item["kindLabel"],
+                           "lines": item["lines"], "bbox": item["bbox"],
+                           "promo": bool(item.get("promo"))}
+                          for item in block_list]}
+    diagnostics.log_event(
+        "translation.source.done", jobId=job_id, lineCount=len(lines), blockCount=len(block_list),
+        elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+    )
+    return response
 
 
 @app.post("/api/jobs/{job_id}/translations")

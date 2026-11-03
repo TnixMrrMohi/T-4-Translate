@@ -19,6 +19,7 @@ const SYSTEM = {
   libraries: {python: '3.11.9', pillow: '11.2.1', opencv: '4.10.0', onnxruntime: '1.20.1'},
   disk: {path: '/data', freeMb: 51200, totalMb: 102400},
   models: {dir: '/data/models', totalBytes: 208044594, installed: ['lama'], inpaint: true, ocrModel: false},
+  diagnosticsLog: '/app/T4Translate-diagnostics.txt',
 };
 
 const LAMA: ModelRow = {
@@ -61,6 +62,7 @@ describe('پنل سخت‌افزار و مدل‌ها', () => {
     expect(await within(dialog).findByText(/AMD Ryzen 7/)).toBeInTheDocument();
     expect(within(dialog).getByText(/NVIDIA RTX 3060/)).toBeInTheDocument();
     expect(within(dialog).getByText(/CUDAExecutionProvider/)).toBeInTheDocument();
+    expect(within(dialog).getByText('/app/T4Translate-diagnostics.txt')).toBeInTheDocument();
     // مدل‌های در حال استفاده: LaMa نصب است، خواندن متن پیش‌فرض.
     expect(within(dialog).getByText('LaMa (هوشمند، دقیق)')).toBeInTheDocument();
     expect(within(dialog).getByText('PP-OCR پیش‌فرض برنامه')).toBeInTheDocument();
