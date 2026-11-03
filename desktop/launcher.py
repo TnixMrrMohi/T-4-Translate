@@ -24,6 +24,11 @@ def _base() -> Path:
 def _log(message: str) -> None:
     # پیام‌ها انگلیسی‌اند تا در کنسول ویندوز (cp1252) به‌هم نریزند.
     print(message, flush=True)
+    try:
+        from app import diagnostics
+        diagnostics.log_event("desktop.message", message=message)
+    except Exception:  # pragma: no cover - logger باید هیچ‌وقت جلوی اجرا را نگیرد
+        pass
 
 
 def _smoke_test(url: str) -> None:
@@ -168,6 +173,11 @@ def main():
             _smoke_test(url)
             return
         _log(f"[T4] data: {os.environ['T4_DATA_DIR']}")
+        try:
+            from app import diagnostics
+            _log(f"[T4] diagnostics: {diagnostics.log_file() or 'file logging unavailable'}")
+        except Exception as exc:  # pragma: no cover - بستهٔ ناقص
+            _log(f"[T4] diagnostics unavailable ({type(exc).__name__})")
         _log(f"[T4] server: {url}")
         try:
             from app import updater

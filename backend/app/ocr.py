@@ -8,10 +8,13 @@
 """
 from functools import lru_cache
 from pathlib import Path
+import time
 from typing import Callable
 
 import numpy as np
 from PIL import Image
+
+from . import diagnostics
 
 # ارتفاع هر نوار و هم‌پوشانی آن؛ هم‌پوشانی باید از بلندترین خط متن بیشتر باشد تا
 # خطی که روی مرز نوار می‌افتد، دست‌کم در یکی از دو نوار کامل دیده شود.
@@ -45,9 +48,12 @@ INSTALL_HINT = 'python -m pip install -e ".[ocr-experimental]"'
 @lru_cache(maxsize=1)
 def _engine():
     """موتور OCR؛ مدل دقیق اگر نصب باشد، وگرنه مدل همراهِ بستهٔ RapidOCR."""
+    started = time.perf_counter()
+    diagnostics.log_event("ocr.engine.init.start")
     try:
         from rapidocr_onnxruntime import RapidOCR
     except ImportError as exc:
+        diagnostics.log_exception("ocr.engine.import.failed", errorType=type(exc).__name__, error=str(exc))
         # پیام باید بگوید *چه چیزی* کم است و چگونه نصب می‌شود؛ پیام کلیِ
         # «نصب نشده یا قابل اجرا نیست» کاربر را در بن‌بست می‌گذاشت.
         missing = getattr(exc, 'name', None) or 'rapidocr_onnxruntime'
@@ -57,6 +63,7 @@ def _engine():
             '(در لینوکس بدون رابط گرافیکی: python -m pip install opencv-python-headless)'
         ) from exc
     except OSError as exc:
+        diagnostics.log_exception("ocr.engine.import.failed", errorType=type(exc).__name__, error=str(exc))
         # بسته نصب است ولی کتابخانهٔ سیستمی‌اش بارگذاری نمی‌شود (اغلب libGL).
         raise OcrUnavailable(
             'موتور OCR نصب است ولی کتابخانهٔ سیستمیِ لازم بارگذاری نشد؛ اغلب '
@@ -64,15 +71,41 @@ def _engine():
             'python -m pip install opencv-python-headless. '
             f'جزئیات: {exc}'
         ) from exc
+    import_started = time.perf_counter()
     options = _model_options()
+    diagnostics.log_event(
+        "ocr.engine.package.ready", elapsedMs=round((import_started - started) * 1000, 1),
+        customModel=bool(options),
+    )
     if options:
+        model_started = time.perf_counter()
         try:
-            return RapidOCR(**options)
-        except Exception:  # noqa: BLE001 - مدل دقیق لود نشد؛ مدل پیش‌فرض می‌آید
-            pass
+            engine = RapidOCR(**options)
+            diagnostics.log_event(
+                "ocr.engine.init.done", modelSource="custom", customModel=True,
+                elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+                modelLoadMs=round((time.perf_counter() - model_started) * 1000, 1),
+            )
+            return engine
+        except Exception as exc:  # noqa: BLE001 - مدل دقیق لود نشد؛ مدل پیش‌فرض می‌آید
+            diagnostics.log_exception(
+                "ocr.engine.custom_model.failed", errorType=type(exc).__name__, error=str(exc),
+                modelLoadMs=round((time.perf_counter() - model_started) * 1000, 1),
+            )
+    model_started = time.perf_counter()
     try:
-        return RapidOCR()
+        engine = RapidOCR()
+        diagnostics.log_event(
+            "ocr.engine.init.done", modelSource="bundled", customModel=False,
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+            modelLoadMs=round((time.perf_counter() - model_started) * 1000, 1),
+        )
+        return engine
     except Exception as exc:
+        diagnostics.log_exception(
+            "ocr.engine.init.failed", errorType=type(exc).__name__, error=str(exc),
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+        )
         raise OcrUnavailable(f'بارگذاری مدل OCR ناموفق بود: {exc}') from exc
 
 
@@ -245,9 +278,13 @@ def _reread(lines: list, image) -> list:
     می‌شود و نتیجهٔ بهتر انتخاب می‌گردد. اگر بازخوانی شکست بخورد یا ضعیف‌تر بود،
     همان متنِ قبلی می‌ماند — هیچ متنی از دست نمی‌رود.
     """
+    reread_started = time.perf_counter()
     engine = _engine()
     result = []
-    for item in lines:
+    total = len(lines)
+    diagnostics.log_event("ocr.reread.start", lineCount=total)
+    for index, item in enumerate(lines, 1):
+        line_started = time.perf_counter()
         quad = item[0]
         text = str(item[1]) if len(item) > 1 and item[1] is not None else ''
         confidence = float(item[2]) if len(item) > 2 and item[2] is not None else 0.0
@@ -255,6 +292,16 @@ def _reread(lines: list, image) -> list:
         if better and _prefer_reread((text, confidence), better):
             text, confidence = better
         result.append((quad, text, confidence))
+        line_ms = (time.perf_counter() - line_started) * 1000
+        if index == 1 or index == total or index % 10 == 0 or line_ms >= 2000:
+            diagnostics.log_event(
+                "ocr.reread.progress", line=index, lineCount=total,
+                lineElapsedMs=round(line_ms, 1), elapsedMs=round((time.perf_counter() - reread_started) * 1000, 1),
+            )
+    diagnostics.log_event(
+        "ocr.reread.done", lineCount=total,
+        elapsedMs=round((time.perf_counter() - reread_started) * 1000, 1),
+    )
     return result
 
 
@@ -265,11 +312,24 @@ def _read(image) -> list:
     بخورد) و هم برای خط‌های ساده معمولاً همان نتیجهٔ درست را دارد؛ بازخوانی فقط
     وقتی جای آن را می‌گیرد که نتیجهٔ بهتری بدهد.
     """
+    started = time.perf_counter()
     if not isinstance(image, np.ndarray):
         image = _load_bgr(image)
-    raw, _ = _engine()(image)
+    engine = _engine()
+    detect_started = time.perf_counter()
+    raw, _ = engine(image)
     lines = [item for item in (raw or []) if isinstance(item, (list, tuple)) and len(item) == 3]
-    return _reread(lines, image) if lines else []
+    diagnostics.log_event(
+        "ocr.detect.done", width=int(image.shape[1]), height=int(image.shape[0]),
+        detectedLines=len(lines), elapsedMs=round((time.perf_counter() - detect_started) * 1000, 1),
+    )
+    result = _reread(lines, image) if lines else []
+    diagnostics.log_event(
+        "ocr.read.done", width=int(image.shape[1]), height=int(image.shape[0]),
+        detectedLines=len(lines), resultLines=len(result),
+        elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+    )
+    return result
 
 
 def _shift(raw, offset: int) -> list[dict]:
@@ -328,17 +388,26 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
     # درصدها طوری تقسیم شده‌اند که ۹۹٪ فقط برای لحظهٔ ذخیره بماند: خواندن نوارها تا
     # ۹۴٪، یکی‌سازی خطوط ۹۷٪ و ذخیره ۹۹٪. قبلاً خواندن به ۹۹٪ می‌رسید و کاربر بقیهٔ
     # کار را پشتِ همان ۹۹٪ می‌دید.
+    started = time.perf_counter()
     report(0.02, 'start')
     with Image.open(path) as source:
         width, height = source.size
+        total = _strips(height) if height > STRIP_HEIGHT + STRIP_OVERLAP else 1
+        diagnostics.log_event(
+            "ocr.page.start", width=width, height=height, strips=total,
+            imageBytes=path.stat().st_size if isinstance(path, Path) and path.is_file() else None,
+        )
         if height <= STRIP_HEIGHT + STRIP_OVERLAP:
             report(0.08, 'model')  # نخستین فراخوانی، مدل را در حافظه بار می‌کند
             result = _shift(_read(str(path)), 0)
             report(0.94, 'strips')
             report(0.97, 'merge')
             report(0.99, 'save')
+            diagnostics.log_event(
+                "ocr.page.done", width=width, height=height, strips=1, resultLines=len(result),
+                elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+            )
             return result
-        total = _strips(height)
         result: list[dict] = []
         top = 0
         index = 0
@@ -359,6 +428,12 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
                 break
             top = bottom - STRIP_OVERLAP
     report(0.97, 'merge')
+    before_dedupe = len(result)
     result = _dedupe(result)
     report(0.99, 'save')
+    diagnostics.log_event(
+        "ocr.page.done", width=width, height=height, strips=total,
+        rawLines=before_dedupe, resultLines=len(result),
+        elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+    )
     return result

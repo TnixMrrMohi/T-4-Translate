@@ -19,3 +19,6 @@ google_drive/
 T4Translate-*-windows-x64.zip
 backend-tests.log
 build/
+
+# Local runtime diagnostics (created beside the project/executable)
+T4Translate-diagnostics.txt*
