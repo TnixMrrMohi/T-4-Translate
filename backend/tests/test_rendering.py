@@ -44,7 +44,7 @@ def test_wrap_text_keeps_words_and_respects_width():
     lines = rendering.wrap_text("یک دو سه چهار پنج شش هفت هشت", font, 60)
     assert len(lines) > 1
     assert " ".join(lines) == "یک دو سه چهار پنج شش هفت هشت"
-    assert all(font.getlength(rendering.shape_text(line)) <= 60 for line in lines[:-1])
+    assert all(rendering.text_width(font, line) <= 60 for line in lines)
 
 
 def test_render_draws_inside_quad_only():
@@ -168,12 +168,11 @@ def _ink_box(image):
     return image.convert("L").point(lambda value: 255 if value < 200 else 0).getbbox()
 
 
-def test_font_size_follows_the_source_text_not_the_bubble_area():
-    """اندازهٔ نوشتهٔ فارسی هم‌اندازهٔ نوشتهٔ اصلیِ همان بالن است.
+def test_source_font_size_is_baseline_not_a_tiny_cap_inside_bubbles():
+    """متن اصلی سقف پایه است، اما متن ریز OCR نباید ترجمه را هم ریز نگه دارد.
 
-    قبلاً اندازه تا پر شدن شکلِ بالن بزرگ می‌شد؛ نتیجه این بود که یک «عجیبه.»
-    کوتاه غول‌آسا و یک دیالوگ بلند ریز می‌شد. حالا سقف اندازه از ارتفاع کادر متنِ
-    اصلی می‌آید، پس اندازه‌ها بین بالن‌ها یکدست می‌مانند.
+    در بالن واقعی، متن OCR ممکن است فقط چند پیکسل ارتفاع داشته باشد. ترجمه در آن
+    حالت از اندازهٔ متناسب با خود بالن شروع می‌کند و بعد برای جا شدن کوچک می‌شود.
     """
     image = Image.new("RGB", (420, 300), "white")
     area = [40, 60, 380, 240]
@@ -183,8 +182,8 @@ def test_font_size_follows_the_source_text_not_the_bubble_area():
     big, _ = rendering.render_blocks(image, [tall_source], {"2": "سلام"})
     small_ink, big_ink = _ink_box(small), _ink_box(big)
     assert small_ink and big_ink
-    # متن اصلیِ بلندتر، نوشتهٔ فارسیِ بلندتری هم می‌دهد.
-    assert (big_ink[3] - big_ink[1]) > 1.6 * (small_ink[3] - small_ink[1])
+    # متن اصلیِ بلندتر هنوز امکان قلم بزرگ‌تری می‌دهد.
+    assert (big_ink[3] - big_ink[1]) > 1.3 * (small_ink[3] - small_ink[1])
     # و هیچ‌کدام از شکلِ بالن بیرون نمی‌زنند.
     assert big_ink[0] >= 40 and big_ink[1] >= 60
     assert big_ink[2] <= 380 and big_ink[3] <= 240
@@ -192,16 +191,44 @@ def test_font_size_follows_the_source_text_not_the_bubble_area():
     assert small_ink[2] <= 380 and small_ink[3] <= 240
 
 
+def test_tiny_source_text_in_bubble_is_enlarged_and_long_translation_wraps_by_words():
+    """OCR کم‌ارتفاع باشد هم ترجمه در بالن بزرگ می‌شود و فقط بین کلمه‌ها می‌شکند."""
+    from app import bubbles
+
+    image = Image.new("RGB", (420, 300), "white")
+    translation = "وقتی کمیاب ترین چیزهایی را که در جهان وجود دارد پیدا میکنی، باید از آن مراقبت کنی"
+    # شبیه خروجی واقعی: خط OCR فقط ۸ پیکسل ارتفاع دارد و بالن ۲۳۰ پیکسل.
+    line = {"text": "source", "quad": [[145, 140], [265, 140], [265, 148], [145, 148]]}
+    block = bubbles._block([1], {1: line}, "speech", [50, 30, 310, 230])
+    block["number"] = 1  # bubbles.blocks() شماره را هنگام مرتب‌سازی اضافه می‌کند.
+    assert block["area"] == [50, 30, 360, 260]  # اعتبارسنجی بالن نباید آن را حذف کند.
+    entry = rendering.plan_blocks(image, [block], {"1": translation})[0]
+    assert entry["size"] >= 28
+    assert len(entry["wrapped"]) >= 2
+    assert " ".join(entry["wrapped"]).split() == translation.split()
+    font = rendering._font(entry["size"], entry["path"])
+    left, top, right, bottom = entry["box"]
+    padding = max(1, int(min(right - left, bottom - top) * rendering.PADDING_RATIO))
+    assert all(rendering.text_width(font, line) <= right - left - 2 * padding + 1
+               for line in entry["wrapped"])
+    # رندر واقعی هم در محدودهٔ بالن می‌ماند.
+    rendered, drawn = rendering.render_blocks(image, [block], {"1": translation})
+    assert drawn == 1
+    ink = _ink_box(rendered)
+    assert ink and ink[0] >= 30 and ink[1] >= 30
+    assert ink[2] <= 390 and ink[3] <= 270
+
+
 def test_short_text_in_a_big_bubble_does_not_fill_it():
-    """متن کوتاه در بالن بزرگ، غول‌آسا نمی‌شود (سقف اندازه از متن اصلی می‌آید)."""
+    """متن کوتاه هم خواناتر می‌شود، اما به اندازهٔ کل بالن بزرگ نمی‌شود."""
     image = Image.new("RGB", (420, 300), "white")
     block = {"number": 1, "lines": [1], "bbox": [190, 145, 230, 165], "kind": "speech",
              "area": [40, 40, 380, 260]}
     canvas, _ = rendering.render_blocks(image, [block], {"1": "عجیبه."})
     ink = _ink_box(canvas)
     assert ink
-    assert (ink[3] - ink[1]) <= 26          # نزدیک ارتفاع متن اصلی (۲۰)، نه ارتفاع بالن
-    assert (ink[2] - ink[0]) <= 120
+    assert 28 <= (ink[3] - ink[1]) <= 46
+    assert (ink[2] - ink[0]) <= 160
 
 
 def test_text_box_grows_over_uniform_background():
@@ -212,9 +239,9 @@ def test_text_box_grows_over_uniform_background():
     assert drawn == 1
     ink = _ink_box(canvas)
     assert ink
-    # اندازهٔ قلم از ارتفاع متن اصلی می‌آید (حدود ۲۰)، پس نه ریز است نه غول‌آسا.
+    # بدون شکلِ بالنِ معتبر، اندازه از کادر OCR می‌آید تا زمینهٔ بیرونی تصادفی استفاده نشود.
     assert 10 <= (ink[3] - ink[1]) <= 24
-    assert ink[0] > 0 and ink[2] < canvas.width      # از کل صفحه بزرگ‌تر نشده
+    assert ink[0] > 0 and ink[2] < canvas.width
 
 
 def test_growth_stops_at_a_bubble_border():
@@ -228,4 +255,4 @@ def test_growth_stops_at_a_bubble_border():
     ink = canvas.convert("L").point(lambda value: 255 if value < 100 else 0).getbbox()
     assert ink
     assert 43 <= ink[0] and ink[2] <= 257 and 43 <= ink[1] and ink[3] <= 217
-    assert (ink[3] - ink[1]) > 20      # بلندتر از کادر اولیهٔ ۲۰ پیکسلی
+    assert (ink[3] - ink[1]) > 20
