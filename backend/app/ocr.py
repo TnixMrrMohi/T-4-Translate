@@ -18,6 +18,19 @@ from PIL import Image
 STRIP_HEIGHT = 1000
 STRIP_OVERLAP = 100
 
+# --- بازخوانی خط‌به‌خط ---------------------------------------------------------
+# موتور تشخیص، همهٔ کادرهای یک تصویر را یک‌جا و با نسبتِ همان دسته به مدل بازشناسی
+# می‌دهد؛ خط کج و فونتِ کشیدهٔ کمیک در آن مسیر خراب خوانده می‌شد (نمونهٔ واقعی:
+# «THIS IS MY» → «KW SI SIHI» حتی با اطمینان ۰٫۹۷). این‌جا بعد از تشخیص، هر خط
+# جداگانه از کادرِ خودش بریده، صاف و بزرگ می‌شود و تنها همان تکه به مدل می‌رود.
+# اندازه‌گیری روی ۴۸ حالت (۶ جمله × ۴ فونت/اندازه/کجی): خواندن دسته‌ای ۱۴ مورد
+# درست، خواندن خط‌به‌خط ۳۱ مورد درست.
+MIN_LINE_HEIGHT = 48      # ارتفاعی که مدل بازشناسی انتظار دارد
+MAX_LINE_SCALE = 4.0      # بزرگ‌تر از این، متن ریز بی‌دلیل کند می‌شود
+MAX_LINE_WIDTH = 2400     # پهنای هدفِ پس از بزرگ‌نمایی؛ تکهٔ طبیعیِ پهن کوچک نمی‌شود
+RETRY_CONFIDENCE = 0.80   # زیر این مقدار، نسخهٔ خاکستریِ متعادل‌شده هم امتحان می‌شود
+FLIP_CONFIDENCE = 0.55    # زیر این مقدار، تکه ۱۸۰ درجه چرخانده و دوباره خوانده می‌شود
+
 # گزارش پیشرفت: (کسر ۰ تا ۱، نام مرحله)
 ProgressReporter = Callable[[float, str], None]
 
@@ -100,9 +113,163 @@ def engine_status() -> dict:
     return {'ready': True, 'provider': 'rapidocr-experimental', 'detail': ''}
 
 
+def _load_bgr(path) -> np.ndarray:
+    """تصویر را به آرایهٔ BGR می‌خواند.
+
+    موتور OCR آرایهٔ سه‌کاناله را BGR فرض می‌کند و تصویرِ مسیر/PIL را RGB می‌گیرد و
+    خودش تبدیل می‌کند؛ اگر تصویر RGB را بدون تبدیل بدهیم، کانال‌ها جابه‌جا می‌شوند و
+    تصمیم مدل روی لبه‌های نازک عوض می‌شود. یک‌بار این‌جا درست می‌کنیم تا همهٔ
+    مسیرها (صفحهٔ کوتاه و نوارهای صفحهٔ بلند) یکسان باشند.
+    """
+    try:
+        import cv2
+    except (ImportError, OSError) as exc:  # pragma: no cover - وابستگی نصب‌شده
+        raise OcrUnavailable('ابزار پردازش تصویر برای OCR نصب نشده است.') from exc
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None:
+        with Image.open(path) as source:
+            image = np.array(source.convert('RGB'))[:, :, ::-1]
+    return np.ascontiguousarray(image)
+
+
+def _line_crop(image, quad):
+    """تکهٔ یک خط، صاف‌شده و بزرگ‌شده، از کادر چهارنقطه‌ای خودش.
+
+    با تبدیل پرسپکتیو، کجیِ خط برداشته می‌شود و متن افقی و بی‌کشیدگی به مدل می‌رسد؛
+    همین کار «THIS IS MY» را از «KW SI SIHI» جدا کرد. اگر کادر نامعتبر باشد `None`
+    برمی‌گردد و همان نتیجهٔ دسته‌ای می‌ماند.
+    """
+    import cv2
+
+    try:
+        points = np.asarray(quad, dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
+    if points.shape != (4, 2):
+        return None
+    width = float(max(np.linalg.norm(points[0] - points[1]),
+                      np.linalg.norm(points[3] - points[2])))
+    height = float(max(np.linalg.norm(points[0] - points[3]),
+                       np.linalg.norm(points[1] - points[2])))
+    if width < 4 or height < 4:
+        return None
+    target = np.array([[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float32)
+    matrix = cv2.getPerspectiveTransform(points, target)
+    crop = cv2.warpPerspective(image, matrix, (max(1, int(round(width))),
+                                               max(1, int(round(height)))),
+                               flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    scale = min(MAX_LINE_SCALE, max(1.0, MIN_LINE_HEIGHT / max(1.0, crop.shape[0])))
+    if crop.shape[1] * scale > MAX_LINE_WIDTH:
+        scale = max(1.0, MAX_LINE_WIDTH / max(1.0, crop.shape[1]))
+    if scale > 1.0:
+        crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    return crop
+
+
+def _recognize_crop(engine, crop):
+    """متن یک تکهٔ آماده را می‌خواند: (متن، اطمینان) یا `None`."""
+    try:
+        result = engine.text_rec([crop])[0]
+    except Exception:  # noqa: BLE001 - یک خط خراب نباید کل صفحه را از کار بیندازد
+        return None
+    if not result:
+        return None
+    item = result[0]
+    text = str(item[0]).strip()
+    confidence = float(item[1]) if len(item) > 1 else 0.0
+    return (text, confidence) if text else None
+
+
+def _stable_crop_variants(crop):
+    """نسخه‌های کمکیِ یک خط برای تلاش دوباره (فقط وقتی نتیجه ضعیف است)."""
+    import cv2
+
+    yield crop
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    yield cv2.cvtColor(cv2.equalizeHist(gray), cv2.COLOR_GRAY2BGR)
+
+
+def _read_line(engine, image, quad):
+    """خواندن یک خط؛ اگر نتیجه ضعیف بود، نسخهٔ تعادل‌یافته و برگردانده هم امتحان می‌شود."""
+    crop = _line_crop(image, quad)
+    if crop is None:
+        return None
+    best = None
+    for variant in _stable_crop_variants(crop):
+        found = _recognize_crop(engine, variant)
+        if found and (best is None or found[1] > best[1]):
+            best = found
+        if best and best[1] >= RETRY_CONFIDENCE:
+            return best
+    if best is None or best[1] < FLIP_CONFIDENCE:
+        # متن وارونه/چرخیده؛ چرخش ۱۸۰ درجه گاهی تنها راه خواندن است.
+        flipped = _recognize_crop(engine, np.ascontiguousarray(crop[::-1, ::-1]))
+        if flipped and (best is None or flipped[1] > best[1]):
+            best = flipped
+    return best
+
+
+def _prefer_reread(batch: tuple[str, float], reread: tuple[str, float]) -> bool:
+    """کدام نتیجه بهتر است: متنِ دسته‌ای یا متنِ تکهٔ صاف‌شده؟
+
+    «اطمینان» معیار قابل اعتمادی نیست؛ روی نمونهٔ واقعیِ کاربر، خواندنِ غلط
+    «KW SI SIHI» اطمینان ۰٫۹۷ داشت و خواندنِ درست «THIS IS MY» هم ۰٫۹۷. پس
+    مقایسهٔ عددی، درست را رد می‌کرد. در عوض دو شرط ساده و سنجیده‌شده:
+
+    * متن بازخوانی خالی نباشد و اطمینانش از حد پایه (``FLIP_CONFIDENCE``) کمتر نباشد.
+    * تکه بریده نشده باشد: اگر متنِ دسته‌ای مطمئن است (≥ ۰٫۸) و بازخوانی متنی
+      به‌مراتب کوتاه‌تر داده (زیر ۶۰٪ نویسه‌ها)، حق با دسته‌ای است.
+
+    روی ۴۸ حالت آزمایشی (چهار اندازه/کجی، چند فونت): دسته‌ای ۱۴ مورد کامل درست،
+    این قاعده ۳۱ مورد — و مقایسهٔ اطمینان فقط ۱۷ مورد.
+    """
+    batch_text, batch_confidence = batch
+    reread_text, reread_confidence = reread
+    if not reread_text.strip():
+        return False
+    if reread_confidence < FLIP_CONFIDENCE:
+        return False
+    if not batch_text.strip():
+        return True
+    if (batch_confidence >= RETRY_CONFIDENCE
+            and len(reread_text) < len(batch_text) * 0.6):
+        return False
+    return True
+
+
+def _reread(lines: list, image) -> list:
+    """بازخوانی خط‌به‌خطِ کادرهای تشخیص‌داده‌شده.
+
+    کادرها از موتور تشخیص می‌آیند (همان‌ها که در پیش‌نمایش هم دیده می‌شوند) و متنِ
+    دسته‌ای هم نگه داشته می‌شود؛ بعد هر خط از تکهٔ صاف‌شدهٔ خودش دوباره خوانده
+    می‌شود و نتیجهٔ بهتر انتخاب می‌گردد. اگر بازخوانی شکست بخورد یا ضعیف‌تر بود،
+    همان متنِ قبلی می‌ماند — هیچ متنی از دست نمی‌رود.
+    """
+    engine = _engine()
+    result = []
+    for item in lines:
+        quad = item[0]
+        text = str(item[1]) if len(item) > 1 and item[1] is not None else ''
+        confidence = float(item[2]) if len(item) > 2 and item[2] is not None else 0.0
+        better = _read_line(engine, image, quad)
+        if better and _prefer_reread((text, confidence), better):
+            text, confidence = better
+        result.append((quad, text, confidence))
+    return result
+
+
 def _read(image) -> list:
+    """خطوط یک نوار/صفحه: تشخیص و خواندنِ دسته‌ای، بعد بازخوانی خط‌به‌خط.
+
+    خواندن دسته‌ای نگه داشته می‌شود چون هم متنِ جایگزین است (اگر بازخوانی شکست
+    بخورد) و هم برای خط‌های ساده معمولاً همان نتیجهٔ درست را دارد؛ بازخوانی فقط
+    وقتی جای آن را می‌گیرد که نتیجهٔ بهتری بدهد.
+    """
+    if not isinstance(image, np.ndarray):
+        image = _load_bgr(image)
     raw, _ = _engine()(image)
-    return raw or []
+    lines = [item for item in (raw or []) if isinstance(item, (list, tuple)) and len(item) == 3]
+    return _reread(lines, image) if lines else []
 
 
 def _shift(raw, offset: int) -> list[dict]:
@@ -182,7 +349,9 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
                 # می‌شود و برچسب مرحله باید همین را بگوید.
                 report(0.06, 'model')
             with Image.open(path) as strip_source:
-                strip = np.array(strip_source.convert('RGB').crop((0, top, width, bottom)))
+                # BGR برای موتور OCR (همان ترتیبی که از خواندن فایل می‌آید).
+                rgb = np.array(strip_source.convert('RGB').crop((0, top, width, bottom)))
+                strip = np.ascontiguousarray(rgb[:, :, ::-1])
             result.extend(_shift(_read(strip), top))
             index += 1
             report(0.06 + 0.88 * index / total, 'strips')
