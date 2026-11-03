@@ -146,3 +146,111 @@ describe('پنل مدل‌ها · حالت‌های لبه', () => {
     expect(bar).toHaveAttribute('aria-valuenow', '42');
   });
 });
+
+describe('نوار دانلود مدل', () => {
+  it('با زدن «نصب» پیش از پاسخ سرور هم نوار بلافاصله می‌آید', async () => {
+    // درخواست نصب تا لحظهٔ آزادکردن باز می‌ماند؛ سرور هنوز درصدی نمی‌دهد.
+    let releaseInstall: (() => void) | null = null;
+    const installGate = new Promise<void>(resolve => { releaseInstall = resolve; });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/system') return json(SYSTEM);
+      if (url === '/api/models') {
+        return json({models: [DETECTOR], progress: {id: null, fraction: 0, message: '', running: false, error: null},
+          totalBytes: 0, dir: '/data/models', mirror: ''});
+      }
+      if (url.endsWith('/comic-text-detector') && init?.method === 'POST') {
+        await installGate;
+        return json({started: true, progress: {id: 'comic-text-detector', fraction: 0, running: true,
+                                               message: 'در حال آماده‌سازی…', error: null}});
+      }
+      return json({}, 404);
+    }));
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(await within(dialog).findByRole('button', {name: 'نصب'}));
+
+    const bar = await within(dialog).findByRole('progressbar');
+    expect(bar).toHaveAttribute('aria-valuenow', '0');
+    expect(within(dialog).getByText(/شروع دانلود|در حال آماده‌سازی/)).toBeInTheDocument();
+    // تا رسیدن پاسخ، دکمهٔ «نصب» دوباره فعال نمی‌شود.
+    expect(within(dialog).queryByRole('button', {name: 'نصب'})).not.toBeInTheDocument();
+    releaseInstall!();
+  });
+
+  it('درصد سرور روی همان ردیف و با به‌روزرسانی خودکار جلو می‌رود', async () => {
+    let fraction = 0.2;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/system') return json(SYSTEM);
+      if (url === '/api/models') {
+        return json({
+          models: [{
+            ...LAMA, installed: false, sizeBytes: 0, files: [],
+            progress: {id: 'lama', fraction, running: true,
+                       message: `دانلود «lama_fp32.onnx» — ${Math.round(fraction * 198)} مگابایت`, error: null},
+          }],
+          progress: {id: 'lama', fraction, message: 'در حال دانلود', running: true, error: null},
+          totalBytes: 0, dir: '/data/models', mirror: '',
+        });
+      }
+      return json({}, 404);
+    }));
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    const dialog = await screen.findByRole('dialog');
+    const bar = await within(dialog).findByRole('progressbar', {name: /LaMa/});
+    // polling فعال است: مقدار تازه در نوبت بعدی خوانده می‌شود.
+    fraction = 0.55;
+    await waitFor(() => expect(bar).toHaveAttribute('aria-valuenow', '55'), {timeout: 4000});
+  });
+
+  it('خطای دانلود در پنل دیده می‌شود و دکمهٔ نصب برمی‌گردد', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/system') return json(SYSTEM);
+      if (url === '/api/models') {
+        return json({models: [DETECTOR],
+          progress: {id: null, fraction: 0, message: '', running: false, error: 'شبکه در دسترس نیست'},
+          totalBytes: 0, dir: '/data/models', mirror: ''});
+      }
+      return json({}, 404);
+    }));
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/شبکه در دسترس نیست/);
+    expect(within(dialog).queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', {name: 'نصب'})).toBeInTheDocument();
+  });
+});
+
+describe('هم‌زمانی دانلود مدل‌ها', () => {
+  it('تا وقتی یک مدل در حال دانلود است، «نصب» بقیه غیرفعال می‌ماند', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/system') return json(SYSTEM);
+      if (url === '/api/models') {
+        return json({
+          models: [{...LAMA, installed: false, sizeBytes: 0, files: [],
+                    progress: {id: 'lama', fraction: 0.1, running: true, message: 'دانلود…', error: null}},
+                   DETECTOR],
+          progress: {id: 'lama', fraction: 0.1, message: 'دانلود…', running: true, error: null},
+          totalBytes: 0, dir: '/data/models', mirror: '',
+        });
+      }
+      return json({}, 404);
+    }));
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    const dialog = await screen.findByRole('dialog');
+    const install = await within(dialog).findByRole('button', {name: 'نصب'});
+    expect(install).toBeDisabled();
+    expect(install).toHaveAttribute('title', 'یک مدل دیگر در حال دانلود است');
+  });
+});

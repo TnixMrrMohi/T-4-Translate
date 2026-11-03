@@ -216,10 +216,17 @@ def model_path(model_id: str, name: str) -> Path | None:
 
 
 def status() -> list[dict]:
-    """فهرست مدل‌ها با وضعیت نصب و حجم روی دیسک (برای نمایش در تنظیمات)."""
+    """فهرست مدل‌ها با وضعیت نصب و حجم روی دیسک (برای نمایش در تنظیمات).
+
+    دانلود جاری فقط روی ردیف همان مدل می‌آید؛ `_progress["id"]` نام مدل در حال
+    دانلود است، نه کلید آن. (پیش‌تر به‌جای این مقایسه، کلید مدل در دیکشنری
+    جست‌وجو می‌شد و نتیجه همیشه «بدون پیشرفت» بود، پس نوار دانلود هرگز در رابط
+    دیده نمی‌شد.)
+    """
     rows = []
     with DOWNLOAD_LOCK:
         running = dict(_progress)
+    current = running if running.get("id") else None
     for spec in CATALOG:
         files = installed_files(spec["id"])
         size = sum(path.stat().st_size for path in files) if files else 0
@@ -233,7 +240,7 @@ def status() -> list[dict]:
             "installed": bool(files),
             "sizeBytes": size,
             "files": [path.name for path in files],
-            "progress": running.get(spec["id"]) if running.get("id") == spec["id"] else None,
+            "progress": dict(current) if current and current.get("id") == spec["id"] else None,
         })
     return rows
 
@@ -433,11 +440,21 @@ def prepare(model_id: str, reporter: ProgressReporter | None = None) -> dict:
 
 
 def prepare_in_background(model_id: str) -> dict:
-    """دانلود را در نخ جدا شروع می‌کند تا اجرای برنامه معطل نماند."""
-    if progress().get("running"):
-        return {"started": False, "reason": "busy", "progress": progress()}
-    if is_installed(model_id):
-        return {"started": False, "reason": "installed", "progress": progress()}
+    """دانلود را در نخ جدا شروع می‌کند تا اجرای برنامه معطل نماند.
+
+    وضعیت «در حال دانلود» پیش از روشن‌کردن نخ ثبت می‌شود؛ وگرنه تا اولین گامِ نخ
+    (که ممکن است چند صد میلی‌ثانیه بعد باشد) پاسخ سرور «دانلودی در جریان نیست»
+    می‌گفت و رابط نوار پیشرفت را نشان نمی‌داد.
+    """
+    spec = entry(model_id)
+    with DOWNLOAD_LOCK:
+        if _progress.get("running"):
+            return {"started": False, "reason": "busy", "progress": dict(_progress)}
+        if is_installed(model_id):
+            return {"started": False, "reason": "installed", "progress": dict(_progress)}
+        _progress.update(id=model_id, fraction=0.0, running=True, error=None,
+                         startedAt=time.time(),
+                         message=f"در حال آماده‌سازی «{spec['title']}»…")
     thread = threading.Thread(target=_background, args=(model_id,), daemon=True)
     thread.start()
     return {"started": True, "progress": progress()}
