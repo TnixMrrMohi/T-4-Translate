@@ -141,3 +141,16 @@ smoke test بسته، ساخت zip کامل، ساخت `update-manifest.json` و
 نقاط API: `GET /api/models` (فهرست، وضعیت، حجم)، `POST /api/models/{id}` (شروع دانلود پس‌زمینه)،
 `DELETE /api/models/{id}`، `GET /api/system` (سخت‌افزار + کتابخانه‌ها + مدل‌های در حال استفاده).
 دانلود خودکار در شروع برنامه با `T4_AUTO_MODELS=0` خاموش می‌شود (تست‌ها همین کار را می‌کنند).
+
+## منابع مدل (برای آینهٔ داخلی)
+
+| مدل | فایل | بایت |
+|---|---|---|
+| lama | `Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx` | 208044816 |
+| comic-text-detector | `mayocream/comic-text-detector-onnx/resolve/main/comic-text-detector.onnx` | 94669756 |
+| ocr-server | `cycloneboy/ch_PP-OCRv4_det_server_infer/resolve/main/model.onnx` | 113350183 |
+| ocr-server | `cycloneboy/ch_PP-OCRv4_rec_server_infer/resolve/main/model.onnx` | 90499437 |
+| ocr-server | `cycloneboy/ch_PP-OCRv4_rec_server_infer/resolve/main/ch_dict.txt` | 32873 |
+
+اگر این فایل‌ها را جای دیگری میزبانی می‌کنید، ساختار پوشه را همان `path` کاتالوگ نگه دارید و
+`T4_MODEL_BASE_URL` را به ریشهٔ آن بدهید؛ برنامه اول آینه را امتحان می‌کند و بعد آدرس اصلی.

@@ -67,14 +67,17 @@ CATALOG: list[dict] = [
         "title": "پاک‌سازی هوشمند LaMa",
         "purpose": "پاک‌کردن متن از روی نقاشی و پس‌زمینهٔ عکسی",
         "revision": "1",
-        "approxMb": 200,
+        "approxMb": 198,
         "ramMb": 2048,
         "files": [
             {
                 "name": "lama_fp32.onnx",
                 "path": "Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx",
                 "url": "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx",
-                "size": 208044594,
+                "urls": [
+                    "https://hf-mirror.com/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx",
+                ],
+                "size": 208_044_816,
             },
         ],
     },
@@ -83,38 +86,65 @@ CATALOG: list[dict] = [
         "title": "تشخیص متن کمیک (ComicTextDetector)",
         "purpose": "پیدا کردن متن و ماسک بالن روی صفحه‌های شلوغ و رنگی",
         "revision": "1",
-        "approxMb": 100,
+        "approxMb": 90,
         "ramMb": 1536,
         "files": [
             {
-                "name": "comictextdetector.pt.onnx",
-                "path": "dmMaze/comic-text-detector/releases/download/v1.0/comictextdetector.pt.onnx",
-                "url": "https://github.com/dmMaze/comic-text-detector/releases/download/v1.0/comictextdetector.pt.onnx",
-                "size": 101_000_000,
+                "name": "comic-text-detector.onnx",
+                "path": "mayocream/comic-text-detector-onnx/resolve/main/comic-text-detector.onnx",
+                "url": ("https://huggingface.co/mayocream/comic-text-detector-onnx/"
+                        "resolve/main/comic-text-detector.onnx"),
+                "urls": [
+                    ("https://hf-mirror.com/mayocream/comic-text-detector-onnx/"
+                     "resolve/main/comic-text-detector.onnx"),
+                ],
+                "size": 94_669_756,
             },
         ],
     },
     {
         "id": "ocr-server",
-        "title": "موتور متن دقیق (PP-OCR server)",
-        "purpose": "خواندن دقیق‌تر فونت‌های شکسته و متن کج",
+        "title": "موتور متن دقیق (PP-OCRv4 server)",
+        "purpose": "خواندن دقیق‌تر فونت‌های شکسته، متن کج و ریز",
         "revision": "1",
-        "approxMb": 130,
+        "approxMb": 194,
         "ramMb": 2048,
         "files": [
             {
                 "name": "ch_PP-OCRv4_det_server_infer.onnx",
-                "path": "RapidAI/RapidOCR/releases/download/v2.0.0/ch_PP-OCRv4_det_server_infer.onnx",
-                "url": ("https://github.com/RapidAI/RapidOCR/releases/download/v2.0.0/"
-                        "ch_PP-OCRv4_det_server_infer.onnx"),
-                "size": 110_000_000,
+                "path": "cycloneboy/ch_PP-OCRv4_det_server_infer/resolve/main/model.onnx",
+                "url": ("https://huggingface.co/cycloneboy/ch_PP-OCRv4_det_server_infer/"
+                        "resolve/main/model.onnx"),
+                "urls": [
+                    ("https://hf-mirror.com/cycloneboy/ch_PP-OCRv4_det_server_infer/"
+                     "resolve/main/model.onnx"),
+                ],
+                "size": 113_350_183,
             },
             {
                 "name": "ch_PP-OCRv4_rec_server_infer.onnx",
-                "path": "RapidAI/RapidOCR/releases/download/v2.0.0/ch_PP-OCRv4_rec_server_infer.onnx",
-                "url": ("https://github.com/RapidAI/RapidOCR/releases/download/v2.0.0/"
-                        "ch_PP-OCRv4_rec_server_infer.onnx"),
-                "size": 88_000_000,
+                "path": "cycloneboy/ch_PP-OCRv4_rec_server_infer/resolve/main/model.onnx",
+                "url": ("https://huggingface.co/cycloneboy/ch_PP-OCRv4_rec_server_infer/"
+                        "resolve/main/model.onnx"),
+                "urls": [
+                    ("https://hf-mirror.com/cycloneboy/ch_PP-OCRv4_rec_server_infer/"
+                     "resolve/main/model.onnx"),
+                ],
+                "size": 90_499_437,
+            },
+            {
+                "name": "ch_dict.txt",
+                "path": "cycloneboy/ch_PP-OCRv4_rec_server_infer/resolve/main/ch_dict.txt",
+                "url": ("https://huggingface.co/cycloneboy/ch_PP-OCRv4_rec_server_infer/"
+                        "resolve/main/ch_dict.txt"),
+                "urls": [
+                    ("https://hf-mirror.com/cycloneboy/ch_PP-OCRv4_rec_server_infer/"
+                     "resolve/main/ch_dict.txt"),
+                ],
+                "size": 32_873,
+                # فهرست نویسه‌ها «کمکی» است: اگر نبود، مدل هم فهرست خودش را دارد و
+                # نبودنش نباید مدل را «نصب‌نشده» یا دانلود را ناموفق نشان دهد.
+                "optional": True,
             },
         ],
     },
@@ -155,6 +185,8 @@ def installed_files(model_id: str) -> list[Path]:
     for item in spec["files"]:
         path = root / item["name"]
         if not path.is_file():
+            if item.get("optional"):
+                continue
             return []
         expected = (state.get("files") or {}).get(item["name"]) or {}
         if expected.get("size") and path.stat().st_size != int(expected["size"]):
@@ -222,19 +254,57 @@ def _set_progress(**changes) -> None:
         _progress.update(changes)
 
 
-def _source_url(item: dict) -> str:
-    """آدرس نهایی فایل: آینه (اگر تنظیم شده) یا آدرس پیش‌فرض کاتالوگ.
+def _source_urls(item: dict) -> list[str]:
+    """همهٔ آدرس‌های ممکن یک فایل، به ترتیب تلاش.
 
-    آینه می‌تواند آدرس وب، `file://` یا مسیر سادهٔ یک پوشه باشد؛ برای مسیر محلی،
-    جداکنندهٔ ویندوز (`\\`) حفظ می‌شود تا فایل واقعاً پیدا شود.
+    اول آینه (اگر تنظیم شده باشد)، بعد آدرس اصلی کاتالوگ و بعد آینه‌های عمومی
+    (`urls`). آینه می‌تواند آدرس وب، `file://` یا مسیر سادهٔ یک پوشه باشد؛ برای
+    مسیر محلی، جداکنندهٔ ویندوز (`\\`) حفظ می‌شود تا فایل واقعاً پیدا شود.
     """
     base = mirror()
-    if not base:
-        return item["url"]
     relative = item.get("path") or item["name"]
-    if "://" in base:
-        return f"{base.rstrip('/')}/{relative.lstrip('/')}"
-    return str(Path(base) / relative)
+    candidates: list[str] = []
+    if base:
+        if "://" in base:
+            candidates.append(f"{base.rstrip('/')}/{relative.lstrip('/')}")
+        else:
+            candidates.append(str(Path(base) / relative))
+    for url in [item.get("url"), *(item.get("urls") or [])]:
+        if url and url not in candidates:
+            candidates.append(url)
+    return candidates
+
+
+def _source_url(item: dict) -> str:
+    """آدرس اول (برای نمایش و تست)."""
+    candidates = _source_urls(item)
+    return candidates[0] if candidates else ""
+
+
+def _download_with_fallback(item: dict, target: Path,
+                            on_bytes: Callable[[int, int], None]) -> None:
+    """دانلود از اولین آدرسی که جواب بدهد؛ حجم نهایی هم بررسی می‌شود.
+
+    اگر یک آینه در دسترس نبود (فیلتر، قطعی، ۴۰۴)، آدرس بعدی امتحان می‌شود تا یک
+    آدرس از کار افتاده کل مدل را از کار نیندازد.
+    """
+    expected = int(item.get("size") or 0)
+    problems: list[str] = []
+    for url in _source_urls(item):
+        try:
+            _download_file(url, target, on_bytes)
+        except ModelError as exc:
+            problems.append(str(exc))
+            continue
+        size = target.stat().st_size if target.is_file() else 0
+        if expected and size != expected:
+            # فایل ناقص یا صفحهٔ خطا؛ دور ریخته می‌شود و آدرس بعدی امتحان می‌شود.
+            problems.append(f"«{item['name']}» {size} بایت بود، انتظار {expected} بایت.")
+            target.unlink(missing_ok=True)
+            continue
+        return
+    raise ModelError("دانلود «" + item["name"] + "» از هیچ آدرسی انجام نشد: "
+                     + "; ".join(problems[-3:] or ["آدرسی تنظیم نشده است."]))
 
 
 def _sha256(path: Path) -> str:
@@ -335,7 +405,12 @@ def prepare(model_id: str, reporter: ProgressReporter | None = None) -> dict:
                     reporter(fraction, "download")
 
             if not _file_is_trusted(model_id, item, target):
-                _download_file(_source_url(item), target, on_bytes)
+                try:
+                    _download_with_fallback(item, target, on_bytes)
+                except ModelError:
+                    if item.get("optional"):
+                        continue   # فایل کمکی؛ مدل بدون آن هم کار می‌کند
+                    raise
             size = target.stat().st_size
             record["files"][item["name"]] = {"size": size, "sha256": _sha256(target)}
             _set_progress(fraction=round(index / len(files) * 0.99, 3),

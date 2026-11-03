@@ -102,3 +102,116 @@ def test_rendering_keeps_logical_text_with_raqm(monkeypatch):
     assert rendering._rtl_kwargs("سلام") == {"direction": "rtl", "language": "fa"}
     assert rendering._rtl_kwargs("Hello") == {}
     rendering.shape_text.cache_clear()
+
+
+def test_detector_input_size_prefers_fixed_shape():
+    assert textdet._input_size([1, 3, 1024, 1024], 800, 500) == (1024, 1024)
+    height, width = textdet._input_size([1, 3, "height", "width"], 1000, 750)
+    assert height % 32 == 0 and width % 32 == 0
+    assert height <= 1536 and width <= 1536
+    # نبودِ شکل هم مشکلی نمی‌سازد.
+    assert textdet._input_size([], 100, 100) == (96, 96)
+
+
+def test_detector_outputs_are_chosen_by_name_and_thickness():
+    import cv2
+
+    size = 96
+    bubble = np.zeros((1, 1, size, size), np.float32)
+    cv2.circle(bubble[0, 0], (48, 48), 30, 1.0, -1)
+    text = np.zeros((1, 1, size, size), np.float32)
+    cv2.line(text[0, 0], (20, 48), (76, 48), 1.0, 3)
+    block = np.zeros((1, 2, size, size), np.float32)
+
+    # نام‌ها شناخته‌شده‌اند.
+    chosen = textdet._choose(np, ["blk", "seg", "det"], [block, bubble, text], size, size)
+    assert chosen["text"].sum() < chosen["bubble"].sum()
+    assert np.array_equal(chosen["text"], text[0, 0] > 0.5)
+
+    # نام‌ها بی‌معنی‌اند: نازک‌ترین ماسک متن حساب می‌شود.
+    nameless = textdet._choose(np, ["o1", "o2", "o3"], [block, bubble, text], size, size)
+    assert nameless["text"].sum() < nameless["bubble"].sum()
+
+    # خروجی لاگیت (منفی) هم درست آستانه می‌خورد.
+    logits = (text[0, 0] * 20.0 - 10.0)[None, None]
+    assert textdet._as_mask(np, logits, size, size).any()
+
+
+def test_detector_ignores_non_mask_outputs():
+    vector = np.zeros((1, 6), np.float32)
+    assert textdet._as_mask(np, vector, 32, 32) is None
+    assert textdet._choose(np, ["a"], [vector], 32, 32) == {}
+
+
+def test_inpaint_binds_second_input_as_mask():
+    class FakeSession:
+        def __init__(self):
+            self.seen = None
+
+        def run(self, outputs, feeds):
+            self.seen = feeds
+            return [np.full((1, 3, 8, 8), 128, np.uint8)]
+
+    session = FakeSession()
+    image = np.full((8, 8, 3), 200, np.uint8)
+    mask = np.zeros((8, 8), bool)
+    mask[2:5, 2:5] = True
+    inpaint._session_cache.update(session=session, failed=False,
+                                  inputs=["image", "mask_image"], output="out")
+    try:
+        out = inpaint._run(np, __import__("cv2"), image, mask.astype(np.uint8) * 255)
+    finally:
+        inpaint._session_cache.update(session=None, failed=False, inputs=[], output=None)
+    assert out is not None and out.shape == (8, 8, 3)
+    assert set(session.seen) == {"image", "mask_image"}
+    # ماسکِ صفر و یک (نه ۰..۲۵۵) به مدل داده می‌شود.
+    assert float(session.seen["mask_image"].max()) == 1.0
+
+
+def test_ocr_model_options_point_to_installed_server_model(tmp_path, monkeypatch):
+    """وقتی مدل دقیق نصب است، مسیر هر سه فایل (det/rec/فهرست نویسه‌ها) داده می‌شود."""
+    import json
+
+    monkeypatch.setenv("T4_MODELS_DIR", str(tmp_path / "models"))
+    root = tmp_path / "models" / "ocr-server" / "1"
+    root.mkdir(parents=True)
+    names = ["ch_PP-OCRv4_det_server_infer.onnx", "ch_PP-OCRv4_rec_server_infer.onnx", "ch_dict.txt"]
+    for name in names:
+        (root / name).write_bytes(b"x")
+    (tmp_path / "models" / "ocr-server" / "installed.json").write_text(json.dumps({
+        "revision": "1",
+        "files": {name: {"size": 1, "sha256": "0" * 64} for name in names},
+    }), encoding="utf-8")
+
+    options = ocr._model_options()
+    assert set(options) == {"det_model_path", "rec_model_path", "rec_keys_path"}
+    assert options["rec_keys_path"].endswith("ch_dict.txt")
+
+    # نصفه‌کاره (بدون فهرست نویسه‌ها) هم کار می‌کند ولی rec_keys_path ندارد.
+    (root / "ch_dict.txt").unlink()
+    trimmed = ocr._model_options()
+    assert "rec_keys_path" not in trimmed and len(trimmed) == 2
+
+
+def test_ocr_engine_uses_detailed_model_and_falls_back(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    calls: list[dict] = []
+
+    class FakeRapid:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs:
+                raise RuntimeError("مدل دقیق بارگذاری نشد")
+
+    module = types.ModuleType("rapidocr_onnxruntime")
+    module.RapidOCR = FakeRapid
+    monkeypatch.setitem(sys.modules, "rapidocr_onnxruntime", module)
+    monkeypatch.setattr(ocr, "_model_options", lambda: {"det_model_path": "d", "rec_model_path": "r"})
+    getattr(ocr._engine, "cache_clear", lambda: None)()
+    engine = ocr._engine()
+    assert isinstance(engine, FakeRapid)
+    # اول با مدل دقیق تلاش شد، بعد مدل پیش‌فرض ساخته شد.
+    assert calls == [{"det_model_path": "d", "rec_model_path": "r"}, {}]
+    getattr(ocr._engine, "cache_clear", lambda: None)()

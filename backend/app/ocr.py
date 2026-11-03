@@ -31,6 +31,7 @@ INSTALL_HINT = 'python -m pip install -e ".[ocr-experimental]"'
 
 @lru_cache(maxsize=1)
 def _engine():
+    """موتور OCR؛ مدل دقیق اگر نصب باشد، وگرنه مدل همراهِ بستهٔ RapidOCR."""
     try:
         from rapidocr_onnxruntime import RapidOCR
     except ImportError as exc:
@@ -50,8 +51,14 @@ def _engine():
             'python -m pip install opencv-python-headless. '
             f'جزئیات: {exc}'
         ) from exc
+    options = _model_options()
+    if options:
+        try:
+            return RapidOCR(**options)
+        except Exception:  # noqa: BLE001 - مدل دقیق لود نشد؛ مدل پیش‌فرض می‌آید
+            pass
     try:
-        return RapidOCR(**_model_options())
+        return RapidOCR()
     except Exception as exc:
         raise OcrUnavailable(f'بارگذاری مدل OCR ناموفق بود: {exc}') from exc
 
@@ -61,7 +68,8 @@ def _model_options() -> dict:
 
     مدل‌های سنگین‌تر (PP-OCR server) در انبار مدل‌ها نگه‌داری می‌شوند؛ چون بیرون از
     پوشهٔ نصب‌اند، با آپدیت برنامه دوباره دانلود نمی‌شوند. اگر نبودند، همان مدل
-    پیش‌فرضِ بستهٔ RapidOCR استفاده می‌شود.
+    پیش‌فرضِ بستهٔ RapidOCR استفاده می‌شود. فهرست نویسه‌ها هم کنار مدل دانلود
+    می‌شود؛ بدون آن، خروجی مدل server به متن بی‌معنا تبدیل می‌شد.
     """
     try:
         from . import models
@@ -70,13 +78,14 @@ def _model_options() -> dict:
             return {}
         det = models.model_path('ocr-server', 'ch_PP-OCRv4_det_server_infer.onnx')
         rec = models.model_path('ocr-server', 'ch_PP-OCRv4_rec_server_infer.onnx')
+        keys = models.model_path('ocr-server', 'ch_dict.txt')
     except Exception:  # noqa: BLE001
         return {}
-    options = {}
-    if det is not None:
-        options['det_model_path'] = str(det)
-    if rec is not None:
-        options['rec_model_path'] = str(rec)
+    if det is None or rec is None:
+        return {}
+    options = {'det_model_path': str(det), 'rec_model_path': str(rec)}
+    if keys is not None:
+        options['rec_keys_path'] = str(keys)
     return options
 
 
