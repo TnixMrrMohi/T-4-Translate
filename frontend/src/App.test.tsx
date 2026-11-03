@@ -1,5 +1,5 @@
 import {describe, expect, it, vi, beforeEach} from 'vitest';
-import {fireEvent, render, screen, waitFor, within} from '@testing-library/react';
+import {act, fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {advanceProgress, App, focusAreaView, PROGRESS_CEILING} from './App';
 
@@ -1775,15 +1775,28 @@ describe('نوار به‌روزرسانی برنامه', () => {
     await waitFor(() => expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/update/download'))).toBe(true));
   });
 
-  it('درخواست را هر چند ثانیه به سرور محلی می‌فرستد', {timeout: 20000}, async () => {
-    const {calls} = renderApp({update: () => ({...baseStatus, pollSeconds: 5})});
-    await screen.findByText(/برنامه به‌روز است/);
-    const first = calls.filter(call => call.url.endsWith('/api/update/status')).length;
-    expect(first).toBeGreaterThan(0);
-    await waitFor(() => {
-      const count = calls.filter(call => call.url.endsWith('/api/update/status')).length;
-      expect(count).toBeGreaterThan(first);
-    }, {timeout: 8000});
+  it('درخواست را هر چند ثانیه به سرور محلی می‌فرستد', async () => {
+    // زمان‌بند واقعی را عوض نمی‌کنیم، فقط ثبت می‌کنیم: تیک ۵ ثانیه‌ای روی ماشین
+    // کند ممکن است دیر برسد و تست را شکننده کند؛ این‌جا خودمان تیک را می‌زنیم.
+    const timers: Array<{handler: () => void; ms: number}> = [];
+    const spy = vi.spyOn(window, 'setInterval').mockImplementation(((
+      handler: () => void, ms?: number) => {
+      timers.push({handler, ms: Number(ms) || 0});
+      return timers.length;
+    }) as unknown as typeof window.setInterval);
+    try {
+      const {calls} = renderApp({update: () => ({...baseStatus, pollSeconds: 5})});
+      await screen.findByText(/برنامه به‌روز است/);
+      const count = () => calls.filter(call => call.url.endsWith('/api/update/status')).length;
+      const first = count();
+      expect(first).toBeGreaterThan(0);
+      const poll = timers.find(timer => timer.ms === 5000);
+      expect(poll).toBeDefined();
+      await act(async () => {poll!.handler();});
+      await waitFor(() => expect(count()).toBeGreaterThan(first));
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('آپدیت آماده‌شده را با «اعمال» به میزبان دسکتاپ می‌سپارد', async () => {
