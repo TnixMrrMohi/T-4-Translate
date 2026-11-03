@@ -645,6 +645,18 @@ def analyze(path: Path, lines: list) -> dict:
                 continue
             features["bbox"] = [features["bbox"][0] + x0, features["bbox"][1] + y0,
                                 features["bbox"][2], features["bbox"][3]]
+            bx, by, bw, bh = features["bbox"]
+            region_box = (bx, by, bx + bw, by + bh)
+            coverages = [
+                _line_coverage(region_box, _line_box(lines[number - 1]))
+                for number in part_lines
+                if 0 < number <= len(lines)
+            ]
+            if not coverages or min(coverages) < MIN_LINE_COVERAGE:
+                # حروف لاتینِ دورخط‌دار می‌توانند فضای روشنِ بسته بسازند؛ ناحیهٔ
+                # داخل یک حرف فقط تکه‌ای از کادر OCR است و نباید بالن/فریاد شود.
+                outside_lines.extend(part_lines)
+                continue
             kind, confidence, reason = _classify(features)
             bubbles.append({
                 "id": len(bubbles) + 1,
@@ -760,6 +772,13 @@ def _detector_place(lines: list, bubbles: list, outside_lines: list, path: Path,
         if area < total * 0.0002 or area > total * 0.6:
             remaining.append(number)   # لکهٔ ریز یا کل صفحه، نه حباب
             continue
+        region_box = (int(stats[label, cv2.CC_STAT_LEFT]),
+                      int(stats[label, cv2.CC_STAT_TOP]),
+                      int(stats[label, cv2.CC_STAT_LEFT] + stats[label, cv2.CC_STAT_WIDTH]),
+                      int(stats[label, cv2.CC_STAT_TOP] + stats[label, cv2.CC_STAT_HEIGHT]))
+        if _line_coverage(region_box, box) < MIN_LINE_COVERAGE:
+            remaining.append(number)   # ماسکِ داخل یک حرفِ دورخط‌دار، نه بالن
+            continue
         grouped.setdefault(label, []).append(number)
     for label, numbers in grouped.items():
         x = int(stats[label, cv2.CC_STAT_LEFT])
@@ -838,6 +857,9 @@ AREA_MAX_WIDTH_RATIO = 8.0    # کادر شکل نباید بی‌اندازه �
 # این حدها هنوز کادرهای بسیار بزرگ/اشتباه را رد می‌کنند، اما بالن با متن کوچک را می‌پذیرند.
 AREA_MAX_HEIGHT_RATIO = 36.0
 AREA_MAX_RATIO = 100.0
+# ناحیهٔ درونِ حروفِ کمیکِ دورخط‌دار گاهی بسته می‌شود و شبیه یک بالن کوچک دیده می‌شود.
+# یک بالن واقعی باید بیشترِ کادر خط OCR را در بر بگیرد؛ در غیر این صورت خط، بیرون بالن است.
+MIN_LINE_COVERAGE = 0.65
 OUTSIDE_GROUP_GAP = 1.8  # فاصلهٔ عمودی مجاز (برابر ارتفاع خط) برای یک بلوک بیرون بالن
 
 
@@ -853,6 +875,25 @@ def _line_box(line) -> tuple[float, float, float, float] | None:
     xs = [point[0] for point in points]
     ys = [point[1] for point in points]
     return min(ys), max(ys), min(xs), max(xs)
+
+
+def _line_coverage(region_box, line_box) -> float:
+    """سهمی از کادر OCR خط که داخل ناحیهٔ تشخیص‌داده‌شده قرار گرفته است.
+
+    `region_box` به شکل (چپ، بالا، راست، پایین) و `line_box` خروجی `_line_box`
+    یعنی (بالا، پایین، چپ، راست) است. بالن باید متن را در بر بگیرد؛ تکه‌ای از
+    فضای سفیدِ داخل یک حرف معمولاً فقط چند درصد خط را پوشش می‌دهد.
+    """
+    if line_box is None:
+        return 0.0
+    top, bottom, left, right = line_box
+    area = max(0.0, right - left) * max(0.0, bottom - top)
+    if area <= 0:
+        return 0.0
+    region_left, region_top, region_right, region_bottom = region_box
+    width = max(0.0, min(right, region_right) - max(left, region_left))
+    height = max(0.0, min(bottom, region_bottom) - max(top, region_top))
+    return width * height / area
 
 
 def _cluster(numbers: list[int], by_number: dict) -> list[list[int]]:

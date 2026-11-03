@@ -4,7 +4,7 @@ import random
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from app import bubbles
 
@@ -253,7 +253,65 @@ def test_seed_point_ignores_tiny_bright_specks():
     assert blob is not None and int(blob.sum()) > 1000
 
 
+def test_outlined_caption_is_one_outside_narration_not_many_shout_bubbles(tmp_path):
+    """حروف کمیکِ روشن با دورخط، ناحیهٔ درونی بسته می‌سازند اما بالن نیستند."""
+    image_path = tmp_path / "outlined-caption.png"
+    image = Image.new("RGB", (800, 500), (80, 105, 145))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=24)
+    texts = [
+        "THE MAINLAND IMPERIAL", "MARTIAL ART", "TRANSMITTED A LEGEND",
+        "OF THE CATALOGUE OF", "NINE IN-CAVE RECIPES", "WRITTEN BY THE ANCIENT",
+        "MAGIC EMPEROR WHO", "RECORDS ALL THE", "EXCELLENT STUDIES", "OF HIS LIFE",
+    ]
+    lines = []
+    for index, text in enumerate(texts):
+        position = (390, 20 + index * 43)
+        draw.text(position, text, font=font, fill="white", stroke_width=2, stroke_fill="black")
+        left, top, right, bottom = draw.textbbox(position, text, font=font, stroke_width=2)
+        lines.append({"text": text, "confidence": 0.9,
+                      "quad": [[left, top], [right, top], [right, bottom], [left, bottom]]})
+    image.save(image_path)
+
+    document = bubbles.analyze(image_path, lines)
+    assert [(bubble["kind"], bubble["lines"]) for bubble in document["bubbles"]] == [
+        ("outside", list(range(1, len(texts) + 1)))
+    ]
+    blocks = bubbles.blocks(document, lines)
+    assert len(blocks) == 1
+    assert blocks[0]["kind"] == "outside"
+    assert blocks[0]["tone"] == "متن توضیحی، زمزمه یا سیستم"
+    assert blocks[0]["text"].split() == " ".join(texts).split()
+
+
+def test_detector_mask_must_cover_the_line_before_it_becomes_a_bubble(tmp_path, monkeypatch):
+    """ماسک مدل که فقط یک حرف را می‌پوشاند، نباید متن توضیحی را به دیالوگ تبدیل کند."""
+    import cv2
+    import numpy as np
+    from app import textdet
+
+    image_path = tmp_path / "background.png"
+    Image.new("RGB", (200, 120), (100, 120, 140)).save(image_path)
+    line = {"text": "MAGIC EMPEROR WHO", "quad": [[40, 40], [160, 40], [160, 60], [40, 60]]}
+    monkeypatch.setattr(textdet, "available", lambda: True)
+    tiny_mask = np.zeros((120, 200), np.uint8)
+    tiny_mask[45:55, 90:120] = 1  # ماسکِ درون چند حرف، فقط بخش کوچکی از خط
+    monkeypatch.setattr(textdet, "masks", lambda _image: {"bubble": tiny_mask})
+    bubbles_found = []
+    remaining = bubbles._detector_place([line], bubbles_found, [1], image_path, np, cv2)
+    assert remaining == [1]
+    assert bubbles_found == []
+
+    true_bubble = np.zeros((120, 200), np.uint8)
+    true_bubble[25:75, 25:175] = 1  # بالن واقعی که خط را کامل در بر می‌گیرد
+    monkeypatch.setattr(textdet, "masks", lambda _image: {"bubble": true_bubble})
+    remaining = bubbles._detector_place([line], bubbles_found, [1], image_path, np, cv2)
+    assert remaining == []
+    assert len(bubbles_found) == 1 and bubbles_found[0]["lines"] == [1]
+
+
 def test_block_area_is_the_bubble_geometry_for_font_sizing():
+
     """کادر شکل (area) جدا از کادر متن نگه داشته می‌شود تا اندازهٔ قلم به بالن بستگی داشته باشد."""
     by_number = {1: {"text": "hello", "quad": [[150, 200], [250, 200], [250, 240], [150, 240]]}}
     block = bubbles._block([1], by_number, "speech", [100, 150, 200, 300])
