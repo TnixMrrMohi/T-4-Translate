@@ -269,6 +269,12 @@ def test_block_area_is_the_bubble_geometry_for_font_sizing():
     block = bubbles._block([1], by_number, "speech", [0, 0, 600, 800])
     assert block["area"] is None
 
+    # بالن بزرگ با متن OCR کم‌ارتفاعِ ۸ پیکسلی نباید به‌خاطر نسبت ارتفاع/مساحت حذف شود.
+    tiny_line = {1: {"text": "...", "quad": [[145, 140], [265, 140], [265, 148], [145, 148]]}}
+    block = bubbles._block([1], tiny_line, "speech", [50, 30, 310, 230])
+    assert block["bbox"] == [145, 140, 265, 148]
+    assert block["area"] == [50, 30, 360, 260]
+
     # بدون بالن (مثلاً متن بیرون بالن) کادر شکل وجود ندارد.
     block = bubbles._block([1], by_number, "outside", [])
     assert block["bbox"] == [150, 200, 250, 240]

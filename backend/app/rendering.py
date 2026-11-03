@@ -23,6 +23,9 @@ class RenderError(Exception):
 MAX_FONT_SIZE = 96
 # اندازهٔ قلم فارسی نسبت به ارتفاع هر خط از متن اصلی (۱ = هم‌اندازه).
 FONT_TO_SOURCE_RATIO = 1.0
+# اندازهٔ هدفِ قلم نسبت به بالن؛ ترجمه‌های بلند با _fit کوچک‌تر می‌شوند و می‌شکنند.
+BUBBLE_FONT_HEIGHT_RATIO = 0.22
+BUBBLE_FONT_WIDTH_RATIO = 0.12
 MIN_FONT_SIZE = 8
 LINE_HEIGHT_RATIO = 1.45
 PADDING_RATIO = 0.08
@@ -452,6 +455,7 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
         # اندازهٔ قلم باید به اندازهٔ «شکل بالن» بستگی داشته باشد، نه به کادر تنگِ
         # متن اصلی؛ وگرنه متن فارسی ناگهان خیلی ریز درمی‌آید.
         box = _shape_box(block, (left, top, right, bottom), canvas_width, canvas_height)
+        has_bubble_area = box is not None
         if box is None:
             # بالن دست‌کشیده معمولاً کمی از کادر بزرگ‌تر است؛ حاشیهٔ کوچک داخل کادر.
             inset_x = max(2, round((right - left) * 0.04))
@@ -474,15 +478,27 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
         chosen_font = override.get("font")
         if isinstance(chosen_font, str) and chosen_font in font_files:
             path = font_files[chosen_font]
-        # اندازهٔ نوشتهٔ فارسی، هم‌اندازهٔ نوشتهٔ اصلیِ همان ناحیه می‌ماند: ارتفاع
-        # کادر متن تقسیم بر تعداد خطوط OCR، ضرب در نسبت تنظیم‌شده.
+        # حداقل اندازهٔ قبلی از ارتفاع متن OCR می‌آمد؛ اگر خط اصلی فقط ۸ پیکسل
+        # بود، ترجمه هم ۸ پیکسلی می‌شد و اصلاً به چند خط نمی‌شکست. اندازهٔ متن اصلی
+        # هنوز سقف پایه است، اما در بالنِ تشخیص‌داده‌شده اجازه می‌دهیم قلم تا اندازهٔ
+        # متناسب با خود بالن بزرگ شود؛ _fit آن را با شکستِ کلمه‌ای در ارتفاع بالن جا می‌دهد.
         line_count = max(1, len(block.get("lines") or []))
-        cap = (bottom - top) / line_count * FONT_TO_SOURCE_RATIO
+        source_cap = (bottom - top) / line_count * FONT_TO_SOURCE_RATIO
         left_b, top_b, right_b, bottom_b = _inset_box(box, kind, fill)
         box_width = right_b - left_b
         box_height = bottom_b - top_b
         if box_width < 8 or box_height < 8:
             continue
+        cap = source_cap
+        if has_bubble_area and kind != "outside":
+            # اندازهٔ هدف با ابعاد واقعی بالن متناسب است، نه با پیکسل‌های متن اصلی.
+            # سقف عرضی مانع بزرگ شدن بی‌رویهٔ یک ترجمهٔ کوتاه در بالن پهن می‌شود؛
+            # محدودیت ارتفاعی هم چند خط را داخل بالن نگه می‌دارد. متن بلندتر با
+            # wrap_text در خط‌های کلمه‌ای می‌شکند و _fit اندازه را دقیق جا می‌کند.
+            bubble_cap = min(MAX_FONT_SIZE,
+                             box_height * BUBBLE_FONT_HEIGHT_RATIO,
+                             box_width * BUBBLE_FONT_WIDTH_RATIO)
+            cap = max(source_cap, bubble_cap)
         if path and not font_supports(path, text):
             path = None
         padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
