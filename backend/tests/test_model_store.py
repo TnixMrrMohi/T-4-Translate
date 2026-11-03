@@ -110,6 +110,36 @@ def test_unknown_model_raises_displayable_error(store):
         models.remove("nope")
 
 
+def test_status_and_system_endpoints_survive_unusable_model_directory(monkeypatch, tmp_path):
+    """فهرست و سخت‌افزار باید حتی با مسیر مدل خراب/غیرقابل‌نوشتن خوانده شوند."""
+    blocked = tmp_path / "models-is-a-file"
+    blocked.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("T4_MODELS_DIR", str(blocked))
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("T4_AUTO_MODELS", "0")
+
+    with TestClient(app) as client:
+        model_response = client.get("/api/models")
+        system_response = client.get("/api/system")
+
+    assert model_response.status_code == 200, model_response.text
+    assert system_response.status_code == 200, system_response.text
+    assert model_response.json()["models"]
+    assert all(not row["installed"] for row in model_response.json()["models"])
+    assert model_response.json()["totalBytes"] == 0
+
+
+def test_prepare_reports_unwritable_model_directory(store, monkeypatch, tmp_path):
+    blocked = tmp_path / "models-is-a-file"
+    blocked.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("T4_MODELS_DIR", str(blocked))
+
+    with pytest.raises(models.ModelError, match="مسیر و فضای آزاد دیسک را بررسی کنید"):
+        models.prepare("demo")
+    assert models.progress()["running"] is False
+    assert "قابل دسترسی یا نوشتن نیست" in models.progress()["error"]
+
+
 def test_source_url_uses_mirror_then_catalog(store, monkeypatch):
     item = models.BY_ID["demo"]["files"][0]
     assert models._source_url(item) == str(store.parent / "mirror" / "demo" / "demo.onnx")

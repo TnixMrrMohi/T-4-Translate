@@ -67,6 +67,24 @@ describe('پنل سخت‌افزار و مدل‌ها', () => {
     expect(within(dialog).getByText(/198 مگابایت/)).toBeInTheDocument();
   });
 
+  it('خطای یکی از APIها را با جزئیات نشان می‌دهد و دادهٔ API سالم را نگه می‌دارد', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/system') return json({detail: 'storage path is unavailable'}, 500);
+      if (String(input) === '/api/models') {
+        return json({models: [LAMA, DETECTOR], progress: {id: null, fraction: 0, message: '', running: false, error: null},
+          totalBytes: LAMA.sizeBytes, dir: '/data/models', mirror: ''});
+      }
+      return json({}, 404);
+    }));
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText(DETECTOR.title)).toBeInTheDocument();
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('HTTP 500');
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('storage path is unavailable');
+  });
+
   it('مدل نصب‌نشده دکمهٔ نصب دارد و درخواست را به سرور می‌فرستد', async () => {
     const user = userEvent.setup();
     render(<SystemPanel />);

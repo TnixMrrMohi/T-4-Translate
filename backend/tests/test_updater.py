@@ -117,6 +117,27 @@ def _manifest(install: Path, version: str, changed: dict[str, bytes], removed=No
 
 # --------------------------------------------------------------------------- نسخه
 
+def test_json_state_write_retries_transient_windows_replace_lock(monkeypatch, tmp_path):
+    target = tmp_path / "update-state.json"
+    target.write_text('{"old": true}', encoding="utf-8")
+    original_replace = Path.replace
+    calls = 0
+
+    def transient_lock(path, destination):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise PermissionError("temporary Windows file lock")
+        return original_replace(path, destination)
+
+    monkeypatch.setattr(Path, "replace", transient_lock)
+    updater._write_json(target, {"new": True})
+
+    assert calls == 3
+    assert json.loads(target.read_text(encoding="utf-8")) == {"new": True}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_version_compare_handles_tags_and_suffixes():
     assert updater.is_newer("1.3.0", "1.2.3")
     assert updater.is_newer("v2.0.0", "1.9.9")
