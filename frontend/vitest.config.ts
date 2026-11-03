@@ -8,5 +8,8 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test-setup.ts'],
     include: ['src/**/*.test.tsx'],
+    // رانرهای CI کندترند؛ سقف پیش‌فرض ۵ ثانیه باعث «تست شکست» الکی می‌شد.
+    testTimeout: 20000,
+    hookTimeout: 20000,
   },
 });

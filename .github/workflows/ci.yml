@@ -64,8 +64,27 @@ jobs:
         working-directory: frontend
 
       - name: Run frontend tests
-        run: npm test
+        shell: pwsh
+        run: |
+          npm test 2>&1 | Tee-Object -FilePath frontend-tests.log
+          if ($LASTEXITCODE -ne 0) {
+            # نام تست شکست‌خورده در GitHub ثبت می‌شود تا بدون دانلود لاگ هم دیده شود.
+            Get-Content frontend-tests.log |
+              Select-String -Pattern 'FAIL |Test timed out|AssertionError|TestingLibraryElementError|Error: ' |
+              Select-Object -First 25 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            exit 1
+          }
         working-directory: frontend
+
+      - name: Upload frontend test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-tests-log
+          path: frontend/frontend-tests.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - run: npm run build
         working-directory: frontend
