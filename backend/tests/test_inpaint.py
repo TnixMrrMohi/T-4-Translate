@@ -148,7 +148,7 @@ def test_nonfinite_model_output_is_rejected(caplog):
     assert "Invalid LaMa output" in caplog.text
 
 
-def test_context_fallback_feathers_inside_not_just_in_comment(monkeypatch):
+def test_context_fallback_fully_replaces_original_mask_core(monkeypatch):
     before = np.full((60, 80, 3), 100, np.uint8)
     result = before.copy()
     mask = np.zeros((60, 80), bool)
@@ -156,7 +156,7 @@ def test_context_fallback_feathers_inside_not_just_in_comment(monkeypatch):
     monkeypatch.setattr(cleaning, "_push_pull_fill", lambda cv2, np, window, local: np.full_like(window, 200))
     assert cleaning._context_fill(cv2, np, result, mask, 8, grain=np.zeros(3))
     assert np.array_equal(result[~mask], before[~mask])
-    assert 100 < result[30, 10, 0] < result[30, 11, 0] < result[30, 40, 0] == 200
+    assert (result[mask] == 200).all()
 
 
 def test_catalog_filename_loads_real_store_path_and_detector_supplies_mask(monkeypatch, tmp_path):
