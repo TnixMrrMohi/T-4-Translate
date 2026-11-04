@@ -84,7 +84,7 @@ def test_pipeline_keeps_numbering_geometry_and_persian_ink(tmp_path, monkeypatch
         first = layout['blocks'][0]['number']
         override = {str(first): {'x': 160, 'y': 150, 'size': 24}}
         assert client.put(api+'/layout', json={'blocks': override}).status_code == 200
-        saved = json.loads((tmp_path/'jobs'/job/'layout.json').read_text())
+        saved = json.loads((tmp_path/'jobs'/job/'layout.json').read_text(encoding='utf-8'))
         assert saved['blocks'] == override
         assert client.get(api+'/layout').json()['blocks'][0]['center'] == [160, 150]
         assert client.get(api+'/render').status_code == 409
@@ -253,7 +253,7 @@ def test_legacy_removed_promo_recovers_policy_from_revision(tmp_path, monkeypatc
     with TestClient(app) as client:
         job, _, _, layout = run_pipeline(client, image, 'remove')
         path = tmp_path/'jobs'/job/'translations.json'
-        saved = json.loads(path.read_text()); saved.pop('promo')
+        saved = json.loads(path.read_text(encoding='utf-8')); saved.pop('promo')
         path.write_text(json.dumps(saved), encoding='utf-8')
         response = client.get(f'/api/jobs/{job}/layout')
         assert response.status_code == 200, response.text
