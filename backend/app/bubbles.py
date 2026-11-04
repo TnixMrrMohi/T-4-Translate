@@ -898,22 +898,32 @@ def _line_coverage(region_box, line_box) -> float:
 
 def _cluster(numbers: list[int], by_number: dict) -> list[list[int]]:
     """خطوط بیرون بالن را به بلوک‌های نزدیک به هم می‌شکند (هر افکت جدا)."""
-    ordered = sorted(numbers, key=lambda number: (_line_box(by_number[number]) or (0, 0, 0, 0))[0])
+    ordered = sorted(numbers, key=lambda number: (
+        (_line_box(by_number[number]) or (0, 0, 0, 0))[0],
+        (_line_box(by_number[number]) or (0, 0, 0, 0))[2]))
     clusters: list[list[int]] = []
     for number in ordered:
         box = _line_box(by_number[number])
-        if box is None or not clusters:
+        target = None
+        best_gap = float("inf")
+        if box is not None:
+            for cluster in clusters:
+                previous = _line_box(by_number[cluster[-1]])
+                if previous is None:
+                    continue
+                height = max(1.0, previous[1] - previous[0], box[1] - box[0])
+                gap = box[0] - previous[1]
+                overlap = min(box[3], previous[3]) - max(box[2], previous[2])
+                # Nearby vertical lines in the SAME column can form a paragraph.
+                # Same-row or distant columns must never become a page-wide box.
+                if (box[0] >= previous[0] + height * 0.35
+                        and gap <= height * OUTSIDE_GROUP_GAP and overlap > 0
+                        and abs(gap) < best_gap):
+                    target, best_gap = cluster, abs(gap)
+        if target is None:
             clusters.append([number])
-            continue
-        previous_box = _line_box(by_number[clusters[-1][-1]])
-        if previous_box is None:
-            clusters.append([number])
-            continue
-        line_height = max(1.0, previous_box[1] - previous_box[0])
-        if box[0] - previous_box[1] <= line_height * OUTSIDE_GROUP_GAP:
-            clusters[-1].append(number)
         else:
-            clusters.append([number])
+            target.append(number)
     return clusters
 
 

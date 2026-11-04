@@ -15,6 +15,8 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageStat
 
+from . import diagnostics
+
 
 class RenderError(Exception):
     pass
@@ -291,7 +293,9 @@ def _draw_box(canvas, draw, box, text: str, path: str | None = None,
     if box_width < 8 or box_height < 8:
         return False
     # فونتِ نوع بالن اگر حروف این متن را نداشته باشد (مثلاً متن لاتین)، جانشین می‌شود.
-    if path and not font_supports(path, text):
+    if path and not font_supports(path, shape_text(text)):
+        diagnostics.log_event("rendering.font.fallback", font=Path(path).name,
+                              reason="missing_rendered_glyphs", raqm=has_raqm())
         path = None
     padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
     font, wrapped = _fit(text, box_width - 2 * padding, box_height - 2 * padding, path, cap)
@@ -499,7 +503,9 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
                              box_height * BUBBLE_FONT_HEIGHT_RATIO,
                              box_width * BUBBLE_FONT_WIDTH_RATIO)
             cap = max(source_cap, bubble_cap)
-        if path and not font_supports(path, text):
+        if path and not font_supports(path, shape_text(text)):
+            diagnostics.log_event("rendering.font.fallback", font=Path(path).name,
+                                  reason="missing_rendered_glyphs", raqm=has_raqm())
             path = None
         padding = max(1, int(min(box_width, box_height) * PADDING_RATIO))
         wanted = override.get("size")

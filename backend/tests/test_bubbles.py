@@ -337,3 +337,15 @@ def test_block_area_is_the_bubble_geometry_for_font_sizing():
     block = bubbles._block([1], by_number, "outside", [])
     assert block["bbox"] == [150, 200, 250, 240]
     assert block["area"] is None
+
+
+def test_outside_columns_do_not_merge_into_one_page_centered_block():
+    lines = [
+        {"text": "LEFT TOP", "quad": [[30,60],[180,60],[180,90],[30,90]]},
+        {"text": "RIGHT TOP", "quad": [[600,60],[780,60],[780,90],[600,90]]},
+        {"text": "LEFT NEXT", "quad": [[40,110],[170,110],[170,140],[40,140]]},
+        {"text": "RIGHT NEXT", "quad": [[610,110],[770,110],[770,140],[610,140]]},
+    ]
+    result = bubbles.blocks({"bubbles":[{"kind":"outside","lines":[1,2,3,4]}]},lines)
+    assert [block["lines"] for block in result] == [[1,3],[2,4]]
+    assert result[0]["bbox"][2] < result[1]["bbox"][0]

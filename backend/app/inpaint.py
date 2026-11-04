@@ -186,7 +186,7 @@ def _axis_weights(np, start, end, starts, index):
     return weights
 
 
-def _tiled_fill(np, cv2, image, mask):
+def _tiled_fill(np, cv2, image, mask, on_progress=None):
     """Sequential 512×512 inference with normalized overlap feathering.
 
     Always pad, never resize, partial tiles: fixed-shape ONNX exports work too,
@@ -196,6 +196,8 @@ def _tiled_fill(np, cv2, image, mask):
     """
     height, width = image.shape[:2]
     ys, xs = _tile_starts(height), _tile_starts(width)
+    report = on_progress or (lambda fraction: None)
+    tile_count = len(ys) * len(xs)
     total = np.zeros((height, width, 3), np.float32)
     weights = np.zeros((height, width), np.float32)
     for yi, y0 in enumerate(ys):
@@ -205,6 +207,7 @@ def _tiled_fill(np, cv2, image, mask):
             x1 = min(width, x0 + CHUNK)
             local_mask = mask[y0:y1, x0:x1]
             if not local_mask.any():
+                report((yi * len(xs) + xi + 1) / tile_count)
                 continue
             patch = image[y0:y1, x0:x1]
             bottom, right = CHUNK - patch.shape[0], CHUNK - patch.shape[1]
@@ -222,6 +225,7 @@ def _tiled_fill(np, cv2, image, mask):
             weight = wy[:, None] * wx[None, :]
             total[y0:y1, x0:x1] += filled.astype(np.float32) * weight[..., None]
             weights[y0:y1, x0:x1] += weight
+            report((yi * len(xs) + xi + 1) / tile_count)
     covered = weights > 0
     if not covered[mask != 0].all():
         logger.warning("LaMa tiles did not cover mask; retaining classical crop")
@@ -231,7 +235,7 @@ def _tiled_fill(np, cv2, image, mask):
     return np.clip(np.round(total), 0, 255).astype(np.uint8)
 
 
-def refine(image, result, masks, minimum_std: float = 1.0):
+def refine(image, result, masks, minimum_std: float = 1.0, on_progress=None):
     """Refine difficult regions, keeping classical pixels on any model failure.
 
     Model input is original RGB; compositing uses the already cleaned classical
@@ -246,8 +250,10 @@ def refine(image, result, masks, minimum_std: float = 1.0):
 
         height, width = result.shape[:2]
         output = result.copy()
-        for mask in masks:
+        for index, mask in enumerate(masks):
             if not mask.any():
+                if on_progress:
+                    on_progress((index + 1) / len(masks))
                 continue
             rows, cols = np.nonzero(mask)
             x0, x1 = max(0, int(cols.min()) - PAD), min(width, int(cols.max()) + PAD + 1)
@@ -255,7 +261,10 @@ def refine(image, result, masks, minimum_std: float = 1.0):
             patch = np.ascontiguousarray(image[y0:y1, x0:x1])
             region_mask = mask[y0:y1, x0:x1]
             local_mask = region_mask.astype(np.uint8) * 255
-            filled = _tiled_fill(np, cv2, patch, local_mask)
+            kwargs = {"on_progress": lambda f: on_progress((index + f) / len(masks))} if on_progress else {}
+            filled = _tiled_fill(np, cv2, patch, local_mask, **kwargs)
+            if on_progress:
+                on_progress((index + 1) / len(masks))
             if filled is None:
                 continue
             if not _looks_reasonable(np, filled, patch, region_mask, minimum_std):

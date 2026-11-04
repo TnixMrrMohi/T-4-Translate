@@ -32,6 +32,9 @@ function mockApi(options: {
   progress?: unknown | (() => unknown);
   /** اگر بدهید، پاسخ OCR تا resolve شدن این Promise عقب می‌افتد. */
   holdOcr?: () => Promise<void>;
+  holdClean?: () => Promise<void>;
+  onClean?: Handler;
+  cleanProgress?: unknown;
   /** پاسخ منبع ترجمه بر اساس تنظیم متن تبلیغاتی (replace/remove). */
   sourceFor?: (promo: string) => unknown;
   /** فهرست ناحیه‌های پاک‌سازی (مرحلهٔ ۳). */
@@ -80,6 +83,9 @@ function mockApi(options: {
       return json({jobId: JOB_ID, provider: 'mock', lines: options.ocrLines ?? [], revision: 'r'.repeat(64)});
     }
     if (method === 'POST' && url.endsWith('/clean')) {
+      if (options.holdClean) await options.holdClean();
+      const custom = options.onClean?.(init);
+      if (custom) return custom;
       const areas = (body as {areas?: number[]} | undefined)?.areas;
       if (Array.isArray(areas)) {
         return json({jobId: JOB_ID, areas,
@@ -89,6 +95,9 @@ function mockApi(options: {
     }
     if (method === 'POST' && url.endsWith('/render')) {
       return json({jobId: JOB_ID, drawn: 2, message: 'ترجمهٔ فارسی روی پیش‌نمایش قرار گرفت؛ این خروجی هنوز آزمایشی است.'});
+    }
+    if (url.endsWith('/clean-progress')) {
+      return json(options.cleanProgress ?? {fraction: 0, stage: 'idle', running: false});
     }
     if (url.includes('/progress')) {
       const value = typeof options.progress === 'function' ? (options.progress as () => unknown)() : options.progress;
@@ -1843,5 +1852,54 @@ describe('نوار به‌روزرسانی برنامه', () => {
       update: () => ({...baseStatus, error: 'سهمیهٔ درخواست گیت‌هاب تمام شده است؛ کمی بعد دوباره بررسی می‌شود.'}),
     });
     expect(await screen.findByText(/سهمیهٔ درخواست گیت‌هاب تمام شده است/)).toBeInTheDocument();
+  });
+});
+
+
+describe('پیشرفت پاک‌سازی و Inpaint', () => {
+  async function start(options: Parameters<typeof mockApi>[0] = {}, button = 'اجرای پاک‌سازی') {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const hold = deferred();
+    const api = mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+      holdClean: () => hold.promise,
+      cleanProgress: {fraction: .64, stage: 'clean_inpaint', running: true},
+      ...options,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'});
+    await user.click(screen.getByRole('button', {name: button}));
+    return {hold, api};
+  }
+
+  it.each(['اجرای پاک‌سازی', 'ادامه (پاک‌سازی و درج ترجمه)'])('برای «%s» پیشرفت واقعی تایل‌ها را نشان می‌دهد', async button => {
+    const {hold, api} = await start({}, button);
+    const bar = await screen.findByRole('progressbar', {name: 'پیشرفت پاک‌سازی و Inpaint'});
+    await waitFor(() => expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(64));
+    expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(100);
+    expect(screen.getByText('بازسازی پس‌زمینه با LaMa، تایل به تایل…')).toBeInTheDocument();
+    expect(api.calls.some(call => call.url.endsWith('/clean-progress'))).toBe(true);
+    hold.resolve();
+    await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument());
+  });
+
+  it('پیشرفت تکمیل‌شدهٔ درخواست قبلی نوار جدید را تا ۹۹٪ پر نمی‌کند', async () => {
+    const {hold} = await start({cleanProgress: {fraction: 1, stage: 'clean_done', running: false, finished: true}});
+    const bar = await screen.findByRole('progressbar', {name: 'پیشرفت پاک‌سازی و Inpaint'});
+    expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(20);
+    hold.resolve();
+    await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument());
+  });
+
+  it('در خطای پاک‌سازی نوار متوقف می‌شود و ۱۰۰٪ موفقیت نمایش نمی‌دهد', async () => {
+    const {hold} = await start({onClean: () => json({detail: 'خطای تست پاک‌سازی'}, 400)});
+    expect(await screen.findByRole('progressbar', {name: 'پیشرفت پاک‌سازی و Inpaint'})).toBeInTheDocument();
+    hold.resolve();
+    await screen.findByRole('alertdialog', {name: 'خطا'});
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(screen.getAllByText('خطای تست پاک‌سازی').length).toBeGreaterThan(0);
   });
 });

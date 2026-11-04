@@ -220,6 +220,13 @@ const PREVIEW_RATIO = '3 / 4';
 
 /** مرحله‌های گزارش‌شدهٔ سرور؛ هر کلید یک برچسب فارسی دارد. */
 const PROGRESS_STAGES: Record<string, string> = {
+  clean_prepare: 'آماده‌سازی پاک‌سازی…',
+  clean_classical: 'پاک‌سازی متن اصلی…',
+  clean_model: 'آماده‌سازی مدل LaMa و ماسک متن…',
+  clean_inpaint: 'بازسازی پس‌زمینه با LaMa، تایل به تایل…',
+  clean_save: 'ذخیرهٔ تصویر پاک‌شده…',
+  clean_done: 'پایان پاک‌سازی',
+  clean_error: 'پاک‌سازی ناموفق بود',
   idle: 'در انتظار شروع…',
   start: 'آماده‌سازی صفحه…',
   model: 'بارگذاری موتور تشخیص متن…',
@@ -285,7 +292,7 @@ function ProgressBar({progress}: {progress: Progress}) {
       <div
         className="progress-track"
         role="progressbar"
-        aria-label="پیشرفت تشخیص خودکار متن"
+        aria-label={progress.stage.startsWith('clean_') ? 'پیشرفت پاک‌سازی و Inpaint' : 'پیشرفت تشخیص خودکار متن'}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent}
@@ -710,6 +717,7 @@ export function App() {
   const progressTimer = useRef<number | null>(null);
   const progressHideTimer = useRef<number | null>(null);
   const progressActive = useRef(false);
+  const progressEpoch = useRef(0);
   // سرعت واقعیِ مشاهده‌شدهٔ پیشرفت؛ برای پر کردن فاصلهٔ بین دو پاسخ سرور.
   const progressPace = useRef<ProgressPace>({fraction: 0.02, at: 0, perSecond: 0});
 
@@ -1039,12 +1047,15 @@ export function App() {
     if (!job || busy || loadingData) return;
     if (cleanVersion === 0) {
       setBusy(true); setMessage('در حال پاک‌سازی آزمایشی…'); setRenderVersion(0);
+      startProgress(job.jobId, 'clean');
       try {
         const response = await fetch(`/api/jobs/${job.jobId}/clean`, {method: 'POST'});
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی ناموفق بود.');
         setCleanVersion(Date.now());
+        finishProgress('clean');
       } catch (error) {
+        abortProgress();
         fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');
         setBusy(false);
         return;
@@ -1201,6 +1212,7 @@ export function App() {
     if (!job || busy || areasBusy || loadingData || areaPick.length === 0) return;
     setAreasBusy(true);
     setMessage('در حال پاک‌سازی مجدد ناحیه‌های انتخاب‌شده…');
+    startProgress(job.jobId, 'clean');
     try {
       const response = await fetch(`/api/jobs/${job.jobId}/clean`, {
         method: 'POST',
@@ -1211,11 +1223,13 @@ export function App() {
       if (!response.ok) {
         throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی مجدد ناموفق بود.');
       }
+      finishProgress('clean');
       setCleanVersion(Date.now());
       setRenderVersion(0);
       setMessage(typeof result.message === 'string' ? result.message : 'پاک‌سازی مجدد انجام شد.');
       await loadCleanAreas(job.jobId);
     } catch (error) {
+      abortProgress();
       fail(error instanceof Error ? error.message : 'پاک‌سازی مجدد ناموفق بود.');
     } finally {
       setAreasBusy(false);
@@ -1225,17 +1239,19 @@ export function App() {
   async function cleanImage() {
     if (!job || busy || loadingData) return;
     setBusy(true); setMessage('در حال پاک‌سازی آزمایشی…'); setCleanVersion(0); setRenderVersion(0);
+    startProgress(job.jobId, 'clean');
     try {
       const response = await fetch(`/api/jobs/${job.jobId}/clean`, {method: 'POST'});
       const result = await response.json();
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی ناموفق بود.');
+      finishProgress('clean');
       setCleanVersion(Date.now());
       setRenderVersion(0);  // خروجی قبلی با پاک‌سازی جدید معتبر نیست
       setAreaPick([]);
       setMessage('پاک‌سازی انجام شد. با «ادامه» ترجمه روی تصویر درج می‌شود.');
       setStep(3);
       await loadCleanAreas(job.jobId);
-    } catch (error) {fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');}
+    } catch (error) {abortProgress(); fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');}
     finally {setBusy(false);}
   }
 
@@ -1374,27 +1390,30 @@ export function App() {
   }, [step, job, source]);
 
   function stopProgressTimers() {
+    progressEpoch.current += 1;
     if (progressTimer.current !== null) {window.clearInterval(progressTimer.current); progressTimer.current = null;}
     if (progressHideTimer.current !== null) {window.clearTimeout(progressHideTimer.current); progressHideTimer.current = null;}
   }
 
   /** شروع نوار پیشرفت: درصد واقعی از سرور خوانده می‌شود و تا آن هنگام از زمان تخمین زده می‌شود. */
-  function startProgress(jobId: string) {
+  function startProgress(jobId: string, operation: 'ocr' | 'clean' = 'ocr') {
     stopProgressTimers();
     progressActive.current = true;
+    const epoch = progressEpoch.current;
     progressPace.current = {fraction: 0.02, at: Date.now(), perSecond: 0};
-    setOcrProgress({fraction: 0.02, stage: 'start', running: true});
+    setOcrProgress({fraction: 0.02, stage: operation === 'clean' ? 'clean_prepare' : 'start', running: true});
     const poll = async () => {
       let server: Progress | null = null;
       try {
-        const response = await fetch(`/api/jobs/${jobId}/progress`);
+        const response = await fetch(`/api/jobs/${jobId}/${operation === 'clean' ? 'clean-progress' : 'progress'}`);
         if (response.ok) {
           const data = await response.json() as Partial<Progress>;
-          if (typeof data.fraction === 'number') server = data as Progress;
+          if (typeof data.fraction === 'number' && (operation !== 'clean' || data.running)) server = data as Progress;
         }
       } catch {
         // سرور جواب نداد؛ نوار روی همان مقدار (با حرکت آرام مرحلهٔ اول) می‌ماند.
       }
+      if (epoch !== progressEpoch.current || !progressActive.current) return;
       // عدد سرور ملاک است؛ بین دو گزارش، نوار با سرعتِ واقعیِ مشاهده‌شده پر می‌شود
       // (نه با تخمین زمانیِ کور که زودتر از موعد به ۹۹٪ می‌رسید).
       const advanced = advanceProgress(progressPace.current, server?.fraction ?? 0, Date.now());
@@ -1411,11 +1430,11 @@ export function App() {
   }
 
   /** پایان کار: نوار تا ۱۰۰٪ پر می‌شود و نیم‌ثانیه بعد جای خود را به نتیجه می‌دهد. */
-  function finishProgress() {
+  function finishProgress(operation: 'ocr' | 'clean' = 'ocr') {
     stopProgressTimers();
     if (!progressActive.current) return;
     progressActive.current = false;
-    setOcrProgress({fraction: 1, stage: 'done', finished: true});
+    setOcrProgress({fraction: 1, stage: operation === 'clean' ? 'clean_done' : 'done', finished: true});
     progressHideTimer.current = window.setTimeout(() => {setOcrProgress(null); progressHideTimer.current = null;}, 500);
   }
 
@@ -1832,6 +1851,7 @@ export function App() {
           {step === 3 && (
             <>
               <h2 className="wizard-title">مرحله ۳: پاک‌سازی متن اصلی</h2>
+              {ocrProgress?.stage.startsWith('clean_') && <ProgressBar progress={ocrProgress} />}
               {!job ? (
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : !hasSaved ? (

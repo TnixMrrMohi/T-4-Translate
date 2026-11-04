@@ -2,7 +2,7 @@
 
 import asyncio
 import hashlib
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 import warnings
 import json
@@ -599,6 +599,21 @@ def translation_blocks(job_id: str, lines: list) -> list:
     return bubbles.blocks(bubbles_for(job_id, lines), lines)
 
 
+def saved_translation_blocks(job_id: str, lines: list, translation: dict) -> list:
+    """Render/layout/area IDs must match the numbering the user translated."""
+    blocks = translation_blocks(job_id, lines)
+    action = translation.get("promo")
+    if action in PROMO_ACTIONS:
+        return apply_promo(blocks, action)
+    # Older saves did not persist the policy. Recover it from the same revision
+    # accepted by _translation_stale, rather than silently renumbering the job.
+    for candidate in PROMO_ACTIONS:
+        numbered = apply_promo(blocks, candidate)
+        if blocks_revision(lines, numbered, candidate) == translation.get("sourceRevision"):
+            return numbered
+    return apply_promo(blocks, "replace")
+
+
 def apply_promo(block_list: list, action: str) -> list:
     """متن‌های تبلیغاتی (واترمارک/آدرس سایت/نام اسکنر) را حذف یا با moonb.ir جایگزین می‌کند.
 
@@ -708,7 +723,7 @@ def _translation_stale(job_id: str, translation: dict) -> bool:
     """
     saved = translation.get("sourceRevision")
     stored = translation.get("promo")
-    promos = [stored] if stored in ("replace", "remove") else ["replace", "remove"]
+    promos = [stored] if stored in PROMO_ACTIONS else list(PROMO_ACTIONS)
     for promo in promos:
         try:
             revision = translation_source(job_id, promo)["revision"]
@@ -745,6 +760,29 @@ def _drop_render(workspace: Path) -> None:
             pass
 
 
+@app.get("/api/jobs/{job_id}/clean-progress")
+def get_clean_progress(job_id: str) -> dict:
+    """Independent from OCR so an old completed OCR cannot fill the clean bar."""
+    get_job(job_id)
+    data = progress.snapshot(f"{job_id}:clean")
+    return {**(data or {"fraction": 0.0, "stage": "idle", "running": False,
+                       "finished": False, "error": None}), "jobId": job_id}
+
+
+@contextmanager
+def _clean_run(job_id: str):
+    key = f"{job_id}:clean"
+    progress.begin(key, "clean_prepare")
+    try:
+        yield progress.callback(key)
+    except BaseException as exc:
+        progress.fail(key, "پاک‌سازی ناموفق بود.", "clean_error")
+        diagnostics.log_exception("cleaning.job.failed", jobId=job_id, errorType=type(exc).__name__)
+        raise
+    else:
+        progress.finish(key, "clean_done")
+
+
 @app.post("/api/jobs/{job_id}/clean")
 async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -> dict:
     """پاک‌سازی نواحی ترجمه‌شده؛ با ``areas`` فقط ناحیه‌های انتخاب‌شده دوباره پاک می‌شوند."""
@@ -759,7 +797,7 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
         line_translations = translation.get("lineTranslations") or translation["translations"]
         areas = None
         if body is not None and body.areas is not None:
-            block_list = translation_blocks(job_id, source["lines"])
+            block_list = saved_translation_blocks(job_id, source["lines"], translation)
             known = {item["number"] for item in block_list}
             unknown = [number for number in body.areas if number not in known]
             if unknown:
@@ -770,40 +808,41 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
         only = None
         base = None
         if areas is not None:
-            block_list = translation_blocks(job_id, source["lines"])
+            block_list = saved_translation_blocks(job_id, source["lines"], translation)
             only = {line for item in block_list if item["number"] in areas for line in item["lines"]}
             existing = workspace / "clean.png"
             if not existing.is_file():
                 raise HTTPException(409, "ابتدا یک‌بار پاک‌سازی کامل را اجرا کنید.")
             base = existing
-        try:
-            clean, mask = await run_native_safely(
-                partial(cleaning.clean_image, workspace / "source.img", source["lines"],
-                        line_translations, base=base, only=only, force=base is not None,
-                        extra=set(translation.get("cleanLines") or [])))
-        except cleaning.CleaningError as exc:
-            raise HTTPException(400, str(exc)) from None
-        try:
-            clean.save(workspace / "clean.png.tmp", format="PNG")
-            mask.save(workspace / "mask.png.tmp", format="PNG")
-            os.replace(workspace / "clean.png.tmp", workspace / "clean.png")
-            os.replace(workspace / "mask.png.tmp", workspace / "mask.png")
-        finally:
-            clean.close()
-            mask.close()
-        stamp = {"sourceRevision": translation["sourceRevision"], "translations": translation["translations"]}
-        (workspace / "clean-meta.json.tmp").write_text(json.dumps(stamp, ensure_ascii=False), encoding="utf-8")
-        os.replace(workspace / "clean-meta.json.tmp", workspace / "clean-meta.json")
-        # پاک‌سازی تغییر کرده است؛ پیش‌نمایش رندر قبلی دیگر معتبر نیست.
-        _drop_render(workspace)
-        try:
-            (workspace / "clean-preview.png").unlink()
-        except FileNotFoundError:
-            pass
-        if areas is not None:
-            return {"jobId": job_id, "areas": areas,
-                    "message": f"پاک‌سازی {len(areas)} ناحیهٔ انتخاب‌شده دوباره انجام شد."}
-        return {"jobId": job_id, "message": "پاک‌سازی آزمایشی انجام شد؛ هنوز ترجمه روی تصویر قرار نگرفته است."}
+        with _clean_run(job_id) as report:
+            try:
+                clean, mask = await run_native_safely(
+                    partial(cleaning.clean_image, workspace / "source.img", source["lines"],
+                            line_translations, base=base, only=only, force=base is not None,
+                            extra=set(translation.get("cleanLines") or []), on_progress=report))
+            except cleaning.CleaningError as exc:
+                raise HTTPException(400, str(exc)) from None
+            try:
+                clean.save(workspace / "clean.png.tmp", format="PNG")
+                mask.save(workspace / "mask.png.tmp", format="PNG")
+                os.replace(workspace / "clean.png.tmp", workspace / "clean.png")
+                os.replace(workspace / "mask.png.tmp", workspace / "mask.png")
+            finally:
+                clean.close()
+                mask.close()
+            stamp = {"sourceRevision": translation["sourceRevision"], "translations": translation["translations"]}
+            (workspace / "clean-meta.json.tmp").write_text(json.dumps(stamp, ensure_ascii=False), encoding="utf-8")
+            os.replace(workspace / "clean-meta.json.tmp", workspace / "clean-meta.json")
+            # پاک‌سازی تغییر کرده است؛ پیش‌نمایش رندر قبلی دیگر معتبر نیست.
+            _drop_render(workspace)
+            try:
+                (workspace / "clean-preview.png").unlink()
+            except FileNotFoundError:
+                pass
+            if areas is not None:
+                return {"jobId": job_id, "areas": areas,
+                        "message": f"پاک‌سازی {len(areas)} ناحیهٔ انتخاب‌شده دوباره انجام شد."}
+            return {"jobId": job_id, "message": "پاک‌سازی آزمایشی انجام شد؛ هنوز ترجمه روی تصویر قرار نگرفته است."}
 
 
 @app.get("/api/jobs/{job_id}/clean-areas")
@@ -811,7 +850,7 @@ def clean_areas(job_id: str) -> dict:
     """فهرست ناحیه‌های پاک‌سازی (هر بالن) با کادر و متن ترجمه، برای انتخاب تک‌تک."""
     translation = read_translation(job_id)
     source = get_ocr(job_id)
-    block_list = translation_blocks(job_id, source["lines"])
+    block_list = saved_translation_blocks(job_id, source["lines"], translation)
     texts = translation.get("translations") or {}
     areas = []
     for item in block_list:
@@ -916,7 +955,7 @@ async def render_job(job_id: str) -> dict:
             raise HTTPException(409, "ابتدا پاک‌سازی را با همین ترجمه اجرا کنید.")
         source = get_ocr(job_id)
         try:
-            blocks = translation_blocks(job_id, source["lines"])
+            blocks = saved_translation_blocks(job_id, source["lines"], translation)
             drawn = await run_native_safely(
                 _render_files, workspace / "clean.png", translation, blocks,
                 workspace / "render.png", workspace / "render-meta.json",
@@ -925,6 +964,9 @@ async def render_job(job_id: str) -> dict:
             raise HTTPException(400, str(exc)) from None
         except Exception:
             raise HTTPException(500, "نمایش ترجمه روی تصویر ناموفق بود.") from None
+        diagnostics.log_event("rendering.done", jobId=job_id, drawn=drawn,
+                              blockCount=len(blocks), raqm=rendering.has_raqm(),
+                              layoutOverrides=len(layouts.read(workspace)))
         return {"jobId": job_id, "drawn": drawn,
                 "message": "ترجمهٔ فارسی روی پیش‌نمایش قرار گرفت؛ این خروجی هنوز آزمایشی است."}
 
@@ -1051,7 +1093,7 @@ async def read_layout(job_id: str) -> dict:
         state = get_job(job_id)
         layout = layouts.read(workspace)
         try:
-            blocks = translation_blocks(job_id, source["lines"])
+            blocks = saved_translation_blocks(job_id, source["lines"], translation)
             items = await run_native_safely(_layout_blocks, job_id, workspace, translation,
                                             blocks, layout)
         except rendering.RenderError as exc:
@@ -1079,7 +1121,7 @@ def write_layout(job_id: str, body: LayoutInput) -> dict:
     translation = read_translation(job_id)
     if translation["stale"]:
         raise HTTPException(409, "OCR تغییر کرده است؛ ترجمه را دوباره بررسی و ذخیره کنید.")
-    known = {str(item["number"]) for item in translation_blocks(job_id, source["lines"])}
+    known = {str(item["number"]) for item in saved_translation_blocks(job_id, source["lines"], translation)}
     known_fonts = set(_font_files())
     for number, value in body.blocks.items():
         if number not in known:
@@ -1217,7 +1259,7 @@ async def _ensure_clean_preview(job_id: str) -> Path:
         raise HTTPException(404, "تصویر پاک‌شده موجود نیست.")
     translation = read_translation(job_id)
     source = get_ocr(job_id)
-    block_list = translation_blocks(job_id, source["lines"])
+    block_list = saved_translation_blocks(job_id, source["lines"], translation)
     texts = translation.get("translations") or {}
     try:
         await run_native_safely(_write_clean_preview, workspace, block_list, texts)

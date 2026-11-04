@@ -38,7 +38,6 @@ GRAIN_LIMIT = 9.0      # سقف دانهٔ اضافه‌شده به وصله ت�
 RESIDUAL_SHARE = 0.02  # اگر این سهم از چهارضلعی هنوز «جوهر» ماند، محلی وصله می‌شود
 RESIDUAL_ALLOW = 20    # کادر مجازِ وصله، کمی بزرگ‌تر از کادر OCR
 CONTEXT_PAD = 32       # حاشیهٔ نمونه‌برداری از بافتِ اطراف هنگام پر کردنِ ناحیه
-CONTEXT_FEATHER = 1.6  # نرمیِ لبهٔ وصله تا مرزِ ناحیه دیده نشود
 
 
 class CleaningError(Exception):
@@ -274,13 +273,12 @@ def _context_fill(cv2, np, result, mask, pad: int, grain=None, seed: int = 0,
         # همین نواحی با LaMa بازسازی شوند (نتیجهٔ نرمِ فعلی جای خودش را می‌دهد).
         collector.append(mask.copy())
     filled = np.clip(filled, 0.0, 255.0)
-    # لبهٔ داخلی ماسک با وزن تدریجی ترکیب می‌شود؛ بیرون ماسک دست‌نخورده است.
-    from .inpaint import feather_alpha
-
-    alpha = feather_alpha(np, cv2, local, CONTEXT_FEATHER)
-    blended = window.astype(np.float32) * (1.0 - alpha) + filled * alpha
+    # This base still contains source ink. An inward alpha < 1 would retain
+    # original letters, particularly thin strokes, whenever LaMa is unavailable.
+    # Fully replace the classical mask core. Feathering belongs in refine(),
+    # where BOTH blend inputs are already cleaned, never against original text.
     original = result[y0:y1, x0:x1]
-    original[local != 0] = np.round(blended[local != 0]).astype(np.uint8)
+    original[local != 0] = np.round(filled[local != 0]).astype(np.uint8)
     return True
 
 
@@ -576,7 +574,14 @@ def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
     if glyphs is None or not bool(glyphs.any()):
         logger.warning("ComicTextDetector returned no text mask; using classical masks")
         return fallback
-    grown = cv2.dilate(glyphs.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
+    glyphs = np.asarray(glyphs)
+    if (glyphs.ndim != 2 or glyphs.shape != image.shape[:2]
+            or not np.isfinite(glyphs).all()):
+        logger.warning("Invalid detector mask geometry/values; using classical masks")
+        diagnostics.log_event("cleaning.text_mask.rejected", reason="shape_or_values",
+                              fallback="classical")
+        return fallback
+    grown = cv2.dilate((glyphs != 0).astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
     masks = []
     for x0, y0, x1, y1 in boxes:
         patch = grown[y0:y1, x0:x1]
@@ -603,7 +608,7 @@ def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
 def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
                 only: set[int] | None = None, force: bool = False,
                 extra: set[int] | None = None,
-                high_quality: bool = True) -> tuple[Image.Image, Image.Image]:
+                high_quality: bool = True, on_progress=None) -> tuple[Image.Image, Image.Image]:
     """متن نواحی ترجمه‌شده را پاک می‌کند و تصویر و ماسک را برمی‌گرداند.
 
     * ``base``: تصویری که نتیجه روی آن نوشته می‌شود؛ برای «پاک‌سازی مجدد» یک ناحیه،
@@ -626,6 +631,10 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
         if 'A' in original.getbands() and original.getchannel('A').getextrema()[0] < 255:
             raise CleaningError('پاک‌سازی آزمایشی تصویر شفاف را پشتیبانی نمی‌کند.')
         image = np.array(original.convert('RGB'))
+    report = on_progress or (lambda fraction, stage: None)
+    report(0.03, "clean_prepare")
+    diagnostics.log_event("cleaning.start", width=image.shape[1], height=image.shape[0],
+                          lineCount=len(lines), highQuality=high_quality, opencv=cv2.__version__)
     height, width = image.shape[:2]
     selected = np.zeros((height, width), dtype=np.uint8)     # ناحیه‌هایی که پاک می‌شوند
     untouched = np.zeros_like(selected)                      # ناحیه‌هایی که نباید تغییر کنند
@@ -671,13 +680,16 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
     mask_total = np.zeros((height, width), dtype=np.uint8)
     page_grain = None if force else _page_grain(cv2, np, image)
     hard_masks: list = []
-    for box, quad_only in zip(boxes, quads):
+    report(0.08, "clean_classical")
+    for index, (box, quad_only) in enumerate(zip(boxes, quads)):
         background = _background(np, cv2, image, box, quad_only)
         if background is None:
+            report(0.08 + 0.47 * (index + 1) / len(boxes), "clean_classical")
             continue
         _fill_ink(cv2, np, image, result, box, background, mask_total,
                   force=force, quad_mask=quad_only != 0, grain=page_grain,
                   collector=hard_masks)
+        report(0.08 + 0.47 * (index + 1) / len(boxes), "clean_classical")
 
     # جایی که الگوریتم رنگی نمی‌توانست پس‌زمینه را بسازد (نقاشی/عکس)، اگر مدل
     # هوشمند نصب باشد همان ناحیه با آن بازسازی می‌شود؛ وگرنه نتیجهٔ فعلی می‌ماند.
@@ -685,14 +697,23 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
         try:
             from . import inpaint
 
-            if inpaint.available():
-                refined = inpaint.refine(image, result, _smart_masks(np, cv2, image, boxes, hard_masks))
+            report(0.57, "clean_model")
+            ready = inpaint.available()
+            diagnostics.log_event("cleaning.inpaint.status", available=ready, regions=len(hard_masks))
+            if ready:
+                masks = _smart_masks(np, cv2, image, boxes, hard_masks)
+                kwargs = {"on_progress": lambda f: report(0.60 + 0.34 * f, "clean_inpaint")} if on_progress else {}
+                refined = inpaint.refine(image, result, masks, **kwargs)
                 if refined is not None:
                     result = refined
         except Exception:  # noqa: BLE001 - نبودِ مدل نباید پاک‌سازی را بشکند
             logger.exception("LaMa cleaning failed; retaining classical result")
             diagnostics.log_exception("cleaning.inpaint.failed", fallback="classical")
 
+    if not high_quality or not hard_masks:
+        diagnostics.log_event("cleaning.inpaint.skipped",
+                              reason="disabled" if not high_quality else "no_hard_regions")
+    report(0.96, "clean_save")
     # پایهٔ خروجی: تصویر اصلی، یا تصویر پاک‌شدهٔ فعلی برای پاک‌سازی مجدد یک ناحیه.
     if base is not None:
         try:
@@ -717,4 +738,6 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
     mask_total[restore] = 0
     if not mask_total.any():
         raise CleaningError('متن قابل پاک‌سازی یافت نشد.')
+    diagnostics.log_event("cleaning.done", boxes=len(boxes), maskPixels=int((mask_total != 0).sum()),
+                          changedPixels=int(np.any(canvas != base_array, axis=2).sum()))
     return Image.fromarray(canvas, 'RGB'), Image.fromarray(mask_total, 'L')
