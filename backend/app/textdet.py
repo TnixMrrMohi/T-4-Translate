@@ -10,14 +10,19 @@
   بازسازی کند و خط‌های نقاشی دست‌نخورده بمانند.
 
 مدل در انبار مدل‌ها نگه‌داری می‌شود و اگر نصب یا قابل اجرا نباشد، همهٔ تابع‌های
-اینجا بی‌صدا `None` برمی‌گردانند و برنامه با روش پیش‌فرض کار می‌کند.
+اینجا `None` برمی‌گردانند و برنامه با روش پیش‌فرض کار می‌کند؛ خطاها ثبت می‌شوند.
 """
 from __future__ import annotations
 
+import logging
 import threading
 
+from . import diagnostics
+from .models import COMIC_TEXT_DETECTOR_FILE
+
 MODEL_ID = "comic-text-detector"
-FILE = "comictextdetector.pt.onnx"
+FILE = COMIC_TEXT_DETECTOR_FILE
+logger = logging.getLogger(__name__)
 
 _session_lock = threading.Lock()
 _cache: dict = {"session": None, "failed": False, "input": None, "shape": [], "outputs": []}
@@ -33,6 +38,8 @@ def available() -> bool:
         import numpy  # noqa: F401
         import onnxruntime  # noqa: F401
     except Exception:  # noqa: BLE001
+        logger.warning("ComicTextDetector dependencies unavailable; using classical masks", exc_info=True)
+        diagnostics.log_exception("textdet.dependencies.failed", fallback="classical")
         return False
     return True
 
@@ -48,7 +55,7 @@ def _session():
 
             path = models.model_path(MODEL_ID, FILE)
             if path is None:
-                _cache["failed"] = True
+                logger.info("ComicTextDetector model not installed; using classical masks")
                 return None
             providers = [name for name in onnxruntime.get_available_providers()
                          if name != "CPUExecutionProvider"]
@@ -57,6 +64,8 @@ def _session():
             _cache.update(session=session, input=first.name, shape=list(first.shape or []),
                           outputs=[item.name for item in session.get_outputs()], failed=False)
         except Exception:  # noqa: BLE001 - هر خطایی یعنی «مدل در دسترس نیست»
+            logger.exception("ComicTextDetector initialization failed; using classical masks")
+            diagnostics.log_exception("textdet.session.failed", fallback="classical")
             _cache["failed"] = True
             return None
         return _cache["session"]
@@ -159,6 +168,8 @@ def masks(image) -> dict | None:
         outputs = list(session.run(None, {_cache["input"]: tensor}))
         chosen = _choose(np, _cache["outputs"], outputs, width, height)
     except Exception:  # noqa: BLE001 - خروجی نامعتبر نباید هیچ مرحله‌ای را بشکند
+        logger.exception("ComicTextDetector inference failed; using classical masks")
+        diagnostics.log_exception("textdet.inference.failed", fallback="classical")
         return None
     if not chosen or (chosen.get("text") is None and chosen.get("bubble") is None):
         return None

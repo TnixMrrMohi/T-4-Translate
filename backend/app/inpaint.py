@@ -5,15 +5,21 @@
 ماژول همان ناحیه‌های سخت را به مدل LaMa می‌دهد تا بافت و خطوط ادامه پیدا کنند.
 
 مدل در پوشهٔ داده‌ها نگه‌داری می‌شود (`models.py`) و اگر نصب نباشد، همهٔ تابع‌های
-اینجا بی‌صدا `None`/`False` برمی‌گردانند تا برنامه با الگوریتم پیش‌فرض کار کند.
+اینجا به روش کلاسیک برمی‌گردند؛ خطاهای اجرا برای عیب‌یابی ثبت می‌شوند.
 """
 from __future__ import annotations
 
+import logging
 import threading
+
+from . import diagnostics
 
 CHUNK = 512             # اندازهٔ تکهٔ ورودی مدل
 PAD = 32                # حاشیهٔ نمونه‌برداری دور ماسک
-MIN_SIDE = 64
+OVERLAP = 64           # هم‌پوشانی تکه‌ها (گام ۴۴۸ پیکسل)
+MASK_FEATHER = 1.2     # سیگمای گذار از مدل به تصویر کلاسیک درون لبهٔ ماسک
+
+logger = logging.getLogger(__name__)
 
 _session_lock = threading.Lock()
 _session_cache: dict = {"session": None, "failed": False, "inputs": [], "output": None}
@@ -33,6 +39,8 @@ def available() -> bool:
         import numpy  # noqa: F401
         import onnxruntime  # noqa: F401
     except Exception:  # noqa: BLE001
+        logger.warning("LaMa dependencies unavailable; using classical fallback", exc_info=True)
+        diagnostics.log_exception("inpaint.dependencies.failed", fallback="classical")
         return False
     return True
 
@@ -48,31 +56,40 @@ def _session():
 
             path = models.model_path(model_id(), "lama_fp32.onnx")
             if path is None:
-                _session_cache["failed"] = True
+                logger.info("LaMa model not installed; using classical fallback")
                 return None
             providers = [name for name in onnxruntime.get_available_providers()
                          if name != "CPUExecutionProvider"]
             session = onnxruntime.InferenceSession(str(path), providers=providers or None)
             inputs = [item.name for item in session.get_inputs()]
             outputs = session.get_outputs()
-            if not inputs:
+            if len(inputs) < 2 or not outputs:
+                logger.warning("Invalid LaMa model inputs/outputs; using classical fallback")
                 _session_cache["failed"] = True
                 return None
             _session_cache.update(session=session, inputs=inputs,
                                   output=outputs[0].name, failed=False)
         except Exception:  # noqa: BLE001 - هر خطایی یعنی «مدل در دسترس نیست»
+            logger.exception("LaMa session initialization failed; using classical fallback")
+            diagnostics.log_exception("inpaint.session.failed", fallback="classical")
             _session_cache["failed"] = True
             return None
         return _session_cache["session"]
 
 
-def _round8(value: int) -> int:
-    return max(8, int(round(value / 8.0)) * 8)
+def feather_alpha(np, cv2, mask, sigma: float = MASK_FEATHER):
+    """Soft model weight inside the mask; exactly zero outside its support.
 
-
-def _nearest_mask(np, cv2, mask, target_w: int, target_h: int):
-    """ماسک را با نزدیک‌ترین همسایه تغییر اندازه می‌دهد (لبه‌ها نرم نشوند)."""
-    return cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    Zero padding also feathers masks touching a crop/page boundary. Unlike a
+    maximum with the binary mask, this retains fractional weights on the inside
+    edge, blending into the *already cleaned* classical image, not original text.
+    """
+    binary = (mask != 0).astype(np.float32)
+    radius = max(1, int(4 * sigma + 0.5))
+    padded = np.pad(binary, radius, mode="constant")
+    blurred = cv2.GaussianBlur(padded, (0, 0), sigma)
+    alpha = blurred[radius:-radius, radius:-radius] * binary
+    return np.clip(alpha, 0.0, 1.0)[..., None]
 
 
 def _run(np, cv2, image, mask):
@@ -91,6 +108,7 @@ def _run(np, cv2, image, mask):
     mask_name = next((name for name in names[1:] if "mask" in name.lower()),
                      names[1] if len(names) > 1 else None)
     if mask_name is None:
+        logger.warning("LaMa mask input missing; using classical fallback")
         return None
     raw = None
     for scale in (1.0, 255.0):
@@ -101,12 +119,18 @@ def _run(np, cv2, image, mask):
             })[0]
             break
         except Exception:  # noqa: BLE001
+            logger.warning("LaMa inference failed (mask scale %s); using fallback if retry fails",
+                           scale, exc_info=True)
+            diagnostics.log_exception("inpaint.inference.failed", maskScale=scale, fallback="classical")
             raw = None
     if raw is None:
         return None
     out = np.asarray(raw, dtype=np.float32)
     if out.ndim == 4:
         out = out[0]
+    if out.ndim != 3 or not np.isfinite(out).all():
+        logger.warning("Invalid LaMa output; using classical fallback")
+        return None
     if out.shape[0] in (1, 3) and out.shape[0] != height:  # CHW → HWC
         out = np.transpose(out, (1, 2, 0))
     if out.shape[0] != height or out.shape[1] != width:
@@ -114,12 +138,13 @@ def _run(np, cv2, image, mask):
     if out.max() <= 1.5:
         out = out * 255.0
     out = np.clip(out, 0.0, 255.0).astype(np.uint8)
-    if out.shape[2] > 3:
-        out = out[:, :, :3]
-    return out
+    if out.shape[2] < 3:
+        logger.warning("LaMa output has fewer than three channels; using classical fallback")
+        return None
+    return out[:, :, :3]
 
 
-def _looks_reasonable(np, output, original, mask) -> bool:
+def _looks_reasonable(np, output, original, mask, minimum_std: float = 1.0) -> bool:
     """خروجی مدل باید در ناحیهٔ پاک با اطرافش هم‌خوان باشد، نه سیاه/سفیدِ یکدست."""
     if output is None or output.size == 0:
         return False
@@ -127,7 +152,7 @@ def _looks_reasonable(np, output, original, mask) -> bool:
     if not inside.any():
         return False
     values = output[inside].astype(np.float32)
-    if float(values.std(axis=0).max()) < 1.0:
+    if float(values.std(axis=0).max()) < minimum_std:
         # یک رنگِ تخت یعنی مدل چیزی نساخته؛ همان نتیجهٔ قبلی بهتر است.
         return False
     outside = ~inside
@@ -139,60 +164,112 @@ def _looks_reasonable(np, output, original, mask) -> bool:
     return True
 
 
-def refine(image, result, masks, minimum_std: float = 1.0):
-    """ناحیه‌های داده‌شده را با LaMa بازسازی می‌کند.
+def _tile_starts(length: int) -> list[int]:
+    """Cover an axis without short sliver tiles; final overlap may exceed 64."""
+    if length <= CHUNK:
+        return [0]
+    starts = list(range(0, length - CHUNK + 1, CHUNK - OVERLAP))
+    if starts[-1] != length - CHUNK:
+        starts.append(length - CHUNK)
+    return starts
 
-    ``image`` تصویر اصلی، ``result`` نتیجهٔ الگوریتم فعلی و ``masks`` فهرست ماسک‌های
-    بولی (هم‌اندازهٔ تصویر) است. برای هر ماسک، تکهٔ محلی به مدل داده می‌شود و نتیجه
-    فقط داخل همان ماسک جای‌گذاری می‌شود. اگر مدل نبود یا خروجی معقول نبود، تصویر
-    دست‌نخورده می‌ماند.
+
+def _axis_weights(np, start, end, starts, index):
+    """Linear feather over the actual overlap, including the last shifted tile."""
+    weights = np.ones(end - start, np.float32)
+    if index:
+        overlap = min(end - start, starts[index - 1] + CHUNK - start)
+        weights[:overlap] *= np.linspace(0, 1, overlap + 2, dtype=np.float32)[1:-1]
+    if index + 1 < len(starts):
+        overlap = min(end - start, end - starts[index + 1])
+        weights[-overlap:] *= np.linspace(1, 0, overlap + 2, dtype=np.float32)[1:-1]
+    return weights
+
+
+def _tiled_fill(np, cv2, image, mask):
+    """Sequential 512×512 inference with normalized overlap feathering.
+
+    Always pad, never resize, partial tiles: fixed-shape ONNX exports work too,
+    small crops keep their geometry, and GPU input memory is bounded. If *any*
+    required tile fails, discard this whole crop (no partially generated seams).
+    Accumulators live in CPU RAM; only one tile at a time goes to the provider.
+    """
+    height, width = image.shape[:2]
+    ys, xs = _tile_starts(height), _tile_starts(width)
+    total = np.zeros((height, width, 3), np.float32)
+    weights = np.zeros((height, width), np.float32)
+    for yi, y0 in enumerate(ys):
+        y1 = min(height, y0 + CHUNK)
+        wy = _axis_weights(np, y0, y1, ys, yi)
+        for xi, x0 in enumerate(xs):
+            x1 = min(width, x0 + CHUNK)
+            local_mask = mask[y0:y1, x0:x1]
+            if not local_mask.any():
+                continue
+            patch = image[y0:y1, x0:x1]
+            bottom, right = CHUNK - patch.shape[0], CHUNK - patch.shape[1]
+            padded = cv2.copyMakeBorder(patch, 0, bottom, 0, right, cv2.BORDER_REPLICATE)
+            padded_mask = cv2.copyMakeBorder(local_mask, 0, bottom, 0, right,
+                                             cv2.BORDER_CONSTANT, value=0)
+            filled = _run(np, cv2, padded, padded_mask)
+            if filled is None:
+                logger.warning("LaMa tile failed at (%d, %d); retaining classical crop", x0, y0)
+                diagnostics.log_event("inpaint.tile.failed", level=logging.WARNING,
+                                      x=x0, y=y0, fallback="classical")
+                return None
+            filled = filled[:y1 - y0, :x1 - x0]
+            wx = _axis_weights(np, x0, x1, xs, xi)
+            weight = wy[:, None] * wx[None, :]
+            total[y0:y1, x0:x1] += filled.astype(np.float32) * weight[..., None]
+            weights[y0:y1, x0:x1] += weight
+    covered = weights > 0
+    if not covered[mask != 0].all():
+        logger.warning("LaMa tiles did not cover mask; retaining classical crop")
+        return None
+    np.divide(total, np.maximum(weights, 1e-8)[..., None], out=total)
+    total[~covered] = image[~covered]
+    return np.clip(np.round(total), 0, 255).astype(np.uint8)
+
+
+def refine(image, result, masks, minimum_std: float = 1.0):
+    """Refine difficult regions, keeping classical pixels on any model failure.
+
+    Model input is original RGB; compositing uses the already cleaned classical
+    result. Feather is confined to mask support, so original letters cannot leak
+    back in and the caller's protected-region restore cannot clip an outer halo.
     """
     if not masks or _session() is None:
         return result
     try:
         import cv2
         import numpy as np
-    except Exception:  # noqa: BLE001
-        return result
 
-    height, width = result.shape[:2]
-    output = result.copy()
-    for mask in masks:
-        if not mask.any():
-            continue
-        rows, cols = np.nonzero(mask)
-        x0 = max(0, int(cols.min()) - PAD)
-        x1 = min(width, int(cols.max()) + PAD + 1)
-        y0 = max(0, int(rows.min()) - PAD)
-        y1 = min(height, int(rows.max()) + PAD + 1)
-        if x1 - x0 < 2 or y1 - y0 < 2:
-            continue
-        patch = np.ascontiguousarray(image[y0:y1, x0:x1])
-        local_mask = (mask[y0:y1, x0:x1].astype(np.uint8)) * 255
-        # LaMa ابعاد مضرب ۸ می‌خواهد؛ کمی بزرگ می‌کنیم و ماسک را هم‌اندازه می‌کنیم.
-        target_w = _round8(x1 - x0)
-        target_h = _round8(y1 - y0)
-        big = cv2.resize(patch, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-        big_mask = _nearest_mask(np, cv2, local_mask, target_w, target_h)
-        if min(target_w, target_h) < MIN_SIDE:
-            big = cv2.copyMakeBorder(big, 0, max(0, MIN_SIDE - target_h),
-                                     0, max(0, MIN_SIDE - target_w),
-                                     cv2.BORDER_REPLICATE)
-            big_mask = cv2.copyMakeBorder(big_mask, 0, max(0, MIN_SIDE - target_h),
-                                          0, max(0, MIN_SIDE - target_w),
-                                          cv2.BORDER_CONSTANT, value=0)
-        filled = _run(np, cv2, big, big_mask)
-        if filled is None:
-            continue
-        filled = cv2.resize(filled, (x1 - x0, y1 - y0), interpolation=cv2.INTER_LINEAR)
-        region_original = image[y0:y1, x0:x1]
-        region_mask = mask[y0:y1, x0:x1]
-        if not _looks_reasonable(np, filled, region_original, region_mask):
-            continue
-        # فقط داخل ماسک جای‌گذاری می‌شود؛ لبهٔ ماسک با feather نرم می‌شود.
-        alpha = cv2.GaussianBlur(region_mask.astype(np.float32), (0, 0), 1.2)
-        alpha = np.clip(np.maximum(alpha, region_mask.astype(np.float32)), 0, 1)[..., None]
-        blended = (output[y0:y1, x0:x1].astype(np.float32) * (1 - alpha)
-                   + filled.astype(np.float32) * alpha)
-        output[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
-    return output
+        height, width = result.shape[:2]
+        output = result.copy()
+        for mask in masks:
+            if not mask.any():
+                continue
+            rows, cols = np.nonzero(mask)
+            x0, x1 = max(0, int(cols.min()) - PAD), min(width, int(cols.max()) + PAD + 1)
+            y0, y1 = max(0, int(rows.min()) - PAD), min(height, int(rows.max()) + PAD + 1)
+            patch = np.ascontiguousarray(image[y0:y1, x0:x1])
+            region_mask = mask[y0:y1, x0:x1]
+            local_mask = region_mask.astype(np.uint8) * 255
+            filled = _tiled_fill(np, cv2, patch, local_mask)
+            if filled is None:
+                continue
+            if not _looks_reasonable(np, filled, patch, region_mask, minimum_std):
+                logger.warning("LaMa output rejected by quality guard; retaining classical crop")
+                diagnostics.log_event("inpaint.output.rejected", level=logging.WARNING, fallback="classical")
+                continue
+            alpha = feather_alpha(np, cv2, region_mask)
+            base = result[y0:y1, x0:x1].astype(np.float32)
+            blended = base * (1 - alpha) + filled.astype(np.float32) * alpha
+            region = output[y0:y1, x0:x1]
+            # Explicit indexing guarantees bit-exact preservation outside the mask.
+            region[region_mask != 0] = np.clip(np.round(blended[region_mask != 0]), 0, 255).astype(np.uint8)
+        return output
+    except Exception:  # includes provider OOM, invalid tensors and CPU allocation failures
+        logger.exception("LaMa refinement failed; retaining classical result")
+        diagnostics.log_exception("inpaint.refinement.failed", fallback="classical")
+        return result

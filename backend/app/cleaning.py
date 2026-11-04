@@ -17,8 +17,13 @@
 """
 from pathlib import Path
 import math
+import logging
 
 from PIL import Image
+
+from . import diagnostics
+
+logger = logging.getLogger(__name__)
 
 
 PADDING_RATIO = 0.15   # حاشیهٔ اضافی دور کادر ترجمه‌شده، نسبت به بزرگ‌ترین ضلع کادر
@@ -269,9 +274,10 @@ def _context_fill(cv2, np, result, mask, pad: int, grain=None, seed: int = 0,
         # همین نواحی با LaMa بازسازی شوند (نتیجهٔ نرمِ فعلی جای خودش را می‌دهد).
         collector.append(mask.copy())
     filled = np.clip(filled, 0.0, 255.0)
-    # لبهٔ نرم: داخلِ ماسک کامل، دورِ آن با شیبِ کوتاه؛ مرزِ وصله دیده نمی‌شود.
-    alpha = cv2.GaussianBlur(local.astype(np.float32), (0, 0), CONTEXT_FEATHER)
-    alpha = np.clip(np.maximum(alpha, local.astype(np.float32)), 0.0, 1.0)[..., None]
+    # لبهٔ داخلی ماسک با وزن تدریجی ترکیب می‌شود؛ بیرون ماسک دست‌نخورده است.
+    from .inpaint import feather_alpha
+
+    alpha = feather_alpha(np, cv2, local, CONTEXT_FEATHER)
     blended = window.astype(np.float32) * (1.0 - alpha) + filled * alpha
     original = result[y0:y1, x0:x1]
     original[local != 0] = np.round(blended[local != 0]).astype(np.uint8)
@@ -563,9 +569,12 @@ def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
             return fallback
         found = textdet.masks(image)
     except Exception:  # noqa: BLE001
+        logger.exception("Text mask extraction failed; using classical masks")
+        diagnostics.log_exception("cleaning.text_mask.failed", fallback="classical")
         return fallback
     glyphs = (found or {}).get('text')
     if glyphs is None or not bool(glyphs.any()):
+        logger.warning("ComicTextDetector returned no text mask; using classical masks")
         return fallback
     grown = cv2.dilate(glyphs.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
     masks = []
@@ -576,7 +585,19 @@ def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
         region = np.zeros_like(grown)
         region[y0:y1, x0:x1] = patch
         masks.append(region.astype(bool))
-    return masks or fallback
+    if not masks:
+        return fallback
+    # Keep fallback support for boxes missed by the detector, not whole-page
+    # fallback masks which would erase the precision gained in detected boxes.
+    for x0, y0, x1, y1 in boxes:
+        if int(grown[y0:y1, x0:x1].sum()) >= 8:
+            continue
+        for old in fallback:
+            region = np.zeros_like(grown, dtype=bool)
+            region[y0:y1, x0:x1] = old[y0:y1, x0:x1]
+            if region.any():
+                masks.append(region)
+    return masks
 
 
 def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
@@ -669,7 +690,8 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
                 if refined is not None:
                     result = refined
         except Exception:  # noqa: BLE001 - نبودِ مدل نباید پاک‌سازی را بشکند
-            pass
+            logger.exception("LaMa cleaning failed; retaining classical result")
+            diagnostics.log_exception("cleaning.inpaint.failed", fallback="classical")
 
     # پایهٔ خروجی: تصویر اصلی، یا تصویر پاک‌شدهٔ فعلی برای پاک‌سازی مجدد یک ناحیه.
     if base is not None:
