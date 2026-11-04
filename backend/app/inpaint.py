@@ -12,7 +12,8 @@ from __future__ import annotations
 import logging
 import threading
 
-from . import diagnostics
+from . import diagnostics, hardware, progress
+import time
 
 CHUNK = 512             # اندازهٔ تکهٔ ورودی مدل
 PAD = 32                # حاشیهٔ نمونه‌برداری دور ماسک
@@ -48,6 +49,10 @@ def available() -> bool:
 def _session():
     """نشست ONNX (یک‌بار ساخته و کش می‌شود). در خطا None برمی‌گردد."""
     with _session_lock:
+        profile=hardware.current_profile(refresh=True)
+        signature=(profile['cpuThreads'],tuple(profile['providers']))
+        if _session_cache.get('profile') is not None and _session_cache['profile'] != signature:
+            _session_cache.update(session=None,failed=False)
         if _session_cache["session"] is not None or _session_cache["failed"]:
             return _session_cache["session"]
         try:
@@ -58,9 +63,10 @@ def _session():
             if path is None:
                 logger.info("LaMa model not installed; using classical fallback")
                 return None
-            providers = [name for name in onnxruntime.get_available_providers()
-                         if name != "CPUExecutionProvider"]
-            session = onnxruntime.InferenceSession(str(path), providers=providers or None)
+            profile = hardware.current_profile(refresh=True)
+            options = {"sess_options": hardware.ort_options(onnxruntime, profile)} if hasattr(onnxruntime, 'SessionOptions') else {}
+            session = onnxruntime.InferenceSession(str(path), providers=profile['providers'], **options)
+            hardware.confirm_session(session)
             inputs = [item.name for item in session.get_inputs()]
             outputs = session.get_outputs()
             if len(inputs) < 2 or not outputs:
@@ -68,7 +74,7 @@ def _session():
                 _session_cache["failed"] = True
                 return None
             _session_cache.update(session=session, inputs=inputs,
-                                  output=outputs[0].name, failed=False)
+                                  output=outputs[0].name, failed=False, profile=signature)
         except Exception:  # noqa: BLE001 - هر خطایی یعنی «مدل در دسترس نیست»
             logger.exception("LaMa session initialization failed; using classical fallback")
             diagnostics.log_exception("inpaint.session.failed", fallback="classical")
@@ -98,6 +104,11 @@ def _run(np, cv2, image, mask):
     if session is None:
         return None
     height, width = image.shape[:2]
+    shape = getattr(session.get_inputs()[0], 'shape', None) if hasattr(session, 'get_inputs') else None
+    if shape and len(shape) >= 4 and any(isinstance(v, int) and v > 0 and v != n
+                                        for v, n in zip(shape[-2:], (height, width))):
+        diagnostics.log_event('inpaint.fixed_shape.fallback', tile=height, fallback='classical')
+        return None
     pixels = image.astype(np.float32) / 255.0
     tensor = np.transpose(pixels, (2, 0, 1))[None, ...]
     mask_tensor = (mask > 0).astype(np.float32)[None, None, ...]
@@ -164,21 +175,21 @@ def _looks_reasonable(np, output, original, mask, minimum_std: float = 1.0) -> b
     return True
 
 
-def _tile_starts(length: int) -> list[int]:
+def _tile_starts(length: int, tile: int = CHUNK) -> list[int]:
     """Cover an axis without short sliver tiles; final overlap may exceed 64."""
-    if length <= CHUNK:
+    if length <= tile:
         return [0]
-    starts = list(range(0, length - CHUNK + 1, CHUNK - OVERLAP))
-    if starts[-1] != length - CHUNK:
-        starts.append(length - CHUNK)
+    starts = list(range(0, length - tile + 1, tile - min(OVERLAP, tile // 4)))
+    if starts[-1] != length - tile:
+        starts.append(length - tile)
     return starts
 
 
-def _axis_weights(np, start, end, starts, index):
+def _axis_weights(np, start, end, starts, index, tile: int = CHUNK):
     """Linear feather over the actual overlap, including the last shifted tile."""
     weights = np.ones(end - start, np.float32)
     if index:
-        overlap = min(end - start, starts[index - 1] + CHUNK - start)
+        overlap = min(end - start, starts[index - 1] + tile - start)
         weights[:overlap] *= np.linspace(0, 1, overlap + 2, dtype=np.float32)[1:-1]
     if index + 1 < len(starts):
         overlap = min(end - start, end - starts[index + 1])
@@ -195,25 +206,37 @@ def _tiled_fill(np, cv2, image, mask, on_progress=None):
     Accumulators live in CPU RAM; only one tile at a time goes to the provider.
     """
     height, width = image.shape[:2]
-    ys, xs = _tile_starts(height), _tile_starts(width)
+    tile = hardware.current_profile(refresh=True)['tile']
+    ys, xs = _tile_starts(height, tile), _tile_starts(width, tile)
     report = on_progress or (lambda fraction: None)
     tile_count = len(ys) * len(xs)
     total = np.zeros((height, width, 3), np.float32)
     weights = np.zeros((height, width), np.float32)
     for yi, y0 in enumerate(ys):
-        y1 = min(height, y0 + CHUNK)
-        wy = _axis_weights(np, y0, y1, ys, yi)
+        y1 = min(height, y0 + tile)
+        wy = _axis_weights(np, y0, y1, ys, yi, tile)
         for xi, x0 in enumerate(xs):
-            x1 = min(width, x0 + CHUNK)
+            x1 = min(width, x0 + tile)
             local_mask = mask[y0:y1, x0:x1]
             if not local_mask.any():
                 report((yi * len(xs) + xi + 1) / tile_count)
                 continue
             patch = image[y0:y1, x0:x1]
-            bottom, right = CHUNK - patch.shape[0], CHUNK - patch.shape[1]
+            bottom, right = tile - patch.shape[0], tile - patch.shape[1]
             padded = cv2.copyMakeBorder(patch, 0, bottom, 0, right, cv2.BORDER_REPLICATE)
             padded_mask = cv2.copyMakeBorder(local_mask, 0, bottom, 0, right,
                                              cv2.BORDER_CONSTANT, value=0)
+            profile = hardware.current_profile(refresh=True)
+            # Re-start this crop at the smaller geometry on an emergency downgrade.
+            # The partial larger accumulator is discarded, never mixed with a new grid.
+            if profile['tile'] < tile:
+                del total, weights
+                return _tiled_fill(np, cv2, image, mask, on_progress)
+            if profile.get('availableRamMb') is not None and profile['availableRamMb'] < 1024:
+                diagnostics.log_event('inpaint.memory.fallback', fallback='classical')
+                return None
+            if profile['pauseSeconds']:
+                time.sleep(profile['pauseSeconds'])
             filled = _run(np, cv2, padded, padded_mask)
             if filled is None:
                 logger.warning("LaMa tile failed at (%d, %d); retaining classical crop", x0, y0)
@@ -221,7 +244,7 @@ def _tiled_fill(np, cv2, image, mask, on_progress=None):
                                       x=x0, y=y0, fallback="classical")
                 return None
             filled = filled[:y1 - y0, :x1 - x0]
-            wx = _axis_weights(np, x0, x1, xs, xi)
+            wx = _axis_weights(np, x0, x1, xs, xi, tile)
             weight = wy[:, None] * wx[None, :]
             total[y0:y1, x0:x1] += filled.astype(np.float32) * weight[..., None]
             weights[y0:y1, x0:x1] += weight
@@ -242,6 +265,10 @@ def refine(image, result, masks, minimum_std: float = 1.0, on_progress=None):
     result. Feather is confined to mask support, so original letters cannot leak
     back in and the caller's protected-region restore cannot clip an outer halo.
     """
+    profile=hardware.current_profile(refresh=True)
+    if profile.get('availableRamMb') is not None and profile['availableRamMb'] < 1024:
+        diagnostics.log_event('inpaint.memory.fallback', fallback='classical')
+        return result
     if not masks or _session() is None:
         return result
     try:
@@ -278,6 +305,8 @@ def refine(image, result, masks, minimum_std: float = 1.0, on_progress=None):
             # Explicit indexing guarantees bit-exact preservation outside the mask.
             region[region_mask != 0] = np.clip(np.round(blended[region_mask != 0]), 0, 255).astype(np.uint8)
         return output
+    except progress.OperationCancelled:
+        raise
     except Exception:  # includes provider OOM, invalid tensors and CPU allocation failures
         logger.exception("LaMa refinement failed; retaining classical result")
         diagnostics.log_exception("inpaint.refinement.failed", fallback="classical")

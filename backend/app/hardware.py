@@ -100,6 +100,10 @@ def gpu() -> dict:
         lines = [line.strip() for line in value.splitlines() if line.strip()]
         if len(lines) >= 2:
             return {"name": lines[1], "memory": "", "vendor": "unknown"}
+        value = _run(['powershell','-NoProfile','-Command',
+                      'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'])
+        if value:
+            return {"name": value.splitlines()[0], "memory": "", "vendor": "unknown"}
     return {"name": "", "memory": "", "vendor": "none"}
 
 
@@ -171,4 +175,131 @@ def report() -> dict:
         "accelerated": any(provider in ACCELERATORS for provider in providers),
         "libraries": libraries(),
         "disk": disk(),
+        "resources": current_profile(refresh=True),
     }
+
+
+# Conservative policy: a registered CUDA provider alone is NOT proof of a GPU.
+# Re-evaluated between work units; a running job only downgrades, never oscillates.
+import threading
+
+_profile_lock = threading.Lock()
+_profile: dict | None = None
+
+
+def resource_snapshot() -> dict:
+    import psutil
+    memory = psutil.virtual_memory()
+    available = int(memory.available // 1048576)
+    total = int(memory.total // 1048576)
+    # psutil may see host RAM inside a memory-limited Linux container.
+    try:
+        limit = int(Path('/sys/fs/cgroup/memory.max').read_text())
+        used = int(Path('/sys/fs/cgroup/memory.current').read_text())
+        available = min(available, max(0, (limit - used) // 1048576))
+        total = min(total, limit // 1048576)
+    except (OSError, ValueError):
+        pass
+    cores = os.cpu_count() or 1
+    try:
+        cores = min(cores, len(psutil.Process().cpu_affinity()))
+    except (AttributeError, psutil.Error):
+        pass
+    providers = onnx_providers()
+    device = gpu()
+    physical = bool(device.get('name')) and not any(
+        word in device['name'].lower() for word in ('basic render', 'remote display'))
+    accelerators = [p for p in providers if p in ('CUDAExecutionProvider', 'DmlExecutionProvider')]
+    return {'availableRamMb': available, 'totalRamMb': total, 'cores': max(1, cores),
+            'cpuPercent': psutil.cpu_percent(interval=None),
+            'gpuUsable': bool(physical and accelerators), 'gpuProviders': accelerators}
+
+
+def choose_profile(info: dict) -> dict:
+    free = info.get('availableRamMb')
+    cores = max(1, int(info.get('cores') or 1))
+    load = info.get('cpuPercent')
+    if free is None or load is None or free < 3072 or load >= 80 or cores < 4:
+        name = 'Low'
+    elif info.get('gpuUsable') and free >= 6144 and load < 70:
+        name = 'High'
+    else:
+        name = 'Medium'
+    return {**info, 'name': name, 'tile': {'High': 512, 'Medium': 384, 'Low': 256}[name],
+            'cpuThreads': 1 if name == 'Low' else max(1, cores // 2),
+            'workers': 2 if name == 'High' else 1,
+            'providers': (info.get('gpuProviders') or []) + ['CPUExecutionProvider']
+                         if name == 'High' else ['CPUExecutionProvider'],
+            'pauseSeconds': .01 if name != 'High' else 0,
+            'maxPixels': {'High': 16000000, 'Medium': 10000000, 'Low': 6000000}[name],
+            'memoryBudgetMb': 2304,
+            'quality': 'classical-or-small-dynamic-model' if name == 'Low' else 'full'}
+
+
+def set_profile(profile: dict) -> None:
+    global _profile
+    with _profile_lock:
+        _profile = dict(profile)
+
+
+def current_profile(refresh: bool = False) -> dict:
+    global _profile
+    candidate = None
+    if _profile is None or refresh:
+        try:
+            candidate = choose_profile(resource_snapshot())
+        except Exception:
+            candidate = choose_profile({'cores': 1})
+    with _profile_lock:
+        if _profile is None:
+            _profile = candidate
+        elif candidate and {'Low': 0, 'Medium': 1, 'High': 2}[candidate['name']] < {'Low': 0, 'Medium': 1, 'High': 2}[_profile['name']]:
+            _profile = candidate
+        elif candidate:
+            for key in ('availableRamMb','totalRamMb','cpuPercent','cores','gpuUsable','gpuProviders'):
+                _profile[key] = candidate.get(key)
+        return dict(_profile)
+
+
+def configure_native_threads(profile: dict | None = None) -> None:
+    profile = profile or current_profile()
+    count = str(profile['cpuThreads'])
+    for variable in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+        os.environ[variable] = count
+    try:
+        import cv2
+        cv2.setNumThreads(int(count))
+    except ImportError:
+        pass
+
+
+def ort_options(ort, profile: dict | None = None):
+    profile = profile or current_profile()
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = profile['cpuThreads']
+    options.inter_op_num_threads = 2 if profile['name'] == 'High' else 1
+    options.enable_cpu_mem_arena = False
+    options.enable_mem_pattern = False
+    options.execution_mode = (ort.ExecutionMode.ORT_PARALLEL if profile['name'] == 'High'
+                              and 'DmlExecutionProvider' not in profile['providers']
+                              else ort.ExecutionMode.ORT_SEQUENTIAL)
+    return options
+
+
+def confirm_session(session) -> None:
+    """A CUDA/DML DLL failure can silently leave ORT on CPU: downgrade for real."""
+    profile=current_profile()
+    if profile['name']=='High' and hasattr(session,'get_providers'):
+        actual=session.get_providers()
+        if not any(p in actual for p in ('CUDAExecutionProvider','DmlExecutionProvider')):
+            set_profile(choose_profile({**profile,'gpuUsable':False,'gpuProviders':[]}))
+
+
+def begin_job_profile() -> dict:
+    """Recovery/upgrades are safe BETWEEN isolated jobs, never mid-inference."""
+    try:
+        profile=choose_profile(resource_snapshot())
+    except Exception:
+        profile=choose_profile({'cores':1})
+    set_profile(profile)
+    return profile

@@ -21,7 +21,7 @@ import logging
 
 from PIL import Image
 
-from . import diagnostics
+from . import diagnostics, hardware, progress
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +271,10 @@ def _context_fill(cv2, np, result, mask, pad: int, grain=None, seed: int = 0,
     if collector is not None:
         # ماسک‌های سخت نگه داشته می‌شوند تا در پایان، اگر مدل هوشمند نصب بود،
         # همین نواحی با LaMa بازسازی شوند (نتیجهٔ نرمِ فعلی جای خودش را می‌دهد).
-        collector.append(mask.copy())
+        if collector:
+            np.logical_or(collector[0],mask,out=collector[0])
+        else:
+            collector.append(mask.copy())
     filled = np.clip(filled, 0.0, 255.0)
     # This base still contains source ink. An inward alpha < 1 would retain
     # original letters, particularly thin strokes, whenever LaMa is unavailable.
@@ -563,7 +566,7 @@ def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
     try:
         from . import textdet
 
-        if not textdet.available():
+        if hardware.current_profile(refresh=True)['name']=='Low' or not textdet.available():
             return fallback
         found = textdet.masks(image)
     except Exception:  # noqa: BLE001
@@ -582,27 +585,17 @@ def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
                               fallback="classical")
         return fallback
     grown = cv2.dilate((glyphs != 0).astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
-    masks = []
-    for x0, y0, x1, y1 in boxes:
-        patch = grown[y0:y1, x0:x1]
-        if int(patch.sum()) < 8:
-            continue  # مدل در این کادر متن ندید؛ روش قبلی بهتر است
-        region = np.zeros_like(grown)
-        region[y0:y1, x0:x1] = patch
-        masks.append(region.astype(bool))
-    if not masks:
-        return fallback
-    # Keep fallback support for boxes missed by the detector, not whole-page
-    # fallback masks which would erase the precision gained in detected boxes.
-    for x0, y0, x1, y1 in boxes:
-        if int(grown[y0:y1, x0:x1].sum()) >= 8:
-            continue
-        for old in fallback:
-            region = np.zeros_like(grown, dtype=bool)
-            region[y0:y1, x0:x1] = old[y0:y1, x0:x1]
-            if region.any():
-                masks.append(region)
-    return masks
+    combined = np.zeros(image.shape[:2],dtype=bool)
+    detected = False
+    for x0,y0,x1,y1 in boxes:
+        patch = grown[y0:y1,x0:x1]
+        if int(patch.sum()) >= 8:
+            combined[y0:y1,x0:x1] |= patch != 0
+            detected = True
+        else:
+            for old in fallback:
+                combined[y0:y1,x0:x1] |= old[y0:y1,x0:x1]
+    return [combined] if detected else fallback
 
 
 def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
@@ -658,8 +651,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
             # ترجمه‌نشده یا در این درخواست انتخاب نشده: دست‌نخورده می‌ماند.
             cv2.fillPoly(untouched, [points], 255)
             continue
-        quad_only = np.zeros((height, width), dtype=np.uint8)
-        cv2.fillPoly(quad_only, [points], 255)
+        quad_vertices = points.copy()
         # کادر OCR معمولاً حروف و دنباله‌ها را دقیق در بر نمی‌گیرد؛ کمی بزرگ‌ترش می‌کنیم
         # تا باقی‌ماندهٔ متن انگلیسی پس از پاک‌سازی نماند. کادرهای ترجمه‌نشده بزرگ نمی‌شوند.
         span = float(max(points[:, 0].ptp(), points[:, 1].ptp()))
@@ -672,7 +664,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
         cv2.fillPoly(selected, [points], 255)
         boxes.append((int(points[:, 0].min()), int(points[:, 1].min()),
                       int(points[:, 0].max()) + 1, int(points[:, 1].max()) + 1))
-        quads.append(quad_only)
+        quads.append(quad_vertices)
     if not boxes:
         raise CleaningError('هیچ ناحیهٔ ترجمه‌شده‌ای برای پاک‌سازی وجود ندارد.')
 
@@ -681,7 +673,9 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
     page_grain = None if force else _page_grain(cv2, np, image)
     hard_masks: list = []
     report(0.08, "clean_classical")
-    for index, (box, quad_only) in enumerate(zip(boxes, quads)):
+    for index, (box, vertices) in enumerate(zip(boxes, quads)):
+        quad_only = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(quad_only,[vertices],255)
         background = _background(np, cv2, image, box, quad_only)
         if background is None:
             report(0.08 + 0.47 * (index + 1) / len(boxes), "clean_classical")
@@ -693,6 +687,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
 
     # جایی که الگوریتم رنگی نمی‌توانست پس‌زمینه را بسازد (نقاشی/عکس)، اگر مدل
     # هوشمند نصب باشد همان ناحیه با آن بازسازی می‌شود؛ وگرنه نتیجهٔ فعلی می‌ماند.
+    profile = hardware.current_profile(refresh=True)
     if high_quality and hard_masks:
         try:
             from . import inpaint
@@ -706,6 +701,8 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
                 refined = inpaint.refine(image, result, masks, **kwargs)
                 if refined is not None:
                     result = refined
+        except progress.OperationCancelled:
+            raise
         except Exception:  # noqa: BLE001 - نبودِ مدل نباید پاک‌سازی را بشکند
             logger.exception("LaMa cleaning failed; retaining classical result")
             diagnostics.log_exception("cleaning.inpaint.failed", fallback="classical")

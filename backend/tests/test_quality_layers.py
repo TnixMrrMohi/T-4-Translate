@@ -202,7 +202,7 @@ def test_ocr_engine_uses_detailed_model_and_falls_back(tmp_path, monkeypatch):
     class FakeRapid:
         def __init__(self, **kwargs):
             calls.append(kwargs)
-            if kwargs:
+            if 'det_model_path' in kwargs:
                 raise RuntimeError("مدل دقیق بارگذاری نشد")
 
     module = types.ModuleType("rapidocr_onnxruntime")
@@ -213,5 +213,8 @@ def test_ocr_engine_uses_detailed_model_and_falls_back(tmp_path, monkeypatch):
     engine = ocr._engine()
     assert isinstance(engine, FakeRapid)
     # اول با مدل دقیق تلاش شد، بعد مدل پیش‌فرض ساخته شد.
-    assert calls == [{"det_model_path": "d", "rec_model_path": "r"}, {}]
+    assert calls[0]['det_model_path']=='d' and calls[0]['rec_model_path']=='r'
+    assert 'det_model_path' not in calls[1] and 'rec_model_path' not in calls[1]
+    assert calls[1]['intra_op_num_threads']==4
+    assert calls[1]['inter_op_num_threads']==1
     getattr(ocr._engine, "cache_clear", lambda: None)()

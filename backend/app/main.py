@@ -11,6 +11,7 @@ import platform
 import shutil
 import time
 import uuid
+from typing import Literal
 from functools import partial
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
@@ -24,12 +25,15 @@ from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
 from app import (bubbles, cleaning, diagnostics, fonts, hardware, inpaint, layout as layouts, models,
-                 ocr, preview, progress, rendering, updater)
+                 ocr, preview, progress, rendering, updater, execution)
 from app.translations import parse_translation
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     """مدل‌های سنگین یک‌بار و در پس‌زمینه آماده می‌شوند (نصب اولیه سبک می‌ماند)."""
+    profile=hardware.current_profile(refresh=True)
+    hardware.configure_native_threads(profile)
+    diagnostics.log_event('resources.profile', **profile)
     diagnostics.log_event(
         "app.start",
         dataDir=os.environ.get("T4_DATA_DIR") or str(Path.home() / ".t4-translate"),
@@ -434,10 +438,19 @@ def update_settings_save(body: UpdateSettings) -> dict:
 
 
 @app.get("/api/ocr-status")
-def ocr_status() -> dict:
+async def ocr_status() -> dict:
     """آیا موتور آزمایشی OCR نصب و قابل اجراست؟ (برای نمایش زودهنگام در رابط.)"""
     started = time.perf_counter()
-    result = ocr.engine_status()
+    if os.environ.get('T4_WORKER_MODE') == 'inline':
+        result = ocr.engine_status()
+    else:
+        root=Path(os.environ.get('T4_DATA_DIR',str(Path.home()/'.t4-translate')))
+        root.mkdir(parents=True,exist_ok=True)
+        async with _ocr_lock:
+            try:
+                result=await execution.run('status',{},root)
+            except Exception as exc:
+                result={'ready':False,'provider':'rapidocr-experimental','detail':str(exc)}
     diagnostics.log_event(
         "ocr.status", ready=result.get("ready"), provider=result.get("provider"),
         detail=result.get("detail"), elapsedMs=round((time.perf_counter() - started) * 1000, 1),
@@ -478,7 +491,17 @@ async def run_ocr(job_id: str) -> dict:
                 last_log.update(stage=stage, percent=percent, at=now)
 
         try:
-            lines = await run_native_safely(ocr.recognize, source_path, report_ocr_progress)
+            if os.environ.get('T4_WORKER_MODE') == 'inline':
+                lines = await run_native_safely(ocr.recognize, source_path, report_ocr_progress)
+            else:
+                lines = await execution.run('ocr',{'path':str(source_path)},workspace,job_id)
+            progress.check_cancelled(job_id)
+        except progress.OperationCancelled:
+            progress.cancelled(job_id)
+            raise HTTPException(409,'پردازش لغو شد.') from None
+        except execution.ResourceLimitError as exc:
+            progress.fail(job_id,str(exc))
+            raise HTTPException(507,str(exc)) from None
         except ocr.OcrUnavailable as exc:
             diagnostics.log_event(
                 "ocr.job.unavailable", level=30, jobId=job_id, detail=str(exc),
@@ -493,18 +516,39 @@ async def run_ocr(job_id: str) -> dict:
             )
             progress.fail(job_id, "پردازش OCR ناموفق بود.")
             raise HTTPException(500, "پردازش OCR ناموفق بود.") from None
-        progress.finish(job_id)
         result = {"jobId": job_id, "provider": "rapidocr-experimental", "lines": lines, "revision": ocr_revision(lines)}
         tmp = workspace / "ocr.json.tmp"
         save_started = time.perf_counter()
         tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        try:
+            progress.start_commit(job_id)
+        except progress.OperationCancelled:
+            tmp.unlink(missing_ok=True)
+            progress.cancelled(job_id)
+            raise HTTPException(409,'پردازش لغو شد.') from None
         os.replace(tmp, workspace / "ocr.json")
+        progress.finish(job_id)
         diagnostics.log_event(
             "ocr.job.done", jobId=job_id, lineCount=len(lines),
             elapsedMs=round((time.perf_counter() - started) * 1000, 1),
             saveMs=round((time.perf_counter() - save_started) * 1000, 1),
         )
         return result
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_operation(job_id: str, operation: Literal['ocr','clean','render'] = 'ocr') -> dict:
+    get_job(job_id)
+    key=job_id if operation=='ocr' else f'{job_id}:{operation}'
+    accepted=progress.request_cancel(key)
+    return {'jobId':job_id,'operation':operation,'accepted':accepted}
+
+
+@app.get("/api/jobs/{job_id}/render-progress")
+def get_render_progress(job_id: str) -> dict:
+    get_job(job_id)
+    return {**(progress.snapshot(f'{job_id}:render') or {'fraction':0,'stage':'idle','running':False}),
+            'jobId':job_id}
 
 
 @app.get("/api/jobs/{job_id}/progress")
@@ -775,12 +819,22 @@ def _clean_run(job_id: str):
     progress.begin(key, "clean_prepare")
     try:
         yield progress.callback(key)
+    except progress.OperationCancelled:
+        progress.cancelled(key)
+        raise HTTPException(409,'پردازش لغو شد.') from None
+    except execution.ResourceLimitError as exc:
+        progress.fail(key,str(exc),'clean_error')
+        raise HTTPException(507,str(exc)) from None
     except BaseException as exc:
         progress.fail(key, "پاک‌سازی ناموفق بود.", "clean_error")
         diagnostics.log_exception("cleaning.job.failed", jobId=job_id, errorType=type(exc).__name__)
         raise
     else:
         progress.finish(key, "clean_done")
+    finally:
+        workspace=workspace_for(job_id)
+        for name in ('clean.png.tmp','mask.png.tmp','clean-meta.json.tmp'):
+            (workspace/name).unlink(missing_ok=True)
 
 
 @app.post("/api/jobs/{job_id}/clean")
@@ -816,15 +870,24 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
             base = existing
         with _clean_run(job_id) as report:
             try:
-                clean, mask = await run_native_safely(
-                    partial(cleaning.clean_image, workspace / "source.img", source["lines"],
-                            line_translations, base=base, only=only, force=base is not None,
-                            extra=set(translation.get("cleanLines") or []), on_progress=report))
+                if os.environ.get('T4_WORKER_MODE') == 'inline':
+                    clean, mask = await run_native_safely(
+                        partial(cleaning.clean_image, workspace / "source.img", source["lines"],
+                                line_translations, base=base, only=only, force=base is not None,
+                                extra=set(translation.get("cleanLines") or []), on_progress=report))
+                else:
+                    clean,mask=await execution.run('clean',{
+                        'path':str(workspace/'source.img'),'lines':source['lines'],
+                        'translations':line_translations,'base':str(base) if base else None,
+                        'only':sorted(only) if only is not None else None,'force':base is not None,
+                        'extra':translation.get('cleanLines') or []},workspace,f'{job_id}:clean')
+                progress.check_cancelled(f'{job_id}:clean')
             except cleaning.CleaningError as exc:
                 raise HTTPException(400, str(exc)) from None
             try:
                 clean.save(workspace / "clean.png.tmp", format="PNG")
                 mask.save(workspace / "mask.png.tmp", format="PNG")
+                progress.start_commit(f'{job_id}:clean')
                 os.replace(workspace / "clean.png.tmp", workspace / "clean.png")
                 os.replace(workspace / "mask.png.tmp", workspace / "mask.png")
             finally:
@@ -894,7 +957,7 @@ def _font_files() -> dict[str, str]:
 
 
 def _render_files(clean_path: Path, translation: dict, blocks: list,
-                  image_path: Path, meta_path: Path, layout: dict | None = None) -> int:
+                  image_path: Path, meta_path: Path, layout: dict | None = None, on_progress=None) -> int:
     """رندر در نخ کارگر انجام می‌شود؛ هر بلوک (بالن) یک متن فارسی می‌گیرد.
 
     کادر بلوک‌ها تازه از نتیجهٔ تشخیص بالن خوانده می‌شود (نه از نسخهٔ ذخیره‌شده در
@@ -903,7 +966,7 @@ def _render_files(clean_path: Path, translation: dict, blocks: list,
     font_paths = _font_paths()
     with Image.open(clean_path) as base:
         rendered, drawn = rendering.render_blocks(base, blocks, translation["translations"],
-                                                 font_paths, layout, _font_files())
+                                                 font_paths, layout, _font_files(), on_progress=on_progress)
     tmp = image_path.with_name(image_path.name + ".tmp")
     try:
         rendered.save(tmp, format="PNG")
@@ -954,16 +1017,33 @@ async def render_job(job_id: str) -> dict:
         if not (workspace / "clean.png").is_file() or not _clean_stamp_matches(workspace, translation):
             raise HTTPException(409, "ابتدا پاک‌سازی را با همین ترجمه اجرا کنید.")
         source = get_ocr(job_id)
+        key=f'{job_id}:render'
+        progress.begin(key,'render_plan')
         try:
             blocks = saved_translation_blocks(job_id, source["lines"], translation)
-            drawn = await run_native_safely(
-                _render_files, workspace / "clean.png", translation, blocks,
-                workspace / "render.png", workspace / "render-meta.json",
-                layouts.read(workspace))
+            if os.environ.get('T4_WORKER_MODE') == 'inline':
+                drawn = await run_native_safely(
+                    _render_files, workspace / "clean.png", translation, blocks,
+                    workspace / "render.png", workspace / "render-meta.json", layouts.read(workspace))
+            else:
+                result=await execution.run('render',{'path':str(workspace/'clean.png'),
+                    'translation':translation,'blocks':blocks,'layout':layouts.read(workspace)},
+                    workspace,key)
+                drawn=result['drawn']
+            progress.check_cancelled(key)
+        except progress.OperationCancelled:
+            progress.cancelled(key)
+            raise HTTPException(409,'پردازش لغو شد.') from None
+        except execution.ResourceLimitError as exc:
+            progress.fail(key,str(exc),'render_error')
+            raise HTTPException(507,str(exc)) from None
         except rendering.RenderError as exc:
+            progress.fail(key,str(exc),'render_error')
             raise HTTPException(400, str(exc)) from None
         except Exception:
+            progress.fail(key,'رندر ناموفق بود.','render_error')
             raise HTTPException(500, "نمایش ترجمه روی تصویر ناموفق بود.") from None
+        progress.finish(key,'render_done')
         diagnostics.log_event("rendering.done", jobId=job_id, drawn=drawn,
                               blockCount=len(blocks), raqm=rendering.has_raqm(),
                               layoutOverrides=len(layouts.read(workspace)))
@@ -1094,8 +1174,14 @@ async def read_layout(job_id: str) -> dict:
         layout = layouts.read(workspace)
         try:
             blocks = saved_translation_blocks(job_id, source["lines"], translation)
-            items = await run_native_safely(_layout_blocks, job_id, workspace, translation,
-                                            blocks, layout)
+            if os.environ.get('T4_WORKER_MODE') == 'inline':
+                items = await run_native_safely(_layout_blocks, job_id, workspace, translation, blocks, layout)
+            else:
+                items = await execution.run('layout',{'path':str(workspace/'clean.png'),
+                    'workspace':str(workspace),'jobId':job_id,'translation':translation,
+                    'blocks':blocks,'layout':layout},workspace)
+        except execution.ResourceLimitError as exc:
+            raise HTTPException(507,str(exc)) from None
         except rendering.RenderError as exc:
             raise HTTPException(400, str(exc)) from None
         except HTTPException:

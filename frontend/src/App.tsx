@@ -220,6 +220,12 @@ const PREVIEW_RATIO = '3 / 4';
 
 /** مرحله‌های گزارش‌شدهٔ سرور؛ هر کلید یک برچسب فارسی دارد. */
 const PROGRESS_STAGES: Record<string, string> = {
+  render_plan: 'محاسبهٔ چیدمان فارسی…',
+  render_text: 'درج بلوک‌های ترجمه…',
+  render_save: 'ذخیرهٔ خروجی فارسی…',
+  render_done: 'پایان درج ترجمه',
+  cancelled: 'پردازش لغو شد',
+  render_error: 'درج ترجمه ناموفق بود',
   clean_prepare: 'آماده‌سازی پاک‌سازی…',
   clean_classical: 'پاک‌سازی متن اصلی…',
   clean_model: 'آماده‌سازی مدل LaMa و ماسک متن…',
@@ -238,7 +244,7 @@ const PROGRESS_STAGES: Record<string, string> = {
 };
 
 /** پیشرفت یک کار؛ کسر ۰ تا ۱ و نام مرحله (همان چیزی که سرور می‌دهد). */
-type Progress = {fraction: number; stage: string; running?: boolean; finished?: boolean; error?: string | null};
+type Progress = {fraction: number; stage: string; running?: boolean; finished?: boolean; error?: string | null; etaSeconds?: number | null; elapsedSeconds?: number; resourceProfile?: string};
 
 /** سقف پیش‌بینی بین دو پاسخ سرور؛ پیش از پایانِ واقعی هرگز ۹۹٪ نشان داده نمی‌شود. */
 export const PROGRESS_CEILING = 0.94;
@@ -280,7 +286,7 @@ export function advanceProgress(pace: ProgressPace, serverFraction: number, now:
 }
 
 /** نوار پیشرفتِ تشخیص خودکار متن؛ جای متن ساده را می‌گیرد و تا ۱۰۰٪ پر می‌شود. */
-function ProgressBar({progress}: {progress: Progress}) {
+function ProgressBar({progress, onCancel, cancelPending}: {progress: Progress; onCancel?: () => void; cancelPending?: boolean}) {
   const percent = Math.max(0, Math.min(100, Math.round(progress.fraction * 100)));
   const label = PROGRESS_STAGES[progress.stage] ?? 'در حال تشخیص خودکار متن…';
   return (
@@ -292,7 +298,7 @@ function ProgressBar({progress}: {progress: Progress}) {
       <div
         className="progress-track"
         role="progressbar"
-        aria-label={progress.stage.startsWith('clean_') ? 'پیشرفت پاک‌سازی و Inpaint' : 'پیشرفت تشخیص خودکار متن'}
+        aria-label={progress.stage.startsWith('render_') ? 'پیشرفت درج ترجمه' : progress.stage.startsWith('clean_') ? 'پیشرفت پاک‌سازی و Inpaint' : 'پیشرفت تشخیص خودکار متن'}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent}
@@ -300,7 +306,15 @@ function ProgressBar({progress}: {progress: Progress}) {
       >
         <div className="progress-fill" style={{width: `${percent}%`}} />
       </div>
-      <p className="progress-hint">صفحه به نوارهای افقی شکسته می‌شود؛ هر نوار که خوانده شود، نوار پیشرفت جلو می‌رود.</p>
+      <p className="progress-hint">
+        {typeof progress.etaSeconds === 'number' && Number.isFinite(progress.etaSeconds)
+          ? `زمان تقریبی باقی‌مانده: ${Math.ceil(progress.etaSeconds).toLocaleString('fa-IR')} ثانیه`
+          : 'زمان باقی‌مانده در حال برآورد است…'}
+        {progress.resourceProfile && ` — پروفایل ${progress.resourceProfile}`}
+      </p>
+      {progress.running && onCancel && <button type="button" className="ghost" disabled={cancelPending} onClick={onCancel}>
+        {cancelPending ? 'در حال لغو…' : 'لغو پردازش'}
+      </button>}
     </div>
   );
 }
@@ -718,6 +732,8 @@ export function App() {
   const progressHideTimer = useRef<number | null>(null);
   const progressActive = useRef(false);
   const progressEpoch = useRef(0);
+  const activeOperation = useRef<'ocr' | 'clean' | 'render' | null>(null);
+  const [cancelPending, setCancelPending] = useState(false);
   // سرعت واقعیِ مشاهده‌شدهٔ پیشرفت؛ برای پر کردن فاصلهٔ بین دو پاسخ سرور.
   const progressPace = useRef<ProgressPace>({fraction: 0.02, at: 0, perSecond: 0});
 
@@ -752,6 +768,7 @@ export function App() {
   /** پیام خطا هم در نوار وضعیت و هم در دیالوگ نشان داده می‌شود. */
   function fail(message: string) {
     setMessage(message);
+    if (message.includes('پردازش لغو شد')) return;
     void alertDialog('خطا', message, 'danger');
   }
 
@@ -1034,12 +1051,19 @@ export function App() {
 
   async function requestRender() {
     if (!job) return;
-    const response = await fetch(`/api/jobs/${job.jobId}/render`, {method: 'POST'});
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'درج ترجمه روی تصویر ناموفق بود.');
-    setRenderVersion(Date.now());
-    setMessage(result.message ?? 'ترجمهٔ فارسی روی تصویر قرار گرفت.');
-    setStep(4);
+    startProgress(job.jobId, 'render');
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/render`, {method: 'POST'});
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'درج ترجمه روی تصویر ناموفق بود.');
+      setRenderVersion(Date.now());
+      setMessage(result.message ?? 'ترجمهٔ فارسی روی تصویر قرار گرفت.');
+      setStep(4);
+      finishProgress('render');
+    } catch (error) {
+      abortProgress();
+      throw error;
+    }
   }
 
   /** ادامه از مرحلهٔ پاک‌سازی: پاک‌سازی (اگر لازم است) و سپس درج ترجمه. */
@@ -1162,7 +1186,9 @@ export function App() {
 
   /** درج بی‌صدای تصویر بعد از تغییر چیدمان؛ رابط کاربری قفل نمی‌شود. */
   async function rerenderAfterLayout() {
-    if (!job) return;
+    if (!job || busy) return;
+    setBusy(true);
+    startProgress(job.jobId, 'render');
     try {
       const response = await fetch(`/api/jobs/${job.jobId}/render`, {method: 'POST'});
       const result = await response.json().catch(() => ({}));
@@ -1170,9 +1196,11 @@ export function App() {
         throw Error(typeof result.detail === 'string' ? result.detail : 'درج دوبارهٔ ترجمه ناموفق بود.');
       }
       setRenderVersion(Date.now());
+      finishProgress('render');
     } catch (error) {
+      abortProgress();
       fail(error instanceof Error ? error.message : 'درج دوبارهٔ ترجمه ناموفق بود.');
-    }
+    } finally {setBusy(false);}
   }
 
   /** فهرست ناحیه‌های پاک‌سازی (هر بالن) برای انتخاب تک‌تک. */
@@ -1396,19 +1424,21 @@ export function App() {
   }
 
   /** شروع نوار پیشرفت: درصد واقعی از سرور خوانده می‌شود و تا آن هنگام از زمان تخمین زده می‌شود. */
-  function startProgress(jobId: string, operation: 'ocr' | 'clean' = 'ocr') {
+  function startProgress(jobId: string, operation: 'ocr' | 'clean' | 'render' = 'ocr') {
     stopProgressTimers();
     progressActive.current = true;
+    activeOperation.current = operation;
+    setCancelPending(false);
     const epoch = progressEpoch.current;
     progressPace.current = {fraction: 0.02, at: Date.now(), perSecond: 0};
-    setOcrProgress({fraction: 0.02, stage: operation === 'clean' ? 'clean_prepare' : 'start', running: true});
+    setOcrProgress({fraction: 0.02, stage: operation === 'render' ? 'render_plan' : operation === 'clean' ? 'clean_prepare' : 'start', running: true});
     const poll = async () => {
       let server: Progress | null = null;
       try {
-        const response = await fetch(`/api/jobs/${jobId}/${operation === 'clean' ? 'clean-progress' : 'progress'}`);
+        const response = await fetch(`/api/jobs/${jobId}/${operation === 'render' ? 'render-progress' : operation === 'clean' ? 'clean-progress' : 'progress'}`);
         if (response.ok) {
           const data = await response.json() as Partial<Progress>;
-          if (typeof data.fraction === 'number' && (operation !== 'clean' || data.running)) server = data as Progress;
+          if (typeof data.fraction === 'number' && (operation === 'ocr' || data.running)) server = data as Progress;
         }
       } catch {
         // سرور جواب نداد؛ نوار روی همان مقدار (با حرکت آرام مرحلهٔ اول) می‌ماند.
@@ -1422,7 +1452,8 @@ export function App() {
         if (!previous) return previous;
         const fraction = Math.min(0.99, Math.max(previous.fraction, advanced.fraction));
         const stage = server?.stage && server.stage !== 'idle' ? server.stage : previous.stage;
-        return {fraction, stage, running: true};
+        return {fraction, stage, running: true, etaSeconds: server?.etaSeconds,
+                elapsedSeconds: server?.elapsedSeconds, resourceProfile: server?.resourceProfile};
       });
     };
     void poll();
@@ -1430,18 +1461,40 @@ export function App() {
   }
 
   /** پایان کار: نوار تا ۱۰۰٪ پر می‌شود و نیم‌ثانیه بعد جای خود را به نتیجه می‌دهد. */
-  function finishProgress(operation: 'ocr' | 'clean' = 'ocr') {
+  function finishProgress(operation: 'ocr' | 'clean' | 'render' = 'ocr') {
     stopProgressTimers();
     if (!progressActive.current) return;
     progressActive.current = false;
-    setOcrProgress({fraction: 1, stage: operation === 'clean' ? 'clean_done' : 'done', finished: true});
+    activeOperation.current = null;
+    setCancelPending(false);
+    setOcrProgress({fraction: 1, stage: operation === 'render' ? 'render_done' : operation === 'clean' ? 'clean_done' : 'done', finished: true});
     progressHideTimer.current = window.setTimeout(() => {setOcrProgress(null); progressHideTimer.current = null;}, 500);
+  }
+
+  async function cancelProcessing() {
+    if (!job || !activeOperation.current || cancelPending) return;
+    setCancelPending(true);
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/cancel?operation=${activeOperation.current}`, {method: 'POST'});
+      const result = await response.json();
+      if (!response.ok || !result.accepted) {
+        setCancelPending(false);
+        setMessage('درخواست فعالی برای لغو پیدا نشد؛ منتظر پاسخ پردازش بمانید.');
+        return;
+      }
+      setMessage('در حال توقف پردازش؛ خروجی ناقص ذخیره نمی‌شود…');
+    } catch {
+      setCancelPending(false);
+      setMessage('ارسال درخواست لغو ناموفق بود؛ دوباره تلاش کنید.');
+    }
   }
 
   /** توقف فوری (خطا یا ترک صفحه): نوار بدون رسیدن به ۱۰۰٪ پاک می‌شود. */
   function abortProgress() {
     stopProgressTimers();
     progressActive.current = false;
+    activeOperation.current = null;
+    setCancelPending(false);
     setOcrProgress(null);
   }
 
@@ -1652,7 +1705,7 @@ export function App() {
               </div>
 
               {ocrProgress ? (
-                <ProgressBar progress={ocrProgress} />
+                <ProgressBar progress={ocrProgress} onCancel={() => void cancelProcessing()} cancelPending={cancelPending} />
               ) : (
               <div
                 ref={dropZoneRef}
@@ -1743,7 +1796,7 @@ export function App() {
           {step === 2 && (
             <>
               <h2 className="wizard-title">مرحله ۲: ترجمهٔ فارسی</h2>
-              {ocrProgress && <ProgressBar progress={ocrProgress} />}
+              {ocrProgress && <ProgressBar progress={ocrProgress} onCancel={() => void cancelProcessing()} cancelPending={cancelPending} />}
               {!source ? (
                 <p className="wizard-help">برای این کار هنوز متنی تشخیص داده نشده است؛ ابتدا OCR را اجرا کنید.</p>
               ) : (
@@ -1851,7 +1904,7 @@ export function App() {
           {step === 3 && (
             <>
               <h2 className="wizard-title">مرحله ۳: پاک‌سازی متن اصلی</h2>
-              {ocrProgress?.stage.startsWith('clean_') && <ProgressBar progress={ocrProgress} />}
+              {ocrProgress && (ocrProgress.stage.startsWith('clean_') || ocrProgress.stage.startsWith('render_')) && <ProgressBar progress={ocrProgress} onCancel={() => void cancelProcessing()} cancelPending={cancelPending} />}
               {!job ? (
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : !hasSaved ? (
@@ -1946,6 +1999,7 @@ export function App() {
           {step === 4 && (
             <>
               <h2 className="wizard-title">مرحله ۴: درج ترجمه روی تصویر</h2>
+              {ocrProgress?.stage.startsWith('render_') && <ProgressBar progress={ocrProgress} onCancel={() => void cancelProcessing()} cancelPending={cancelPending} />}
               {!job ? (
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : (

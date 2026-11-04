@@ -39,15 +39,43 @@ def _smoke_test(url: str) -> None:
         assert b'<div id="root">' in response.read()
 
     from app import fonts, rendering
-    from app.ocr import _engine, recognize
-    from PIL import Image
-    import tempfile
+    from PIL import Image, ImageDraw, ImageFont
+    import json
+    from io import BytesIO
 
-    _engine()
-    with tempfile.TemporaryDirectory() as directory:
-        image_path = Path(directory) / "smoke.png"
-        Image.new("RGB", (64, 64), "white").save(image_path)
-        recognize(image_path)
+    def api(method, path, body=None, content_type='application/json'):
+        if isinstance(body,dict): body=json.dumps(body).encode('utf-8')
+        request=urllib.request.Request(url+path,data=body,method=method,
+                                       headers={'Content-Type':content_type})
+        with urllib.request.urlopen(request,timeout=120) as response:
+            return json.loads(response.read())
+
+    # Exercise ProcessPoolExecutor inside the actual frozen exe, not merely the
+    # source interpreter. freeze_support, native imports and Windows Job limits
+    # must all work before the release is published.
+    status=api('GET','/api/ocr-status')
+    assert status['ready'], status.get('detail')
+    source=Image.new('RGB',(650,450),'white')
+    draw=ImageDraw.Draw(source)
+    draw.rectangle((30,40,550,170),outline='black',width=3)
+    draw.text((70,75),'HELLO WORLD',font=ImageFont.truetype(str(rendering.font_path()),32),fill='black')
+    buffer=BytesIO();source.save(buffer,format='PNG');source.close()
+    boundary='T4SmokeBoundary'
+    body=(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="smoke.png"\r\n'
+          'Content-Type: image/png\r\n\r\n').encode()+buffer.getvalue()+f'\r\n--{boundary}--\r\n'.encode()
+    job=api('POST','/api/jobs',body,f'multipart/form-data; boundary={boundary}')['jobId']
+    path=f'/api/jobs/{job}'
+    try:
+        result=api('POST',path+'/ocr',b'')
+        assert any('HELLO' in line['text'] for line in result['lines']), 'packaged OCR did not read sample'
+        source_doc=api('GET',path+'/translation-source')
+        api('POST',path+'/translations',{'sourceRevision':source_doc['revision'],
+             'text':'\n'.join(f"[{item['number']}] سلام دنیا" for item in source_doc['items'])})
+        api('POST',path+'/clean',b'')
+        assert api('GET',path+'/layout')['blocks']
+        assert api('POST',path+'/render',b'')['drawn']>=1
+    finally:
+        api('DELETE',path)
 
     directories = fonts.bundled_dirs()
     assert directories, "no bundled font directories were found"
@@ -219,4 +247,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from . import diagnostics
+from . import diagnostics, hardware
 from .models import COMIC_TEXT_DETECTOR_FILE
 
 MODEL_ID = "comic-text-detector"
@@ -32,7 +32,7 @@ def available() -> bool:
     """آیا مدل نصب است و onnxruntime قابل استفاده است؟"""
     from . import models
 
-    if not models.is_installed(MODEL_ID):
+    if hardware.current_profile(refresh=True)['name']=='Low' or not models.is_installed(MODEL_ID):
         return False
     try:
         import numpy  # noqa: F401
@@ -57,9 +57,10 @@ def _session():
             if path is None:
                 logger.info("ComicTextDetector model not installed; using classical masks")
                 return None
-            providers = [name for name in onnxruntime.get_available_providers()
-                         if name != "CPUExecutionProvider"]
-            session = onnxruntime.InferenceSession(str(path), providers=providers or None)
+            profile=hardware.current_profile(refresh=True)
+            options={"sess_options":hardware.ort_options(onnxruntime,profile)} if hasattr(onnxruntime,'SessionOptions') else {}
+            session = onnxruntime.InferenceSession(str(path), providers=profile['providers'], **options)
+            hardware.confirm_session(session)
             first = session.get_inputs()[0]
             _cache.update(session=session, input=first.name, shape=list(first.shape or []),
                           outputs=[item.name for item in session.get_outputs()], failed=False)
