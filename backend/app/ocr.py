@@ -14,7 +14,7 @@ from typing import Callable
 import numpy as np
 from PIL import Image
 
-from . import diagnostics
+from . import diagnostics, hardware, progress
 
 # ارتفاع هر نوار و هم‌پوشانی آن؛ هم‌پوشانی باید از بلندترین خط متن بیشتر باشد تا
 # خطی که روی مرز نوار می‌افتد، دست‌کم در یکی از دو نوار کامل دیده شود.
@@ -72,12 +72,24 @@ def _engine():
             f'جزئیات: {exc}'
         ) from exc
     import_started = time.perf_counter()
-    options = _model_options()
+    profile = hardware.current_profile(refresh=True)
+    options = _model_options() if profile['name'] != 'Low' else {}
+    options.update(intra_op_num_threads=profile['cpuThreads'], inter_op_num_threads=1,
+                   use_cuda=profile['name']=='High' and 'CUDAExecutionProvider' in profile['providers'],
+                   use_dml=profile['name']=='High' and 'DmlExecutionProvider' in profile['providers'])
+    for module in ('det','cls','rec'):
+        options[f'{module}_use_cuda']=options['use_cuda']
+        options[f'{module}_use_dml']=options['use_dml']
+    options.update(rec_batch_num=1 if profile['name']=='Low' else 6,
+                   cls_batch_num=1 if profile['name']=='Low' else 6,
+                   det_limit_type='max',
+                   det_limit_side_len={'High':1536,'Medium':960,'Low':640}[profile['name']])
+    custom_model = any(key.endswith('_model_path') for key in options)
     diagnostics.log_event(
         "ocr.engine.package.ready", elapsedMs=round((import_started - started) * 1000, 1),
-        customModel=bool(options),
+        customModel=custom_model,
     )
-    if options:
+    if custom_model:
         model_started = time.perf_counter()
         try:
             engine = RapidOCR(**options)
@@ -94,7 +106,10 @@ def _engine():
             )
     model_started = time.perf_counter()
     try:
-        engine = RapidOCR()
+        fallback_options = {k:v for k,v in options.items() if not k.endswith('_model_path') and k!='rec_keys_path'}
+        engine = RapidOCR(**fallback_options)
+        detector=getattr(getattr(engine,'text_det',None),'infer',None)
+        if detector and getattr(detector,'session',None): hardware.confirm_session(detector.session)
         diagnostics.log_event(
             "ocr.engine.init.done", modelSource="bundled", customModel=False,
             elapsedMs=round((time.perf_counter() - started) * 1000, 1),
@@ -382,6 +397,8 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
             return
         try:
             on_progress(fraction, stage)
+        except progress.OperationCancelled:
+            raise
         except Exception:  # گزارش پیشرفت فقط تزئینی است
             pass
 
@@ -392,12 +409,15 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
     report(0.02, 'start')
     with Image.open(path) as source:
         width, height = source.size
-        total = _strips(height) if height > STRIP_HEIGHT + STRIP_OVERLAP else 1
+        profile = hardware.current_profile(refresh=True)
+        strip_height = STRIP_HEIGHT if profile['name']=='High' else (640 if profile['name']=='Medium' else 384)
+        overlap = min(STRIP_OVERLAP, strip_height // 4)
+        total = max(1, -(-(height-strip_height)//(strip_height-overlap))+1) if height>strip_height+overlap else 1
         diagnostics.log_event(
             "ocr.page.start", width=width, height=height, strips=total,
             imageBytes=path.stat().st_size if isinstance(path, Path) and path.is_file() else None,
         )
-        if height <= STRIP_HEIGHT + STRIP_OVERLAP:
+        if height <= strip_height + overlap:
             report(0.08, 'model')  # نخستین فراخوانی، مدل را در حافظه بار می‌کند
             result = _shift(_read(str(path)), 0)
             report(0.94, 'strips')
@@ -411,22 +431,33 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
         result: list[dict] = []
         top = 0
         index = 0
+        initial_threads = profile['cpuThreads']
         while top < height:
-            bottom = min(height, top + STRIP_HEIGHT)
+            profile = hardware.current_profile(refresh=True)
+            if profile['name']=='Low':
+                strip_height = min(strip_height,384)
+                overlap = min(STRIP_OVERLAP,strip_height//4)
+                # Refresh thread limits on downgrade, not just the tile/strip geometry.
+                hardware.configure_native_threads(profile)
+                if profile['cpuThreads'] < initial_threads:
+                    _engine.cache_clear()
+                    initial_threads=profile['cpuThreads']
+            bottom = min(height, top + strip_height)
             if index == 0:
                 # فقط یک بار، پیش از خواندن نوار اول: مدل در همین فراخوانی بارگذاری
                 # می‌شود و برچسب مرحله باید همین را بگوید.
                 report(0.06, 'model')
             with Image.open(path) as strip_source:
                 # BGR برای موتور OCR (همان ترتیبی که از خواندن فایل می‌آید).
-                rgb = np.array(strip_source.convert('RGB').crop((0, top, width, bottom)))
+                rgb = np.array(strip_source.crop((0, top, width, bottom)).convert('RGB'))
                 strip = np.ascontiguousarray(rgb[:, :, ::-1])
             result.extend(_shift(_read(strip), top))
             index += 1
-            report(0.06 + 0.88 * index / total, 'strips')
+            report(min(.94, 0.06 + 0.88 * (bottom / height if strip_height != STRIP_HEIGHT else index / total)), 'strips')
+            if profile['pauseSeconds']: time.sleep(profile['pauseSeconds'])
             if bottom >= height:
                 break
-            top = bottom - STRIP_OVERLAP
+            top = bottom - overlap
     report(0.97, 'merge')
     before_dedupe = len(result)
     result = _dedupe(result)

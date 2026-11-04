@@ -33,6 +33,9 @@ function mockApi(options: {
   /** اگر بدهید، پاسخ OCR تا resolve شدن این Promise عقب می‌افتد. */
   holdOcr?: () => Promise<void>;
   holdClean?: () => Promise<void>;
+  holdRender?: () => Promise<void>;
+  onCancel?: Handler;
+  renderProgress?: unknown;
   onClean?: Handler;
   cleanProgress?: unknown;
   /** پاسخ منبع ترجمه بر اساس تنظیم متن تبلیغاتی (replace/remove). */
@@ -93,9 +96,12 @@ function mockApi(options: {
       }
       return json({jobId: JOB_ID, message: 'پاک‌سازی آزمایشی انجام شد؛ هنوز ترجمه روی تصویر قرار نگرفته است.'});
     }
+    if (method === 'POST' && url.includes('/cancel?operation=')) return options.onCancel?.(init) ?? json({accepted:true});
     if (method === 'POST' && url.endsWith('/render')) {
+      if (options.holdRender) await options.holdRender();
       return json({jobId: JOB_ID, drawn: 2, message: 'ترجمهٔ فارسی روی پیش‌نمایش قرار گرفت؛ این خروجی هنوز آزمایشی است.'});
     }
+    if (url.endsWith('/render-progress')) return json(options.renderProgress ?? {fraction:0,stage:'idle',running:false});
     if (url.endsWith('/clean-progress')) {
       return json(options.cleanProgress ?? {fraction: 0, stage: 'idle', running: false});
     }
@@ -1901,5 +1907,48 @@ describe('پیشرفت پاک‌سازی و Inpaint', () => {
     await screen.findByRole('alertdialog', {name: 'خطا'});
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
     expect(screen.getAllByText('خطای تست پاک‌سازی').length).toBeGreaterThan(0);
+  });
+});
+
+
+describe('زمان باقی‌مانده و لغو پردازش تطبیقی', () => {
+  it('ETA و پروفایل را نشان می‌دهد و لغو پاک‌سازی را به سرور می‌فرستد', async () => {
+    localStorage.setItem('t4-last-job',JOB_ID);
+    const hold=deferred();
+    let cancelled=false;
+    const api=mockApi({
+      job:{jobId:JOB_ID,width:800,height:600,format:'PNG',status:'uploaded'},
+      source:{revision:'r'.repeat(64),items:[{number:1,text:'Hello'}]},translation:'[1] سلام',
+      cleanProgress:{fraction:.4,stage:'clean_inpaint',running:true,etaSeconds:42,resourceProfile:'Low'},
+      holdClean:()=>hold.promise,
+      onClean:()=>cancelled?json({detail:'پردازش لغو شد.'},409):undefined,
+      onCancel:()=>{cancelled=true;hold.resolve();return json({accepted:true});},
+    });
+    const user=userEvent.setup();render(<App />);
+    await user.click(await screen.findByRole('button',{name:'اجرای پاک‌سازی'}));
+    expect(await screen.findByText(/زمان تقریبی باقی‌مانده:/)).toHaveTextContent('۴۲');
+    expect(screen.getByText(/پروفایل Low/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button',{name:'لغو پردازش'}));
+    await waitFor(()=>expect(screen.queryByRole('progressbar')).not.toBeInTheDocument());
+    expect(api.calls.some(c=>c.url.endsWith('/cancel?operation=clean')&&c.method==='POST')).toBe(true);
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('درج ترجمه نیز نوار درصد و ETA مستقل و امکان لغو دارد', async () => {
+    localStorage.setItem('t4-last-job',JOB_ID);
+    const hold=deferred();
+    mockApi({job:{jobId:JOB_ID,width:800,height:600,format:'PNG',status:'uploaded'},
+      source:{revision:'r'.repeat(64),items:[{number:1,text:'Hello'}]},translation:'[1] سلام',
+      holdRender:()=>hold.promise,
+      renderProgress:{fraction:.7,stage:'render_text',running:true,etaSeconds:12,resourceProfile:'Medium'},
+    });
+    const user=userEvent.setup();render(<App />);
+    await user.click(await screen.findByRole('button',{name:'ادامه (پاک‌سازی و درج ترجمه)'}));
+    const bar=await screen.findByRole('progressbar',{name:'پیشرفت درج ترجمه'});
+    await waitFor(()=>expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(70));
+    expect(screen.getByRole('button',{name:'لغو پردازش'})).toBeEnabled();
+    expect(screen.getByText(/زمان تقریبی باقی‌مانده:/)).toHaveTextContent('۱۲');
+    hold.resolve();
+    await screen.findByRole('heading',{name:'مرحله ۴: درج ترجمه روی تصویر'});
   });
 });

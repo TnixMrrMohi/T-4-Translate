@@ -601,7 +601,7 @@ def _draw_plan(canvas: Image.Image, draw, entry: dict) -> bool:
 
 def render_blocks(image: Image.Image, blocks: list, translations: dict,
                   fonts: dict | None = None, layout: dict | None = None,
-                  font_files: dict | None = None) -> tuple[Image.Image, int]:
+                  font_files: dict | None = None, on_progress=None) -> tuple[Image.Image, int]:
     """هر بلوک (بالن) را با یک متن فارسی پر می‌کند؛ خروجی: تصویر و تعداد بلوک‌های رسم‌شده.
 
     `fonts` نگاشتِ نوع بالن به مسیر فونت است؛ اگر خالی باشد فونت پیش‌فرض برنامه
@@ -613,9 +613,12 @@ def render_blocks(image: Image.Image, blocks: list, translations: dict,
     canvas = image.copy()
     draw = ImageDraw.Draw(canvas)
     drawn = 0
-    for entry in plan_blocks(canvas, blocks, translations, fonts, layout, font_files):
+    plan=plan_blocks(canvas, blocks, translations, fonts, layout, font_files)
+    for index,entry in enumerate(plan):
         if _draw_plan(canvas, draw, entry):
             drawn += 1
+        if on_progress:
+            on_progress(.45 + .5 * (index+1)/len(plan))
     if not drawn:
         raise RenderError("هیچ ترجمه‌ای برای نمایش روی تصویر وجود ندارد.")
     return canvas, drawn

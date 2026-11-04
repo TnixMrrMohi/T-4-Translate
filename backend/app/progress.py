@@ -38,6 +38,9 @@ def begin(job_id: str, stage: str = 'start', fraction: float = 0.0) -> None:
             'error': None,
             'startedAt': now,
             'finishedAt': None,
+            'cancelRequested': False,
+            'etaSeconds': None,
+            'updatedAt': now,
         }
 
 
@@ -50,6 +53,12 @@ def update(job_id: str, fraction: float, stage: str | None = None) -> None:
         run['fraction'] = max(run['fraction'], min(1.0, max(0.0, float(fraction))))
         if stage:
             run['stage'] = str(stage)
+        now = time.time()
+        elapsed = now - run['startedAt']
+        run['updatedAt'] = now
+        fraction = run['fraction']
+        run['etaSeconds'] = (round(elapsed * (1 - fraction) / fraction, 1)
+                             if .08 <= fraction < 1 and elapsed >= .25 else None)
 
 
 def finish(job_id: str, stage: str = 'done') -> None:
@@ -58,7 +67,7 @@ def finish(job_id: str, stage: str = 'done') -> None:
         if run is None:
             return
         run.update({'fraction': 1.0, 'stage': stage, 'running': False, 'finished': True,
-                    'finishedAt': time.time()})
+                    'finishedAt': time.time(), 'etaSeconds': 0})
 
 
 def fail(job_id: str, error: str, stage: str = 'error') -> None:
@@ -73,6 +82,7 @@ def fail(job_id: str, error: str, stage: str = 'error') -> None:
 def callback(job_id: str) -> Callable[[float, str | None], None]:
     """تابع گزارش‌دهنده برای پاس‌دادن به لایهٔ OCR (از نخ کارگر صدا زده می‌شود)."""
     def report(fraction: float, stage: str | None = None) -> None:
+        check_cancelled(job_id)
         update(job_id, fraction, stage)
     return report
 
@@ -80,7 +90,13 @@ def callback(job_id: str) -> Callable[[float, str | None], None]:
 def snapshot(job_id: str) -> dict | None:
     with _lock:
         run = _runs.get(job_id)
-        return dict(run) if run else None
+        if not run:
+            return None
+        result = dict(run)
+        result['elapsedSeconds'] = round((run.get('finishedAt') or time.time()) - run['startedAt'], 1)
+        if result.get('etaSeconds') is not None and not run['finished']:
+            result['etaSeconds'] = round(max(0, result['etaSeconds'] - (time.time()-run['updatedAt'])), 1)
+        return result
 
 
 def clear(job_id: str | None = None) -> None:
@@ -90,3 +106,44 @@ def clear(job_id: str | None = None) -> None:
             _runs.clear()
         else:
             _runs.pop(job_id, None)
+
+
+class OperationCancelled(Exception):
+    pass
+
+
+def request_cancel(job_id: str) -> bool:
+    with _lock:
+        run = _runs.get(job_id)
+        if not run or not run['running'] or run.get('cancellable') is False:
+            return False
+        run['cancelRequested'] = True
+        return True
+
+
+def check_cancelled(job_id: str) -> None:
+    with _lock:
+        if (_runs.get(job_id) or {}).get('cancelRequested'):
+            raise OperationCancelled('پردازش لغو شد.')
+
+
+def cancelled(job_id: str) -> None:
+    fail(job_id, 'پردازش لغو شد.', 'cancelled')
+
+
+def set_resources(job_id: str, profile: dict) -> None:
+    with _lock:
+        run = _runs.get(job_id)
+        if run and not run['finished']:
+            run['resourceProfile'] = profile.get('name')
+            run['tileSize'] = profile.get('tile')
+
+
+def start_commit(job_id: str) -> None:
+    """Cancellation is accepted before publication, never halfway through rename."""
+    with _lock:
+        run=_runs.get(job_id)
+        if run and run.get('cancelRequested'):
+            raise OperationCancelled('پردازش لغو شد.')
+        if run:
+            run['cancellable']=False
