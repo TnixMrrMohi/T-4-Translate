@@ -29,6 +29,7 @@ from typing import Callable
 
 CHUNK = 1024 * 512
 STATE_FILE = "installed.json"
+COMIC_TEXT_DETECTOR_FILE = "comic-text-detector.onnx"
 DOWNLOAD_LOCK = threading.Lock()
 
 ProgressReporter = Callable[[float, str], None]
@@ -92,7 +93,7 @@ CATALOG: list[dict] = [
         "ramMb": 1536,
         "files": [
             {
-                "name": "comic-text-detector.onnx",
+                "name": COMIC_TEXT_DETECTOR_FILE,
                 "path": "mayocream/comic-text-detector-onnx/resolve/main/comic-text-detector.onnx",
                 "url": ("https://huggingface.co/mayocream/comic-text-detector-onnx/"
                         "resolve/main/comic-text-detector.onnx"),
