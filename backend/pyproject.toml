@@ -4,13 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "t4-backend"
-version = "0.1.0"
+version = "0.1.15"
 requires-python = ">=3.11"
-dependencies = ["fastapi==0.115.12", "uvicorn==0.34.2", "python-multipart==0.0.20", "Pillow==11.2.1"]
+dependencies = ["fastapi==0.115.12", "uvicorn==0.34.2", "python-multipart==0.0.20", "Pillow==11.2.1", "psutil==7.0.0"]
 
 [project.optional-dependencies]
-ocr-experimental = ["rapidocr_onnxruntime==1.4.4", "numpy==1.26.4", "opencv-python==4.10.0.84"]
-test = ["pytest==8.3.5", "httpx==0.28.1"]
+# رندر فارسی روی تصویر: shaping و bidi (بدون OpenCV هم کار می‌کند).
+render = ["arabic-reshaper==3.0.0", "python-bidi==0.6.6", "fonttools==4.59.1"]
+ocr-experimental = [
+    "rapidocr_onnxruntime==1.4.4",
+    "numpy==1.26.4",
+    "opencv-python==4.10.0.84",
+    "arabic-reshaper==3.0.0",
+    "python-bidi==0.6.6",
+    "fonttools==4.59.1",
+]
+# اجرای مدل‌های ONNX سنگین (LaMa و ComicTextDetector)؛ خودِ فایل مدل جداگانه دانلود می‌شود.
+quality = ["onnxruntime==1.20.1", "numpy==1.26.4", "opencv-python-headless==4.10.0.84"]
+test = ["pytest==8.3.5", "httpx==0.28.1", "fonttools==4.59.1"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
