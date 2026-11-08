@@ -36,6 +36,9 @@ SOFT_DISTANCE = 4.0    # پیکسل‌هایی که «کاملاً هم‌رنگ
 MASK_GROW = 3          # بزرگ‌کردن ماسک هر حرف برای گرفتن لبهٔ نرم/ضدپیکسل
 GRAIN_LIMIT = 9.0      # سقف دانهٔ اضافه‌شده به وصله تا نقطه‌نقطه نشود
 RESIDUAL_SHARE = 0.02  # اگر این سهم از چهارضلعی هنوز «جوهر» ماند، محلی وصله می‌شود
+STRICT_RING = 70       # فاصلهٔ رنگ از حلقهٔ دور کادر که باقی‌ماندهٔ حرف/هاله حساب می‌شود
+STRICT_CONTRAST = 45   # تفاوت (نسبت به فیلتر میانه) که باقی‌ماندهٔ حرف حساب می‌شود
+SOFT_FORCE_GROW = 4    # همان، ولی در پاک‌سازی اول (نزدیک خط دور بالن را نباید برداشت)
 FORCE_GROW = 9         # حاشیهٔ اضافهٔ پاک‌سازی مجدد دور چهارضلعی متن (پیکسل)
 RESIDUAL_ALLOW = 20    # کادر مجازِ وصله، کمی بزرگ‌تر از کادر OCR
 CONTEXT_PAD = 32       # حاشیهٔ نمونه‌برداری از بافتِ اطراف هنگام پر کردنِ ناحیه
@@ -699,7 +702,8 @@ def _sweep_bubbles(cv2, np, result, boxes, selected, untouched, mask_total) -> i
     return repaired
 
 
-def _force_clear_mask(cv2, np, result, box, background, quad_mask, grow_px: int = FORCE_GROW):
+def _force_clear_mask(cv2, np, result, box, background, quad_mask, grow_px: int = FORCE_GROW,
+                      strict: bool = False):
     """ماسک «پاک‌سازی مجدد» برای یک خط، یا None اگر دیگر جوهری در چهارضلعی نمانده.
 
     روی پس‌زمینهٔ شلوغ (حروف سفیدِ دورخط‌دار روی عکس) پاک‌کردنِ تکه‌به‌تکه تکه‌های حرف
@@ -713,10 +717,29 @@ def _force_clear_mask(cv2, np, result, box, background, quad_mask, grow_px: int 
     total = int(inside.sum())
     if total < 1:
         return None
-    current = np.linalg.norm(result[y0:y1, x0:x1].astype(np.float32) - background, axis=2)
-    left = (current > INK_DISTANCE * 0.6) & inside
-    if left.sum() < 6 or left.sum() / total < 0.003:
-        return None
+    region = np.ascontiguousarray(result[y0:y1, x0:x1])
+    if strict:
+        # پاک‌سازی اول: گرادیان و دانهٔ صفحه نباید «جوهر» حساب شوند. باقی‌ماندهٔ حرف باریک
+        # است و با فیلتر میانه (که خطوط باریک را حذف می‌کند) از زمینه جدا می‌شود.
+        smooth = cv2.medianBlur(region, 17)
+        diff = np.abs(region.astype(np.int16) - smooth.astype(np.int16)).max(axis=2)
+        left = (diff > STRICT_CONTRAST) & inside
+        # هالهٔ پهن (سفیدِ نرم روی زمینهٔ تیره) با فیلتر میانه دیده نمی‌شود؛ پس رنگ هر پیکسل با
+        # رنگ میانهٔ حلقهٔ دور کادر هم سنجیده می‌شود (گرادیان صفحه این‌قدر دور نمی‌شود).
+        wide = cv2.dilate(inside.astype(np.uint8), np.ones((41, 41), np.uint8)) != 0
+        near = cv2.dilate(inside.astype(np.uint8), np.ones((9, 9), np.uint8)) != 0
+        ring = wide & ~near
+        if int(ring.sum()) >= 30:
+            around = np.median(region[ring].astype(np.float32), axis=0)
+            far = np.linalg.norm(region.astype(np.float32) - around, axis=2) > STRICT_RING
+            left |= far & inside
+        if left.sum() < 12 or left.sum() / total < 0.006:
+            return None
+    else:
+        current = np.linalg.norm(region.astype(np.float32) - background, axis=2)
+        left = (current > INK_DISTANCE * 0.6) & inside
+        if left.sum() < 6 or left.sum() / total < 0.003:
+            return None
     grow = np.ones((grow_px * 2 + 1,) * 2, np.uint8)
     mask = np.zeros(result.shape[:2], bool)
     mask[y0:y1, x0:x1] = cv2.dilate(inside.astype(np.uint8), grow) != 0
@@ -825,7 +848,9 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
                   collector=hard_masks)
         report(0.08 + 0.47 * (index + 1) / len(boxes), "clean_classical")
 
-    if force:
+    # جوهری که بعد از پاک‌سازی تکه‌به‌تکه هنوز داخل کادر مانده (حروف سفیدِ دورخط‌دار روی هنر)
+    # برای همهٔ خط‌ها یک‌جا از بافت اطراف پر می‌شود؛ در پاک‌سازی مجدد حاشیه بیشتر است.
+    if True:
         union = np.zeros((height, width), bool)
         for box, vertices, extra_grow in zip(boxes, quads, box_grow):
             quad_only = np.zeros((height, width), dtype=np.uint8)
@@ -834,7 +859,8 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
             if background is None:
                 continue
             grown = _force_clear_mask(cv2, np, result, box, background, quad_only != 0,
-                                      max(0, FORCE_GROW + extra_grow))
+                                      max(0, (FORCE_GROW if force else SOFT_FORCE_GROW) + extra_grow),
+                                      strict=not force)
             if grown is not None:
                 union |= grown
         # ناحیه‌های انتخاب‌نشده یا ترجمه‌نشده هرگز لمس نمی‌شوند.

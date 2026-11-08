@@ -645,7 +645,10 @@ def bubbles_for(job_id: str, lines: list) -> dict:
 
 def translation_blocks(job_id: str, lines: list) -> list:
     """بلوک‌های ترجمه: هر بالن یک متن، نه هر خط یک متن."""
-    return bubbles.blocks(bubbles_for(job_id, lines), lines)
+    result = bubbles.drop_junk_blocks(bubbles.blocks(bubbles_for(job_id, lines), lines), lines)
+    for index, item in enumerate(result, 1):
+        item["number"] = index
+    return result
 
 
 def saved_translation_blocks(job_id: str, lines: list, translation: dict) -> list:
@@ -1138,12 +1141,28 @@ async def download_render_webp(job_id: str, quality: int = WEBP_QUALITY_DEFAULT)
                  "Content-Disposition": f'attachment; filename="t4-{job_id}.webp"'})
 
 
+SEAM_PX = 24   # خطی که تا این فاصله از لبهٔ بالا/پایین باشد، احتمالاً از مرز دو صفحه بریده شده
+
+
+class BatchExportItem(BaseModel):
+    jobId: str
+    name: str = ""
+    # برش از خروجی کار (برای کارِ چسبانده‌شده از چند صفحه)؛ خالی یعنی کل تصویر.
+    top: int | None = None
+    bottom: int | None = None
+
+
 class BatchExportInput(BaseModel):
     """خروجی دسته‌ای: فهرست کارها (به ترتیب صفحه) و نام فایل هر کدام."""
 
-    jobIds: list[str] = Field(min_length=1, max_length=500)
+    jobIds: list[str] = Field(default_factory=list, max_length=500)
     names: list[str] = Field(default_factory=list, max_length=500)
+    items: list[BatchExportItem] = Field(default_factory=list, max_length=1000)
     quality: int = WEBP_QUALITY_DEFAULT
+
+
+def _clean_file_stem(raw: str, index: int) -> str:
+    return "".join(ch for ch in Path(raw).stem if ch not in r'\/:*?"<>|').strip() or f"{index + 1:03d}"
 
 
 @app.post("/api/batch/export")
@@ -1152,28 +1171,124 @@ async def batch_export(body: BatchExportInput):
     import tempfile
     import zipfile
 
+    items = list(body.items) or [
+        BatchExportItem(jobId=job_id, name=body.names[i] if i < len(body.names) else "")
+        for i, job_id in enumerate(body.jobIds)]
+    if not items:
+        raise HTTPException(400, "کاری برای خروجی انتخاب نشده است.")
+    quality = max(WEBP_QUALITY_MIN, min(WEBP_QUALITY_MAX, body.quality))
     used: set[str] = set()
-    entries: list[tuple[str, Path]] = []
-    for index, job_id in enumerate(body.jobIds):
-        response = await download_render_webp(job_id, body.quality)
-        raw = body.names[index] if index < len(body.names) else f"{index + 1:03d}"
-        stem = "".join(ch for ch in Path(raw).stem if ch not in r'\/:*?"<>|').strip() or f"{index + 1:03d}"
-        name, extra = stem, 1
-        while name.lower() in used:
-            extra += 1
-            name = f"{stem}-{extra}"
-        used.add(name.lower())
-        entries.append((f"{name}.webp", Path(response.path)))
     handle = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
     handle.close()
-    with zipfile.ZipFile(handle.name, "w", zipfile.ZIP_STORED) as archive:
-        for name, path in entries:
-            archive.write(path, name)
+    scratch = Path(tempfile.mkdtemp(prefix="t4-batch-"))
+    try:
+        with zipfile.ZipFile(handle.name, "w", zipfile.ZIP_STORED) as archive:
+            for index, item in enumerate(items):
+                stem = _clean_file_stem(item.name or f"{index + 1:03d}", index)
+                name, extra = stem, 1
+                while name.lower() in used:
+                    extra += 1
+                    name = f"{stem}-{extra}"
+                used.add(name.lower())
+                if item.top is None or item.bottom is None:
+                    response = await download_render_webp(item.jobId, quality)
+                    archive.write(Path(response.path), f"{name}.webp")
+                    continue
+                render = _fresh_render(item.jobId)
+                target = scratch / f"{index}.webp"
+
+                def crop(render=render, target=target, top=item.top, bottom=item.bottom):
+                    with Image.open(render) as opened:
+                        part = opened.convert("RGB").crop((0, max(0, top), opened.width, min(opened.height, bottom)))
+                        part.save(target, format="WEBP", quality=quality, method=6)
+
+                await run_native_safely(crop)
+                archive.write(target, f"{name}.webp")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
     return FileResponse(
         handle.name, media_type="application/zip",
         headers={"Cache-Control": "no-store",
                  "Content-Disposition": 'attachment; filename="t4-batch-webp.zip"'},
         background=BackgroundTask(lambda: Path(handle.name).unlink(missing_ok=True)))
+
+
+class SeamInput(BaseModel):
+    upper: str
+    lower: str
+
+
+def _touches(lines: list, height: int, bottom: bool) -> bool:
+    """آیا خطِ واقعی (نه نویز) به لبهٔ پایین/بالای تصویر می‌چسبد؟"""
+    for line in lines:
+        if bubbles.is_junk_text(line.get("text", ""), line.get("confidence")):
+            continue
+        ys = [point[1] for point in line.get("quad") or []]
+        if not ys:
+            continue
+        if (bottom and max(ys) >= height - SEAM_PX) or (not bottom and min(ys) <= SEAM_PX):
+            return True
+    return False
+
+
+@app.post("/api/batch/seam")
+def batch_seam(body: SeamInput) -> dict:
+    """اگر متنی از مرز این دو صفحهٔ پشت‌سرهم بریده شده باشد، ``join`` درست است."""
+    upper, lower = get_job(body.upper), get_job(body.lower)
+    top_lines = get_ocr(body.upper).get("lines") or []
+    bottom_lines = get_ocr(body.lower).get("lines") or []
+    return {"join": _touches(top_lines, int(upper["height"]), True) or _touches(bottom_lines, int(lower["height"]), False)}
+
+
+class JoinInput(BaseModel):
+    jobIds: list[str] = Field(min_length=2, max_length=20)
+
+
+@app.post("/api/batch/join")
+def batch_join(body: JoinInput) -> dict:
+    """چند صفحهٔ پشت‌سرهم را زیر هم می‌چسباند و یک کار تازه می‌سازد (متن بین دو صفحه کامل پردازش شود)."""
+    sources = []
+    for job_id in body.jobIds:
+        info = get_job(job_id)
+        sources.append((job_id, workspace_for(job_id) / "source.img", info))
+    width = int(sources[0][2]["width"])
+    parts, frames, top = [], [], 0
+    total_height = 0
+    for job_id, path, info in sources:
+        scaled = round(int(info["height"]) * width / max(1, int(info["width"])))
+        total_height += scaled
+    if width * total_height > MAX_PIXELS:
+        raise HTTPException(400, "تصویر چسبانده‌شده بیش از حد بزرگ است.")
+    canvas = Image.new("RGB", (width, total_height), (255, 255, 255))
+    try:
+        for job_id, path, info in sources:
+            with Image.open(path) as opened:
+                frame = opened.convert("RGB")
+                if frame.width != width:
+                    frame = frame.resize((width, round(frame.height * width / frame.width)), Image.LANCZOS)
+                canvas.paste(frame, (0, top))
+                parts.append({"jobId": job_id, "top": top, "bottom": top + frame.height})
+                top += frame.height
+    except (OSError, ValueError):
+        canvas.close()
+        raise HTTPException(400, "خواندن تصویر یکی از صفحه‌ها ناموفق بود.") from None
+    root = Path(os.environ.get("T4_DATA_DIR", str(Path.home() / ".t4-translate"))) / "jobs"
+    job_id = uuid.uuid4().hex
+    workspace = root / job_id
+    workspace.mkdir(parents=True)
+    try:
+        canvas.save(workspace / "source.img", format="PNG")
+        info = {"width": width, "height": total_height, "format": "PNG",
+                "sizeBytes": (workspace / "source.img").stat().st_size, "jobId": job_id, "status": "uploaded",
+                "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        (workspace / "state.json.tmp").write_text(json.dumps(info), encoding="utf-8")
+        os.replace(workspace / "state.json.tmp", workspace / "state.json")
+    except Exception:
+        shutil.rmtree(workspace, ignore_errors=True)
+        raise
+    finally:
+        canvas.close()
+    return {**info, "parts": parts}
 
 
 class LayoutInput(BaseModel):

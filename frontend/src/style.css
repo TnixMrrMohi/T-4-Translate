@@ -442,3 +442,10 @@ button:disabled{cursor:not-allowed}
 
 .clean-size-hint{font-size:11px;opacity:.8}
 .clean-hotspot.is-active{cursor:move;touch-action:none}
+
+.chapter-view{margin-top:20px;border-top:1px solid #00ffcc33;padding-top:12px}
+.chapter-page{margin:0 auto 18px;max-width:760px}
+.chapter-page img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid #00ffcc22;background:#fff}
+.chapter-page figcaption{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;font-size:12px;color:#a0ffe0}
+.chapter-actions{display:flex;gap:8px}
+.chapter-actions .small{padding:4px 10px;font-size:12px}

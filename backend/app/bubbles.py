@@ -1034,3 +1034,60 @@ def blocks(document: dict, lines: list) -> list[dict]:
     for index, item in enumerate(result, 1):
         item["number"] = index
     return result
+
+
+# ---------------------------------------------------------------- متن بی‌معنی (نه کلمه)
+# OCR روی هنر/افکت صوتی چیزهایی مثل «Q»، «兰存»، «SSMASN» یا «%» می‌خواند. این‌ها کلمه
+# نیستند و ترجمه‌شان فقط متن خراب روی تصویر می‌گذارد؛ پس از فهرست ترجمه کنار گذاشته می‌شوند
+# و دست‌نخورده روی تصویر می‌مانند.
+_SHORT_OK = {
+    "I", "A", "NO", "OK", "OH", "AH", "UH", "UM", "EH", "HA", "HI", "HE", "HM", "HU", "SO", "GO", "MY", "ME",
+    "WE", "IT", "IF", "IN", "IS", "AS", "AT", "BE", "BY", "DO", "UP", "US", "OR", "ON", "OF", "TO", "OW",
+}
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff00-\uffef]")
+_LATIN = re.compile(r"[A-Za-z]")
+_ODD = re.compile(r"[<>{}|\^`_=+*#@\[\]]")
+
+
+def is_junk_text(text: str, confidence: float | None = None) -> bool:
+    """آیا این متن کلمهٔ واقعی نیست و نباید ترجمه/پاک‌سازی شود؟"""
+    value = (text or "").strip()
+    if not value:
+        return True
+    letters = _LATIN.findall(value)
+    # خط/هانگول/کانا بدون متن لاتین: نوشتهٔ داخل هنر، نه دیالوگ.
+    if _CJK.search(value) and len(letters) < 3:
+        return True
+    # فقط عدد و نشانه («%»، «20»، «?!»، «...»): چیزی برای ترجمه نیست.
+    if not letters:
+        return True
+    words = re.findall(r"[A-Za-z]+", value)
+    if len(letters) < 3 and "".join(words).upper() not in _SHORT_OK:
+        return True
+    # نویز نشانه‌ای («SAW>»، «.i)»).
+    if len(_ODD.findall(value)) >= 1 and len(letters) <= 6:
+        return True
+    if confidence is not None:
+        # اطمینان پایین روی متن کوتاه یعنی تقریباً حتماً خواندنِ اشتباهِ هنر است.
+        if confidence < 0.62 and len(letters) <= 8:
+            return True
+        if len(words) == 1 and len(letters) <= 7 and confidence < 0.8:
+            return True
+    return False
+
+
+def drop_junk_blocks(block_list: list, lines: list) -> list:
+    """بلوک‌هایی که همهٔ خطوطشان بی‌معنی‌اند کنار گذاشته می‌شوند (شماره‌گذاری بعداً دوباره ساخته می‌شود)."""
+    kept = []
+    for item in block_list:
+        scores = []
+        for number in item.get("lines") or []:
+            if 1 <= number <= len(lines):
+                value = lines[number - 1].get("confidence")
+                if isinstance(value, (int, float)):
+                    scores.append(float(value))
+        confidence = sum(scores) / len(scores) if scores else None
+        if is_junk_text(item.get("text", ""), confidence):
+            continue
+        kept.append(item)
+    return kept

@@ -3,10 +3,16 @@ import React, {useEffect, useRef, useState} from 'react';
 const WEBP_QUALITY = 90;
 const HEADER = /^===\s*(\d+)\s*\|\s*(.+?)\s*===\s*$/;
 
+/** یک تصویر اصلی داخل کارِ دسته‌ای (برای کارِ چسبانده‌شده، بازهٔ آن در تصویر چسبیده). */
+export type BatchMember = {name: string; top: number; bottom: number};
+
 export type BatchPage = {
   page: number;
   name: string;
   jobId: string;
+  /** ارتفاع تصویر این کار؛ و تصویرهای اصلیِ داخلش. بیش از یکی یعنی چند صفحه به‌خاطر متنِ مرزی چسبانده شده‌اند. */
+  height?: number;
+  members?: BatchMember[];
   revision: string;
   text: string;
   state: 'extracted' | 'running' | 'done' | 'failed';
@@ -70,7 +76,13 @@ export const BATCH_PROMPT_NOTE = [
   '- لحن هر بالن کنار شمارهٔ خودش آمده؛ برای هر بالن جداگانه همان لحن را رعایت کن.',
 ].join('\n');
 
-export function BatchPanel({onClose, prompt}: {onClose: () => void; prompt: string}) {
+const STORE_KEY = 't4-batch-v2';
+
+export function BatchPanel({onClose, prompt, visible = true, onEdit}: {
+  onClose: () => void; prompt: string; visible?: boolean;
+  /** باز کردن یک کار در ویرایشگر تک‌تصویر (مرحلهٔ ۳ = پاک‌سازی، ۴ = متن/فونت). */
+  onEdit?: (jobId: string, step: number) => void;
+}) {
   const [files, setFiles] = useState<File[]>([]);
   const [pages, setPages] = useState<BatchPage[]>([]);
   const [translated, setTranslated] = useState('');
@@ -78,6 +90,34 @@ export function BatchPanel({onClose, prompt}: {onClose: () => void; prompt: stri
   const [message, setMessage] = useState('');
   const [progress, setProgress] = useState('');
   const cancel = useRef(false);
+  const [chapterVersion, setChapterVersion] = useState(() => Date.now());
+  // پس از برگشت از ویرایشگر، خروجی‌های تغییرکرده دوباره بارگذاری می‌شوند.
+  useEffect(() => {
+    if (visible) setChapterVersion(Date.now());
+  }, [visible]);
+  // نتیجهٔ دسته‌ای با بستن برنامه از بین نرود (فایل‌ها روی سیستم می‌مانند).
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current) return;
+    restored.current = true;
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null');
+      if (saved && Array.isArray(saved.pages) && saved.pages.length) {
+        setPages(saved.pages.map((p: BatchPage) => ({...p, state: p.state === 'running' ? 'extracted' : p.state})));
+        setTranslated(typeof saved.translated === 'string' ? saved.translated : '');
+      }
+    } catch {
+      // ذخیرهٔ خراب نادیده گرفته می‌شود.
+    }
+  }, []);
+  useEffect(() => {
+    if (!restored.current) return;
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({pages, translated}));
+    } catch {
+      // حافظهٔ مرورگر پر یا بسته است.
+    }
+  }, [pages, translated]);
   const picker = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -141,17 +181,69 @@ export function BatchPanel({onClose, prompt}: {onClose: () => void; prompt: stri
         const text = (source.items as {number: number; text: string; tone?: string}[])
           .map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
         found.push({page: found.length + 1, name: file.name, jobId: job.jobId,
-          revision: source.revision, text, state: 'extracted'});
+          revision: source.revision, text, state: 'extracted', height: job.height,
+          members: [{name: file.name, top: 0, bottom: job.height}]});
       } catch (error) {
         errors.push(`${file.name}: ${error instanceof Error ? error.message : 'خطا'}`);
       }
     }
+    // متنی که از مرز دو صفحه بریده شده، فقط در یک تصویرِ چسبیده کامل پاک و درج می‌شود.
+    let joinedCount = 0;
+    let at = 0;
+    while (!cancel.current && at < found.length - 1) {
+      const upper = found[at];
+      const lower = found[at + 1];
+      setProgress(`بررسی مرز صفحه‌ها ${at + 1} و ${at + 2}…`);
+      try {
+        const seam = await (await call('/api/batch/seam', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({upper: upper.jobId, lower: lower.jobId}),
+        }, 'بررسی مرز')).json();
+        if (!seam.join) {
+          at += 1;
+          continue;
+        }
+        setProgress(`چسباندن صفحه‌های ${at + 1} و ${at + 2} (متن روی مرز)…`);
+        const joined = await (await call('/api/batch/join', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({jobIds: [upper.jobId, lower.jobId]}),
+        }, 'چسباندن صفحه‌ها')).json();
+        await call(`/api/jobs/${joined.jobId}/ocr`, {method: 'POST'}, 'OCR تصویر چسبیده');
+        const source = await (await call(
+          `/api/jobs/${joined.jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
+        const text = (source.items as {number: number; text: string; tone?: string}[])
+          .map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
+        const members: BatchMember[] = [];
+        (joined.parts as {jobId: string; top: number; bottom: number}[]).forEach((part, index) => {
+          const owner = index === 0 ? upper : lower;
+          const old = owner.height || (part.bottom - part.top) || 1;
+          const factor = (part.bottom - part.top) / old;
+          (owner.members ?? []).forEach(member => members.push({
+            name: member.name,
+            top: Math.round(part.top + member.top * factor),
+            bottom: Math.round(part.top + member.bottom * factor),
+          }));
+        });
+        found.splice(at, 2, {
+          page: 0, name: members.map(member => member.name).join(' + '), jobId: joined.jobId,
+          revision: source.revision, text, state: 'extracted', height: joined.height, members,
+        });
+        joinedCount += 1;
+        // کارهای جداگانهٔ قبلی دیگر لازم نیستند.
+        void fetch(`/api/jobs/${upper.jobId}`, {method: 'DELETE'}).catch(() => undefined);
+        void fetch(`/api/jobs/${lower.jobId}`, {method: 'DELETE'}).catch(() => undefined);
+      } catch (error) {
+        errors.push(`مرز صفحه‌ها: ${error instanceof Error ? error.message : 'خطا'}`);
+        at += 1;
+      }
+    }
+    found.forEach((entry, index) => {entry.page = index + 1;});
     setPages(found);   // فقط وقتی همهٔ تصویرها خوانده شدند نشان داده می‌شود
     setBusy(null);
     setProgress('');
     setMessage(errors.length
-      ? `${found.length} صفحه آماده شد؛ ${errors.length} صفحه ناموفق بود: ${errors.join(' | ')}`
-      : `متن ${found.length} صفحه استخراج شد. آن را کپی کنید، ترجمه کنید و در کادر پایین بگذارید.`);
+      ? `${found.length} صفحه آماده شد؛ ${errors.length} خطا: ${errors.join(' | ')}`
+      : `متن ${found.length} صفحه استخراج شد${joinedCount ? ` (${joinedCount} مرز صفحه با متنِ بریده چسبانده شد)` : ''}. «کپی با پرامپت» را بزنید، ترجمه کنید و در کادر پایین بگذارید.`);
   }
 
   async function run() {
@@ -191,11 +283,18 @@ export function BatchPanel({onClose, prompt}: {onClose: () => void; prompt: stri
     try {
       const response = await call('/api/batch/export', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({jobIds: ready.map(p => p.jobId), names: ready.map(p => p.name),
-          quality: WEBP_QUALITY}),
+        body: JSON.stringify({
+          items: ready.flatMap(page => {
+            const members = page.members ?? [];
+            if (members.length <= 1) return [{jobId: page.jobId, name: members[0]?.name ?? page.name}];
+            // تصویرِ چسبیده دوباره به صفحه‌های اصلی‌اش بریده می‌شود.
+            return members.map(member => ({jobId: page.jobId, name: member.name, top: member.top, bottom: member.bottom}));
+          }),
+          quality: WEBP_QUALITY,
+        }),
       }, 'ساخت ZIP');
       saveBlob(await response.blob(), 't4-batch-webp.zip');
-      setMessage(`ZIP با ${ready.length} تصویر WebP ساخته و دانلود شد.`);
+      setMessage(`ZIP با ${ready.reduce((sum, page) => sum + Math.max(1, page.members?.length ?? 1), 0)} تصویر WebP ساخته و دانلود شد.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'دانلود ناموفق بود.');
     } finally {
@@ -204,7 +303,7 @@ export function BatchPanel({onClose, prompt}: {onClose: () => void; prompt: stri
   }
 
   return (
-    <section className="batch-panel" aria-label="پردازش دسته‌ای">
+    <section className="batch-panel" aria-label="پردازش دسته‌ای" style={visible ? undefined : {display: 'none'}}>
       <div className="batch-head">
         <h2 className="wizard-title">پردازش دسته‌ای</h2>
         <button type="button" className="ghost" disabled={busy !== null} onClick={onClose}>
@@ -294,6 +393,33 @@ export function BatchPanel({onClose, prompt}: {onClose: () => void; prompt: stri
             ))}
           </ul>
         </>
+      )}
+
+      {doneCount > 0 && (
+        <div className="chapter-view" aria-label="نمای فصل">
+          <h3 className="wizard-subtitle">نمای فصل (از بالا به پایین)</h3>
+          <p className="wizard-help">
+            همهٔ صفحه‌ها به ترتیب زیر هم‌اند. برای هر صفحه می‌توانید متن، فونت و اندازه را در ویرایشگر
+            عوض کنید یا پشت متن را دوباره پاک کنید؛ پس از برگشت، همین‌جا تازه می‌شود.
+          </p>
+          {pages.filter(page => page.state === 'done').map(page => (
+            <figure key={page.jobId} className="chapter-page">
+              <figcaption>
+                <span dir="ltr">{page.page}. {page.name}</span>
+                {onEdit && (
+                  <span className="chapter-actions">
+                    <button type="button" className="ghost small" disabled={busy !== null}
+                      onClick={() => onEdit(page.jobId, 4)}>متن، فونت و اندازه</button>
+                    <button type="button" className="ghost small" disabled={busy !== null}
+                      onClick={() => onEdit(page.jobId, 3)}>پاک‌سازی مجدد</button>
+                  </span>
+                )}
+              </figcaption>
+              <img loading="lazy" alt={`صفحهٔ ${page.page}`}
+                src={`/api/jobs/${page.jobId}/render?v=${chapterVersion}`} />
+            </figure>
+          ))}
+        </div>
       )}
 
       {busy && (

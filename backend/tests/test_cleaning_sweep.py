@@ -124,3 +124,40 @@ def test_shift_moves_the_cleaned_area(tmp_path, monkeypatch):
     assert top_ink == 0 and bottom_ink > 0
     top_ink, bottom_ink = dark_left((0, 130))      # ناحیه به پایین کشیده شد
     assert top_ink > 0 and bottom_ink == 0
+
+
+def _job(tmp_path, monkeypatch, size, lines):
+    import json
+    from app import main
+    monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
+    job_id = __import__('uuid').uuid4().hex
+    ws = tmp_path / 'jobs' / job_id
+    ws.mkdir(parents=True)
+    Image.new('RGB', size, (255, 255, 255)).save(ws / 'source.img', format='PNG')
+    (ws / 'state.json').write_text(json.dumps({'width': size[0], 'height': size[1], 'format': 'PNG', 'jobId': job_id}))
+    (ws / 'ocr.json').write_text(json.dumps({'lines': lines}))
+    return job_id
+
+
+def test_seam_detected_and_pages_joined(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main
+    cut = {'text': 'THE WORLD HAS', 'confidence': 0.95, 'quad': [[10, 280], [200, 280], [200, 298], [10, 298]]}
+    mid = {'text': 'HELLO THERE', 'confidence': 0.95, 'quad': [[10, 100], [200, 100], [200, 120], [10, 120]]}
+    upper = _job(tmp_path, monkeypatch, (300, 300), [mid, cut])        # خط چسبیده به لبهٔ پایین
+    lower = _job(tmp_path, monkeypatch, (300, 200), [mid])
+    far = _job(tmp_path, monkeypatch, (300, 200), [mid])
+    client = TestClient(main.app)
+    assert client.post('/api/batch/seam', json={'upper': upper, 'lower': lower}).json() == {'join': True}
+    assert client.post('/api/batch/seam', json={'upper': far, 'lower': lower}).json() == {'join': False}
+    joined = client.post('/api/batch/join', json={'jobIds': [upper, lower]}).json()
+    assert (joined['width'], joined['height']) == (300, 500)
+    assert [(p['top'], p['bottom']) for p in joined['parts']] == [(0, 300), (300, 500)]
+
+
+def test_junk_filter_drops_non_words():
+    from app.bubbles import is_junk_text
+    for text, conf in (('Q', .9), ('兰存', .8), ('SSMASN', .55), ('%', .7), ('?!', .9), ('Keligh', .66)):
+        assert is_junk_text(text, conf), text
+    for text, conf in (('Hu...', .9), ('AYE~ AYE!', .93), ('NO.', .9), ('WHAT?', .9), ('THE WORLD... HAS COME', .9)):
+        assert not is_junk_text(text, conf), text
