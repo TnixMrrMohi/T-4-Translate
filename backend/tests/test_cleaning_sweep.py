@@ -65,3 +65,39 @@ def test_batch_export_zips_webp_of_each_job(tmp_path, monkeypatch):
     assert response.status_code == 200
     archive = zipfile.ZipFile(io.BytesIO(response.content))
     assert sorted(archive.namelist()) == ['p1-2.webp', 'p1.webp']
+
+
+def test_grow_resizes_the_cleaned_area(tmp_path, monkeypatch):
+    """مثبت = ناحیهٔ پاک‌شده بزرگ‌تر، منفی = کوچک‌تر؛ بدون آن همان اندازهٔ خودکار."""
+    from app import cleaning
+    # جاروی بالن هر لکهٔ تنهای داخل بالن را پاک می‌کند؛ اینجا فقط اثر اندازه سنجیده می‌شود.
+    monkeypatch.setattr(cleaning, '_sweep_bubbles', lambda *a, **k: 0)
+    page = np.full((200, 400, 3), 40, np.uint8)
+    cv2.rectangle(page, (60, 40), (340, 160), (255, 255, 255), -1)        # بالن سفید
+    cv2.putText(page, 'HELLO', (130, 110), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
+    cv2.line(page, (272, 85), (272, 112), (0, 0, 0), 3)                   # خط کمی بیرون از کادر OCR
+    path = tmp_path / 'page.png'
+    Image.fromarray(page).save(path)
+    lines = [{'quad': [[128, 78], [262, 78], [262, 118], [128, 118]]}]
+
+    def stroke_removed(grow):
+        clean, _ = clean_image(path, lines, {'1': 'سلام'}, force=True, only={1},
+                               grow={1: grow} if grow else None, high_quality=False)
+        return bool(np.array(clean.convert('L'))[90:108, 271:274].min() > 200)
+
+    assert stroke_removed(0)           # اندازهٔ خودکار: خط داخل حاشیهٔ پیش‌فرض است و پاک می‌شود
+    assert not stroke_removed(-18)     # کوچک‌کردن: بیرون از ناحیه می‌ماند
+    assert stroke_removed(10)
+
+
+def test_force_clear_mask_follows_grow(tmp_path):
+    from app.cleaning import _force_clear_mask
+    result = np.full((120, 200, 3), 200, np.uint8)
+    result[40:60, 60:140] = 30                                            # جوهرِ باقی‌مانده
+    quad = np.zeros((120, 200), np.uint8)
+    cv2.fillPoly(quad, [np.array([[60, 40], [140, 40], [140, 60], [60, 60]], np.int32)], 255)
+    background = np.array([200, 200, 200], np.float32)
+    box = (40, 20, 160, 80)
+    small = _force_clear_mask(cv2, np, result, box, background, quad != 0, 2)
+    large = _force_clear_mask(cv2, np, result, box, background, quad != 0, 12)
+    assert small is not None and large is not None and small.sum() < large.sum()

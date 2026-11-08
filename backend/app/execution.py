@@ -106,7 +106,8 @@ def _worker(kind: str, payload: dict, directory: str, profile: dict):
         clean,mask=cleaning.clean_image(Path(payload['path']),payload['lines'],payload['translations'],
             base=Path(payload['base']) if payload.get('base') else None,
             only=set(payload['only']) if payload.get('only') is not None else None,
-            force=payload.get('force',False),extra=set(payload.get('extra') or []),on_progress=report)
+            force=payload.get('force',False),extra=set(payload.get('extra') or []),
+            grow={int(k):int(v) for k,v in (payload.get('grow') or {}).items()},on_progress=report)
         try:
             clean.save(root/'clean.png');mask.save(root/'mask.png')
         finally:

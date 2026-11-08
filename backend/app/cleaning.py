@@ -699,7 +699,7 @@ def _sweep_bubbles(cv2, np, result, boxes, selected, untouched, mask_total) -> i
     return repaired
 
 
-def _force_clear_mask(cv2, np, result, box, background, quad_mask):
+def _force_clear_mask(cv2, np, result, box, background, quad_mask, grow_px: int = FORCE_GROW):
     """ماسک «پاک‌سازی مجدد» برای یک خط، یا None اگر دیگر جوهری در چهارضلعی نمانده.
 
     روی پس‌زمینهٔ شلوغ (حروف سفیدِ دورخط‌دار روی عکس) پاک‌کردنِ تکه‌به‌تکه تکه‌های حرف
@@ -717,7 +717,7 @@ def _force_clear_mask(cv2, np, result, box, background, quad_mask):
     left = (current > INK_DISTANCE * 0.6) & inside
     if left.sum() < 6 or left.sum() / total < 0.003:
         return None
-    grow = np.ones((FORCE_GROW * 2 + 1,) * 2, np.uint8)
+    grow = np.ones((grow_px * 2 + 1,) * 2, np.uint8)
     mask = np.zeros(result.shape[:2], bool)
     mask[y0:y1, x0:x1] = cv2.dilate(inside.astype(np.uint8), grow) != 0
     return mask
@@ -725,7 +725,7 @@ def _force_clear_mask(cv2, np, result, box, background, quad_mask):
 
 def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
                 only: set[int] | None = None, force: bool = False,
-                extra: set[int] | None = None,
+                extra: set[int] | None = None, grow: dict[int, int] | None = None,
                 high_quality: bool = True, on_progress=None) -> tuple[Image.Image, Image.Image]:
     """متن نواحی ترجمه‌شده را پاک می‌کند و تصویر و ماسک را برمی‌گرداند.
 
@@ -733,6 +733,8 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
       تصویر پاک‌شدهٔ فعلی پایه می‌گیرد تا بقیهٔ ناحیه‌ها دست‌نخورده بمانند.
     * ``only``: شمارهٔ خطوطی (۱-پایه) که باید دوباره پاک شوند؛ بقیه تغییر نمی‌کنند.
     * ``force``: حالت تهاجمی برای همان نواحی انتخابی (فقط داخل چهارضلعیِ خودِ خط).
+    * ``grow``: تغییر اندازهٔ ناحیهٔ پاک‌سازی هر خط (شمارهٔ ۱-پایه ← پیکسل)؛ مثبت بزرگ‌تر،
+      منفی کوچک‌تر. بدون آن اندازهٔ خودکار می‌ماند.
     * ``extra``: خط‌هایی که باید پاک شوند ولی ترجمه‌ای ندارند (متن تبلیغاتیِ حذف‌شده).
     """
     try:
@@ -758,6 +760,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
     untouched = np.zeros_like(selected)                      # ناحیه‌هایی که نباید تغییر کنند
     boxes: list[tuple[int, int, int, int]] = []
     quads: list = []
+    box_grow: list[int] = []
     for number, line in enumerate(lines, 1):
         quad = line.get('quad')
         if not isinstance(quad, list) or len(quad) != 4:
@@ -781,6 +784,10 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
         # تا باقی‌ماندهٔ متن انگلیسی پس از پاک‌سازی نماند. کادرهای ترجمه‌نشده بزرگ نمی‌شوند.
         span = float(max(points[:, 0].ptp(), points[:, 1].ptp()))
         pad = int(min(20, max(2, round(span * PADDING_RATIO))))
+        extra_grow = int((grow or {}).get(number, 0))
+        # کوچک‌کردن هرگز کادر را وارونه یا خالی نمی‌کند.
+        half = int(min(points[:, 0].ptp(), points[:, 1].ptp()) // 2)
+        pad = max(-max(0, half - 2), pad + extra_grow)
         center_x, center_y = points[:, 0].mean(), points[:, 1].mean()
         points = np.array([
             [max(0, min(width - 1, int(x) + (pad if x >= center_x else -pad))),
@@ -790,6 +797,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
         boxes.append((int(points[:, 0].min()), int(points[:, 1].min()),
                       int(points[:, 0].max()) + 1, int(points[:, 1].max()) + 1))
         quads.append(quad_vertices)
+        box_grow.append(extra_grow)
     if not boxes:
         raise CleaningError('هیچ ناحیهٔ ترجمه‌شده‌ای برای پاک‌سازی وجود ندارد.')
 
@@ -812,13 +820,14 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
 
     if force:
         union = np.zeros((height, width), bool)
-        for box, vertices in zip(boxes, quads):
+        for box, vertices, extra_grow in zip(boxes, quads, box_grow):
             quad_only = np.zeros((height, width), dtype=np.uint8)
             cv2.fillPoly(quad_only, [vertices], 255)
             background = _background(np, cv2, image, box, quad_only)
             if background is None:
                 continue
-            grown = _force_clear_mask(cv2, np, result, box, background, quad_only != 0)
+            grown = _force_clear_mask(cv2, np, result, box, background, quad_only != 0,
+                                      max(0, FORCE_GROW + extra_grow))
             if grown is not None:
                 union |= grown
         # ناحیه‌های انتخاب‌نشده یا ترجمه‌نشده هرگز لمس نمی‌شوند.

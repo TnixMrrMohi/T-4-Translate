@@ -1,7 +1,7 @@
 import {describe, expect, it, vi, beforeEach} from 'vitest';
 import {act, fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import {advanceProgress, App, focusAreaView, PROGRESS_CEILING} from './App';
+import {advanceProgress, App, CleanCanvas, focusAreaView, PROGRESS_CEILING} from './App';
 
 type Handler = (init?: RequestInit) => Response | undefined;
 
@@ -1950,5 +1950,24 @@ describe('زمان باقی‌مانده و لغو پردازش تطبیقی', (
     expect(screen.getByText(/زمان تقریبی باقی‌مانده:/)).toHaveTextContent('۱۲');
     hold.resolve();
     await screen.findByRole('heading',{name:'مرحله ۴: درج ترجمه روی تصویر'});
+  });
+});
+
+describe('اندازهٔ ناحیهٔ پاک‌سازی', () => {
+  it('دکمه‌های +/− اندازه را عوض می‌کنند و مقدار همراه درخواست ناحیه می‌رود', async () => {
+    const calls: Array<[number[], Record<number, number> | undefined]> = [];
+    const user = userEvent.setup();
+    render(<CleanCanvas jobId="j" version={1} pageWidth={800} pageHeight={600} disabled={false}
+      areas={[{number: 2, lines: [2], bbox: [100, 100, 300, 200], kind: 'speech', kindLabel: 'صحبت عادی',
+        text: 'سلام', translated: true}]}
+      onReclean={(numbers, grow) => calls.push([numbers, grow])} />);
+    await user.click(screen.getByRole('button', {name: 'ناحیهٔ ۲'}));
+    const group = screen.getByRole('group', {name: 'اندازهٔ ناحیهٔ پاک‌سازی'});
+    await user.click(within(group).getByRole('button', {name: 'بزرگ‌تر'}));
+    await user.click(within(group).getByRole('button', {name: 'بزرگ‌تر'}));
+    await user.click(within(group).getByRole('button', {name: 'کوچک‌تر'}));
+    expect(within(group).getByRole('status')).toHaveTextContent('۴');
+    await user.click(screen.getByRole('button', {name: 'پاک‌سازی مجدد این ناحیه'}));
+    expect(calls).toEqual([[[2], {2: 4}]]);
   });
 });

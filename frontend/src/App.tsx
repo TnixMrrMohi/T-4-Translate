@@ -380,15 +380,26 @@ function Overlay({label, onBackdropClick, className = 'modal-backdrop', children
 
 /** بندانگشتی ثابت‌اندازه؛ تصویر کامل (حتی ۱۵۰۰۰ پیکسل) فقط در مودال نمایش داده می‌شود. */
 /** تصویر پاک‌شدهٔ مرحلهٔ ۳ با ناحیه‌های قابل‌کلیک؛ کلیک روی هر ناحیه یک پنجرهٔ کوچک با «پاک‌سازی مجدد» باز می‌کند. */
-function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disabled, onReclean}: {
+export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disabled, onReclean}: {
   jobId: string; version: number; pageWidth: number; pageHeight: number;
-  areas: CleanArea[]; disabled: boolean; onReclean: (numbers: number[]) => void;
+  areas: CleanArea[]; disabled: boolean; onReclean: (numbers: number[], grow?: Record<number, number>) => void;
 }) {
   const [picked, setPicked] = useState<number | null>(null);
+  // تغییر اندازهٔ ناحیهٔ پاک‌سازی هر بالن (پیکسل؛ منفی = کوچک‌تر)
+  const [grows, setGrows] = useState<Record<number, number>>({});
+  const growOf = (number: number) => grows[number] ?? 0;
+  const bump = (number: number, delta: number) =>
+    setGrows(old => ({...old, [number]: Math.max(-30, Math.min(80, (old[number] ?? 0) + delta))}));
   useEffect(() => {setPicked(null);}, [version]);
   const boxOf = (area: CleanArea) => {
     const box = area.area && area.area.length === 4 ? area.area : area.bbox;
-    return box && box.length === 4 ? box : null;
+    if (!box || box.length !== 4) return null;
+    // کادر نمایشی همراه با تغییر اندازه جابه‌جا می‌شود تا اثرش پیش از اجرا دیده شود.
+    const g = growOf(area.number);
+    if (!g) return box;
+    const x0 = Math.max(0, box[0] - g), y0 = Math.max(0, box[1] - g);
+    const x1 = Math.min(pageWidth, box[2] + g), y1 = Math.min(pageHeight, box[3] + g);
+    return x1 - x0 > 4 && y1 - y0 > 4 ? [x0, y0, x1, y1] : box;
   };
   const active = areas.find(area => area.number === picked) ?? null;
   const activeBox = active ? boxOf(active) : null;
@@ -445,11 +456,27 @@ function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disabled, on
                 <button type="button" className="ghost small" aria-label="بستن" onClick={() => setPicked(null)}>✕</button>
               </div>
               <p dir="rtl">{active.text}</p>
+              <div className="clean-size" role="group" aria-label="اندازهٔ ناحیهٔ پاک‌سازی">
+                <span>اندازهٔ ناحیه</span>
+                <button type="button" className="ghost small" aria-label="کوچک‌تر" disabled={disabled}
+                  onClick={() => bump(active.number, -4)}>−</button>
+                <output aria-live="polite">{num(growOf(active.number))}</output>
+                <button type="button" className="ghost small" aria-label="بزرگ‌تر" disabled={disabled}
+                  onClick={() => bump(active.number, 4)}>+</button>
+                {growOf(active.number) !== 0 && (
+                  <button type="button" className="ghost small" disabled={disabled}
+                    onClick={() => setGrows(old => ({...old, [active.number]: 0}))}>بازنشانی</button>
+                )}
+              </div>
               <button
                 type="button"
                 className="ocr"
                 disabled={disabled}
-                onClick={() => {onReclean([active.number]); setPicked(null);}}
+                onClick={() => {
+                  const g = growOf(active.number);
+                  onReclean([active.number], g ? {[active.number]: g} : undefined);
+                  setPicked(null);
+                }}
               >
                 پاک‌سازی مجدد این ناحیه
               </button>
@@ -1348,7 +1375,7 @@ export function App() {
   }
 
   /** پاک‌سازی مجدد فقط ناحیه‌های انتخاب‌شده (بر پایهٔ تصویر پاک‌شدهٔ فعلی). */
-  async function recleanAreas(numbers: number[] = areaPick) {
+  async function recleanAreas(numbers: number[] = areaPick, grow?: Record<number, number>) {
     if (!job || busy || areasBusy || loadingData || numbers.length === 0) return;
     setAreasBusy(true);
     setMessage('در حال پاک‌سازی مجدد ناحیه‌های انتخاب‌شده…');
@@ -1357,7 +1384,7 @@ export function App() {
       const response = await fetch(`/api/jobs/${job.jobId}/clean`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({areas: numbers}),
+        body: JSON.stringify(grow ? {areas: numbers, grow} : {areas: numbers}),
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -2035,7 +2062,7 @@ export function App() {
                       pageHeight={job.height}
                       areas={translatedAreas}
                       disabled={busy || areasBusy || loadingData}
-                      onReclean={numbers => void recleanAreas(numbers)}
+                      onReclean={(numbers, grow) => void recleanAreas(numbers, grow)}
                     />
                   )}
 
@@ -2109,7 +2136,7 @@ export function App() {
                         pageHeight={job.height}
                         areas={translatedAreas}
                         disabled={busy || areasBusy || loadingData}
-                        onReclean={numbers => void recleanAreas(numbers)}
+                        onReclean={(numbers, grow) => void recleanAreas(numbers, grow)}
                       />
                       <div className="wizard-nav start">
                         <button
