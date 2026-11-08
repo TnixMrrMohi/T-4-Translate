@@ -608,6 +608,8 @@ class CleanInput(BaseModel):
     areas: list[int] | None = Field(default=None, max_length=9999)
     # تغییر اندازهٔ ناحیهٔ پاک‌سازی هر بالن (شمارهٔ بالن ← پیکسل؛ منفی = کوچک‌تر).
     grow: dict[int, int] = Field(default_factory=dict, max_length=9999)
+    # جابه‌جایی ناحیهٔ پاک‌سازی هر بالن (شمارهٔ بالن ← [dx, dy] پیکسل).
+    shift: dict[int, list[int]] = Field(default_factory=dict, max_length=9999)
 
 
 PROMO_ACTIONS = ("replace", "remove", "keep")
@@ -865,6 +867,7 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
         only = None
         base = None
         line_grow: dict[int, int] = {}
+        line_shift: dict[int, tuple[int, int]] = {}
         if areas is not None:
             block_list = saved_translation_blocks(job_id, source["lines"], translation)
             only = {line for item in block_list if item["number"] in areas for line in item["lines"]}
@@ -873,6 +876,11 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
                 if item["number"] in areas and value:
                     for line in item["lines"]:
                         line_grow[line] = value
+                moved = body.shift.get(item["number"])
+                if item["number"] in areas and moved and len(moved) == 2 and any(moved):
+                    pair = (max(-400, min(400, int(moved[0]))), max(-400, min(400, int(moved[1]))))
+                    for line in item["lines"]:
+                        line_shift[line] = pair
             existing = workspace / "clean.png"
             if not existing.is_file():
                 raise HTTPException(409, "ابتدا یک‌بار پاک‌سازی کامل را اجرا کنید.")
@@ -882,13 +890,13 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
                 if os.environ.get('T4_WORKER_MODE') == 'inline':
                     clean, mask = await run_native_safely(
                         partial(cleaning.clean_image, workspace / "source.img", source["lines"],
-                                line_translations, base=base, only=only, force=base is not None, grow=line_grow,
+                                line_translations, base=base, only=only, force=base is not None, grow=line_grow, shift=line_shift,
                                 extra=set(translation.get("cleanLines") or []), on_progress=report))
                 else:
                     clean,mask=await execution.run('clean',{
                         'path':str(workspace/'source.img'),'lines':source['lines'],
                         'translations':line_translations,'base':str(base) if base else None,
-                        'only':sorted(only) if only is not None else None,'force':base is not None,'grow':line_grow,
+                        'only':sorted(only) if only is not None else None,'force':base is not None,'grow':line_grow,'shift':{k:list(v) for k,v in line_shift.items()},
                         'extra':translation.get('cleanLines') or []},workspace,f'{job_id}:clean')
                 progress.check_cancelled(f'{job_id}:clean')
             except cleaning.CleaningError as exc:

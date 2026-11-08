@@ -1955,19 +1955,23 @@ describe('زمان باقی‌مانده و لغو پردازش تطبیقی', (
 
 describe('اندازهٔ ناحیهٔ پاک‌سازی', () => {
   it('دکمه‌های +/− اندازه را عوض می‌کنند و مقدار همراه درخواست ناحیه می‌رود', async () => {
-    const calls: Array<[number[], Record<number, number> | undefined]> = [];
+    const calls: Array<[number[], unknown]> = [];
     const user = userEvent.setup();
     render(<CleanCanvas jobId="j" version={1} pageWidth={800} pageHeight={600} disabled={false}
       areas={[{number: 2, lines: [2], bbox: [100, 100, 300, 200], kind: 'speech', kindLabel: 'صحبت عادی',
         text: 'سلام', translated: true}]}
-      onReclean={(numbers, grow) => calls.push([numbers, grow])} />);
+      onReclean={(numbers, adjust) => calls.push([numbers, adjust])} />);
     await user.click(screen.getByRole('button', {name: 'ناحیهٔ ۲'}));
     const group = screen.getByRole('group', {name: 'اندازهٔ ناحیهٔ پاک‌سازی'});
     await user.click(within(group).getByRole('button', {name: 'بزرگ‌تر'}));
     await user.click(within(group).getByRole('button', {name: 'بزرگ‌تر'}));
     await user.click(within(group).getByRole('button', {name: 'کوچک‌تر'}));
     expect(within(group).getByRole('status')).toHaveTextContent('۴');
+    const move = screen.getByRole('group', {name: 'جای ناحیهٔ پاک‌سازی'});
+    await user.click(within(move).getByRole('button', {name: 'پایین'}));
+    await user.click(within(move).getByRole('button', {name: 'راست'}));
+    await user.click(within(move).getByRole('button', {name: 'راست'}));
     await user.click(screen.getByRole('button', {name: 'پاک‌سازی مجدد این ناحیه'}));
-    expect(calls).toEqual([[[2], {2: 4}]]);
+    expect(calls).toEqual([[[2], {grow: {2: 4}, shift: {2: [8, 4]}}]]);
   });
 });

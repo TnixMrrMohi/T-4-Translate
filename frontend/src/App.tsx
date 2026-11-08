@@ -380,14 +380,32 @@ function Overlay({label, onBackdropClick, className = 'modal-backdrop', children
 
 /** بندانگشتی ثابت‌اندازه؛ تصویر کامل (حتی ۱۵۰۰۰ پیکسل) فقط در مودال نمایش داده می‌شود. */
 /** تصویر پاک‌شدهٔ مرحلهٔ ۳ با ناحیه‌های قابل‌کلیک؛ کلیک روی هر ناحیه یک پنجرهٔ کوچک با «پاک‌سازی مجدد» باز می‌کند. */
+/** تغییر اندازه/جای ناحیهٔ پاک‌سازی (پیکسلِ تصویر اصلی). */
+export type AreaAdjust = {grow?: Record<number, number>; shift?: Record<number, [number, number]>};
+
 export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disabled, onReclean}: {
   jobId: string; version: number; pageWidth: number; pageHeight: number;
-  areas: CleanArea[]; disabled: boolean; onReclean: (numbers: number[], grow?: Record<number, number>) => void;
+  areas: CleanArea[]; disabled: boolean; onReclean: (numbers: number[], adjust?: AreaAdjust) => void;
 }) {
   const [picked, setPicked] = useState<number | null>(null);
   // تغییر اندازهٔ ناحیهٔ پاک‌سازی هر بالن (پیکسل؛ منفی = کوچک‌تر)
   const [grows, setGrows] = useState<Record<number, number>>({});
   const growOf = (number: number) => grows[number] ?? 0;
+  // جابه‌جایی ناحیه (پیکسلِ تصویر)؛ با کشیدن کادر یا دکمه‌های جهت عوض می‌شود.
+  const [moves, setMoves] = useState<Record<number, [number, number]>>({});
+  const moveOf = (number: number): [number, number] => moves[number] ?? [0, 0];
+  const nudge = (number: number, dx: number, dy: number) =>
+    setMoves(old => {
+      const [x, y] = old[number] ?? [0, 0];
+      return {...old, [number]: [Math.max(-400, Math.min(400, x + dx)), Math.max(-400, Math.min(400, y + dy))]};
+    });
+  const pageRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  // پنجرهٔ ناحیه (با ردیف‌های اندازه و جابه‌جایی بلند شده) نباید زیر لبهٔ کادر برش بخورد.
+  useEffect(() => {
+    if (picked !== null) popoverRef.current?.scrollIntoView?.({block: 'nearest'});
+  }, [picked]);
+  const drag = useRef<{number: number; x: number; y: number; moved: boolean} | null>(null);
   const bump = (number: number, delta: number) =>
     setGrows(old => ({...old, [number]: Math.max(-30, Math.min(80, (old[number] ?? 0) + delta))}));
   useEffect(() => {setPicked(null);}, [version]);
@@ -396,9 +414,10 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
     if (!box || box.length !== 4) return null;
     // کادر نمایشی همراه با تغییر اندازه جابه‌جا می‌شود تا اثرش پیش از اجرا دیده شود.
     const g = growOf(area.number);
-    if (!g) return box;
-    const x0 = Math.max(0, box[0] - g), y0 = Math.max(0, box[1] - g);
-    const x1 = Math.min(pageWidth, box[2] + g), y1 = Math.min(pageHeight, box[3] + g);
+    const [mx, my] = moveOf(area.number);
+    if (!g && !mx && !my) return box;
+    const x0 = Math.max(0, box[0] + mx - g), y0 = Math.max(0, box[1] + my - g);
+    const x1 = Math.min(pageWidth, box[2] + mx + g), y1 = Math.min(pageHeight, box[3] + my + g);
     return x1 - x0 > 4 && y1 - y0 > 4 ? [x0, y0, x1, y1] : box;
   };
   const active = areas.find(area => area.number === picked) ?? null;
@@ -412,6 +431,7 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
       <div className="clean-canvas-scroll">
         <div
           className="clean-canvas-page"
+          ref={pageRef}
           style={{aspectRatio: `${Math.max(1, pageWidth)} / ${Math.max(1, pageHeight)}`}}
           onClick={() => setPicked(null)}
         >
@@ -430,8 +450,30 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
                 }}
                 aria-label={`ناحیهٔ ${num(area.number)}`}
                 aria-pressed={picked === area.number}
-                title="برای پاک‌سازی مجدد این ناحیه کلیک کنید"
-                onClick={event => {event.stopPropagation(); setPicked(area.number);}}
+                title="کلیک: انتخاب ناحیه — کشیدن (روی ناحیهٔ انتخاب‌شده): جابه‌جایی"
+                onPointerDown={event => {
+                  if (picked !== area.number || disabled) return;
+                  drag.current = {number: area.number, x: event.clientX, y: event.clientY, moved: false};
+                  event.currentTarget.setPointerCapture?.(event.pointerId);
+                }}
+                onPointerMove={event => {
+                  const state = drag.current;
+                  const rect = pageRef.current?.getBoundingClientRect();
+                  if (!state || !rect || rect.width <= 0) return;
+                  const scale = pageWidth / rect.width;
+                  const dx = Math.round((event.clientX - state.x) * scale);
+                  const dy = Math.round((event.clientY - state.y) * scale);
+                  if (!state.moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+                  state.moved = true;
+                  state.x = event.clientX; state.y = event.clientY;
+                  nudge(state.number, dx, dy);
+                }}
+                onPointerUp={() => {window.setTimeout(() => {drag.current = null;}, 0);}}
+                onClick={event => {
+                  event.stopPropagation();
+                  if (drag.current?.moved) return;   // کشیدن بود، نه کلیک
+                  setPicked(area.number);
+                }}
               >
                 <span className="clean-hotspot-tag">{num(area.number)}</span>
               </button>
@@ -440,6 +482,7 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
           {active && activeBox && (
             <div
               className="clean-popover"
+              ref={popoverRef}
               role="dialog"
               aria-label={`ناحیهٔ ${num(active.number)}`}
               style={{
@@ -463,10 +506,25 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
                 <output aria-live="polite">{num(growOf(active.number))}</output>
                 <button type="button" className="ghost small" aria-label="بزرگ‌تر" disabled={disabled}
                   onClick={() => bump(active.number, 4)}>+</button>
-                {growOf(active.number) !== 0 && (
+                {(growOf(active.number) !== 0 || moveOf(active.number).some(Boolean)) && (
                   <button type="button" className="ghost small" disabled={disabled}
-                    onClick={() => setGrows(old => ({...old, [active.number]: 0}))}>بازنشانی</button>
+                    onClick={() => {
+                      setGrows(old => ({...old, [active.number]: 0}));
+                      setMoves(old => ({...old, [active.number]: [0, 0]}));
+                    }}>بازنشانی</button>
                 )}
+              </div>
+              <div className="clean-size" role="group" aria-label="جای ناحیهٔ پاک‌سازی">
+                <span>جابه‌جایی</span>
+                <button type="button" className="ghost small" aria-label="بالا" disabled={disabled}
+                  onClick={() => nudge(active.number, 0, -4)}>↑</button>
+                <button type="button" className="ghost small" aria-label="پایین" disabled={disabled}
+                  onClick={() => nudge(active.number, 0, 4)}>↓</button>
+                <button type="button" className="ghost small" aria-label="چپ" disabled={disabled}
+                  onClick={() => nudge(active.number, -4, 0)}>←</button>
+                <button type="button" className="ghost small" aria-label="راست" disabled={disabled}
+                  onClick={() => nudge(active.number, 4, 0)}>→</button>
+                <span className="clean-size-hint">یا کادر را بکشید</span>
               </div>
               <button
                 type="button"
@@ -474,7 +532,11 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
                 disabled={disabled}
                 onClick={() => {
                   const g = growOf(active.number);
-                  onReclean([active.number], g ? {[active.number]: g} : undefined);
+                  const move = moveOf(active.number);
+                  const adjust: AreaAdjust = {};
+                  if (g) adjust.grow = {[active.number]: g};
+                  if (move[0] || move[1]) adjust.shift = {[active.number]: move};
+                  onReclean([active.number], g || move[0] || move[1] ? adjust : undefined);
                   setPicked(null);
                 }}
               >
@@ -1375,7 +1437,7 @@ export function App() {
   }
 
   /** پاک‌سازی مجدد فقط ناحیه‌های انتخاب‌شده (بر پایهٔ تصویر پاک‌شدهٔ فعلی). */
-  async function recleanAreas(numbers: number[] = areaPick, grow?: Record<number, number>) {
+  async function recleanAreas(numbers: number[] = areaPick, adjust?: AreaAdjust) {
     if (!job || busy || areasBusy || loadingData || numbers.length === 0) return;
     setAreasBusy(true);
     setMessage('در حال پاک‌سازی مجدد ناحیه‌های انتخاب‌شده…');
@@ -1384,7 +1446,7 @@ export function App() {
       const response = await fetch(`/api/jobs/${job.jobId}/clean`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(grow ? {areas: numbers, grow} : {areas: numbers}),
+        body: JSON.stringify(adjust ? {areas: numbers, ...adjust} : {areas: numbers}),
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -2062,7 +2124,7 @@ export function App() {
                       pageHeight={job.height}
                       areas={translatedAreas}
                       disabled={busy || areasBusy || loadingData}
-                      onReclean={(numbers, grow) => void recleanAreas(numbers, grow)}
+                      onReclean={(numbers, adjust) => void recleanAreas(numbers, adjust)}
                     />
                   )}
 
@@ -2136,7 +2198,7 @@ export function App() {
                         pageHeight={job.height}
                         areas={translatedAreas}
                         disabled={busy || areasBusy || loadingData}
-                        onReclean={(numbers, grow) => void recleanAreas(numbers, grow)}
+                        onReclean={(numbers, adjust) => void recleanAreas(numbers, adjust)}
                       />
                       <div className="wizard-nav start">
                         <button

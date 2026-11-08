@@ -101,3 +101,26 @@ def test_force_clear_mask_follows_grow(tmp_path):
     small = _force_clear_mask(cv2, np, result, box, background, quad != 0, 2)
     large = _force_clear_mask(cv2, np, result, box, background, quad != 0, 12)
     assert small is not None and large is not None and small.sum() < large.sum()
+
+
+def test_shift_moves_the_cleaned_area(tmp_path, monkeypatch):
+    from app import cleaning
+    monkeypatch.setattr(cleaning, '_sweep_bubbles', lambda *a, **k: 0)
+    page = np.full((260, 400, 3), 40, np.uint8)
+    cv2.rectangle(page, (30, 20), (370, 240), (255, 255, 255), -1)
+    cv2.putText(page, 'HELLO', (130, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)    # بالا
+    cv2.putText(page, 'WORLD', (130, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)   # پایین (OCR ندیده)
+    path = tmp_path / 'page.png'
+    Image.fromarray(page).save(path)
+    lines = [{'quad': [[128, 38], [262, 38], [262, 80], [128, 80]]}]
+
+    def dark_left(shift):
+        clean, _ = clean_image(path, lines, {'1': 'سلام'}, force=True, only={1},
+                               shift={1: shift} if shift else None, high_quality=False)
+        out = np.array(clean.convert('L'))
+        return int((out[40:80, 120:270] < 100).sum()), int((out[170:210, 120:270] < 100).sum())
+
+    top_ink, bottom_ink = dark_left(None)
+    assert top_ink == 0 and bottom_ink > 0
+    top_ink, bottom_ink = dark_left((0, 130))      # ناحیه به پایین کشیده شد
+    assert top_ink > 0 and bottom_ink == 0

@@ -726,6 +726,7 @@ def _force_clear_mask(cv2, np, result, box, background, quad_mask, grow_px: int 
 def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
                 only: set[int] | None = None, force: bool = False,
                 extra: set[int] | None = None, grow: dict[int, int] | None = None,
+                shift: dict[int, tuple[int, int]] | None = None,
                 high_quality: bool = True, on_progress=None) -> tuple[Image.Image, Image.Image]:
     """متن نواحی ترجمه‌شده را پاک می‌کند و تصویر و ماسک را برمی‌گرداند.
 
@@ -735,6 +736,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
     * ``force``: حالت تهاجمی برای همان نواحی انتخابی (فقط داخل چهارضلعیِ خودِ خط).
     * ``grow``: تغییر اندازهٔ ناحیهٔ پاک‌سازی هر خط (شمارهٔ ۱-پایه ← پیکسل)؛ مثبت بزرگ‌تر،
       منفی کوچک‌تر. بدون آن اندازهٔ خودکار می‌ماند.
+    * ``shift``: جابه‌جایی ناحیهٔ پاک‌سازی هر خط (شمارهٔ ۱-پایه ← (dx, dy) پیکسل).
     * ``extra``: خط‌هایی که باید پاک شوند ولی ترجمه‌ای ندارند (متن تبلیغاتیِ حذف‌شده).
     """
     try:
@@ -779,6 +781,11 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
             # ترجمه‌نشده یا در این درخواست انتخاب نشده: دست‌نخورده می‌ماند.
             cv2.fillPoly(untouched, [points], 255)
             continue
+        offset = (shift or {}).get(number)
+        if offset and (offset[0] or offset[1]):
+            points = np.array([[max(0, min(width - 1, int(x) + int(offset[0]))),
+                                max(0, min(height - 1, int(y) + int(offset[1])))]
+                               for x, y in points], dtype=np.int32)
         quad_vertices = points.copy()
         # کادر OCR معمولاً حروف و دنباله‌ها را دقیق در بر نمی‌گیرد؛ کمی بزرگ‌ترش می‌کنیم
         # تا باقی‌ماندهٔ متن انگلیسی پس از پاک‌سازی نماند. کادرهای ترجمه‌نشده بزرگ نمی‌شوند.

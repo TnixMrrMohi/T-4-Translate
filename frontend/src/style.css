@@ -439,3 +439,6 @@ button:disabled{cursor:not-allowed}
 .clean-size{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:12px;color:#a0ffe0}
 .clean-size output{min-width:34px;text-align:center;font-weight:bold;color:#00ffcc}
 .clean-size .small{padding:3px 10px;font-size:14px;line-height:1}
+
+.clean-size-hint{font-size:11px;opacity:.8}
+.clean-hotspot.is-active{cursor:move;touch-action:none}
