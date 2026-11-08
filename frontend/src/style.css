@@ -431,3 +431,7 @@
 .batch-drop.is-busy{opacity:.5;cursor:wait}
 
 .batch-head .ghost{padding:6px 12px;font-size:12px;opacity:1;cursor:pointer;white-space:nowrap}
+
+/* دکمه‌های فعال هر کلاسی داشته باشند، اشاره‌گر دست می‌گیرند؛ فقط غیرفعال‌ها ممنوع نشان می‌دهند. */
+button:not(:disabled),summary,[role="button"]:not([aria-disabled="true"]){cursor:pointer}
+button:disabled{cursor:not-allowed}
