@@ -225,6 +225,9 @@ def main():
             _browser_fallback(url, stop)
             return
         try:
+            # pywebview به‌طور پیش‌فرض دانلود را در WebView2 می‌بندد؛ بدون این، دکمه‌های
+            # «دانلود» (خروجی WebP و تصویرها) در پنجرهٔ برنامه هیچ کاری نمی‌کنند.
+            webview.settings["ALLOW_DOWNLOADS"] = True
             window_box["window"] = webview.create_window(
                 "T-4 Translate", url, width=1200, height=820, min_size=(720, 560))
             webview.start()

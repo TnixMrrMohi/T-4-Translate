@@ -1,0 +1,310 @@
+import React, {useEffect, useRef, useState} from 'react';
+
+const WEBP_QUALITY = 90;
+const HEADER = /^===\s*(\d+)\s*\|\s*(.+?)\s*===\s*$/;
+
+export type BatchPage = {
+  page: number;
+  name: string;
+  jobId: string;
+  revision: string;
+  text: string;
+  state: 'extracted' | 'running' | 'done' | 'failed';
+  error?: string;
+};
+
+/** متن همهٔ صفحه‌ها با تیتر هر صفحه؛ همین قالب برای ترجمه برگردانده می‌شود. */
+export function buildBatchText(pages: BatchPage[]): string {
+  return pages.map(p => `=== ${String(p.page).padStart(3, '0')} | ${p.name} ===\n${p.text}\n`).join('\n');
+}
+
+/** متن ترجمه‌شده را بر اساس تیتر صفحه‌ها (=== 001 | name ===) تکه می‌کند. */
+export function splitBatchText(text: string): Map<number, string> {
+  const result = new Map<number, string[]>();
+  let current: number | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    const match = HEADER.exec(line.trim());
+    if (match) {
+      current = Number(match[1]);
+      result.set(current, []);
+    } else if (current !== null) {
+      result.get(current)!.push(line);
+    }
+  }
+  return new Map([...result].map(([page, lines]) => [page, lines.join('\n').trim()]));
+}
+
+async function detail(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.json();
+    if (typeof body?.detail === 'string') return body.detail;
+  } catch {
+    // پاسخ JSON نبود.
+  }
+  return fallback;
+}
+
+async function call(path: string, init: RequestInit | undefined, what: string): Promise<Response> {
+  const response = await fetch(path, init);
+  if (!response.ok) throw new Error(`${what}: ${await detail(response, 'ناموفق بود')}`);
+  return response;
+}
+
+function saveBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** توضیح اضافهٔ پرامپت برای حالت چندصفحه‌ای. */
+export const BATCH_PROMPT_NOTE = [
+  '',
+  'نکتهٔ مهم دربارهٔ این متن: چند صفحه پشت سر هم آمده است و هر صفحه با یک تیتر مثل «=== 001 | نام ===» شروع می‌شود.',
+  '- تیتر هر صفحه را عیناً و بدون تغییر در پاسخ بیاور و ترجمهٔ همان صفحه را زیر خودش بنویس؛ ترتیب صفحه‌ها را عوض نکن.',
+  '- شماره‌گذاری هر صفحه از ۱ شروع می‌شود و مستقل از صفحهٔ دیگر است.',
+  '- لحن هر بالن کنار شمارهٔ خودش آمده؛ برای هر بالن جداگانه همان لحن را رعایت کن.',
+].join('\n');
+
+export function BatchPanel({onClose, prompt}: {onClose: () => void; prompt: string}) {
+  const [files, setFiles] = useState<File[]>([]);
+  const [pages, setPages] = useState<BatchPage[]>([]);
+  const [translated, setTranslated] = useState('');
+  const [busy, setBusy] = useState<null | 'extract' | 'apply' | 'export'>(null);
+  const [message, setMessage] = useState('');
+  const [progress, setProgress] = useState('');
+  const cancel = useRef(false);
+  const picker = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  /** تصویرهای تازه به فهرست اضافه می‌شوند (بدون تکرار) و به ترتیب شمارهٔ نام مرتب می‌شوند. */
+  function addFiles(list: FileList | File[] | null) {
+    if (busy !== null) return;
+    const incoming = Array.from(list ?? []).filter(file => /^image\/(png|jpe?g|webp)$/.test(file.type));
+    if (!incoming.length) {
+      setMessage('فقط تصویر PNG، JPG یا WebP پذیرفته می‌شود.');
+      return;
+    }
+    setFiles(old => {
+      const seen = new Set(old.map(file => `${file.name}|${file.size}`));
+      const merged = [...old, ...incoming.filter(file => !seen.has(`${file.name}|${file.size}`))];
+      return merged.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+    });
+    setPages([]);
+  }
+
+  useEffect(() => {
+    // چسباندن (Ctrl+V) تصویر از کلیپ‌بورد، تا وقتی این بخش باز است.
+    const onPaste = (event: ClipboardEvent) => {
+      const items = Array.from(event.clipboardData?.files ?? []);
+      if (!items.length) return;
+      event.preventDefault();
+      addFiles(items.map((file, index) =>
+        file.name && file.name !== 'image.png' ? file
+          : new File([file], `paste-${Date.now()}-${index + 1}.png`, {type: file.type})));
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  });
+
+  const combined = buildBatchText(pages);
+  const doneCount = pages.filter(p => p.state === 'done').length;
+
+  function update(index: number, patch: Partial<BatchPage>) {
+    setPages(old => old.map((p, i) => (i === index ? {...p, ...patch} : p)));
+  }
+
+  async function extract() {
+    if (!files.length || busy) return;
+    cancel.current = false;
+    setBusy('extract');
+    setPages([]);
+    setTranslated('');
+    const found: BatchPage[] = [];
+    const errors: string[] = [];
+    for (let index = 0; index < files.length; index += 1) {
+      if (cancel.current) break;
+      const file = files[index];
+      setProgress(`استخراج متن ${index + 1} از ${files.length}: ${file.name}`);
+      try {
+        const form = new FormData();
+        form.append('file', file);
+        const job = await (await call('/api/jobs', {method: 'POST', body: form}, 'بارگذاری')).json();
+        await call(`/api/jobs/${job.jobId}/ocr`, {method: 'POST'}, 'OCR');
+        const source = await (await call(
+          `/api/jobs/${job.jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
+        // لحن هر بالن کنار شمارهٔ خودش می‌آید (مثل حالت تک‌تصویر)؛ سرور هنگام ذخیره آن را کنار می‌گذارد.
+        const text = (source.items as {number: number; text: string; tone?: string}[])
+          .map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
+        found.push({page: found.length + 1, name: file.name, jobId: job.jobId,
+          revision: source.revision, text, state: 'extracted'});
+      } catch (error) {
+        errors.push(`${file.name}: ${error instanceof Error ? error.message : 'خطا'}`);
+      }
+    }
+    setPages(found);   // فقط وقتی همهٔ تصویرها خوانده شدند نشان داده می‌شود
+    setBusy(null);
+    setProgress('');
+    setMessage(errors.length
+      ? `${found.length} صفحه آماده شد؛ ${errors.length} صفحه ناموفق بود: ${errors.join(' | ')}`
+      : `متن ${found.length} صفحه استخراج شد. آن را کپی کنید، ترجمه کنید و در کادر پایین بگذارید.`);
+  }
+
+  async function run() {
+    if (busy || !pages.length) return;
+    const parts = splitBatchText(translated);
+    cancel.current = false;
+    setBusy('apply');
+    for (let index = 0; index < pages.length; index += 1) {
+      if (cancel.current) break;
+      const page = pages[index];
+      setProgress(`ساخت صفحه ${index + 1} از ${pages.length}: ${page.name}`);
+      update(index, {state: 'running', error: undefined});
+      try {
+        const text = parts.get(page.page);
+        if (!text) throw new Error('ترجمهٔ این صفحه در متن نیست (تیتر === ... === را نگه دارید).');
+        const json = {'Content-Type': 'application/json'};
+        await call(`/api/jobs/${page.jobId}/translations`, {
+          method: 'POST', headers: json,
+          body: JSON.stringify({sourceRevision: page.revision, text, promo: 'replace'}),
+        }, 'ذخیرهٔ ترجمه');
+        await call(`/api/jobs/${page.jobId}/clean`, {method: 'POST'}, 'پاک‌سازی');
+        await call(`/api/jobs/${page.jobId}/render`, {method: 'POST'}, 'درج ترجمه');
+        update(index, {state: 'done'});
+      } catch (error) {
+        update(index, {state: 'failed', error: error instanceof Error ? error.message : 'خطا'});
+      }
+    }
+    setBusy(null);
+    setProgress('');
+    setMessage('پردازش دسته‌ای تمام شد؛ حالا خروجی WebP را دانلود کنید.');
+  }
+
+  async function exportZip() {
+    const ready = pages.filter(p => p.state === 'done');
+    if (!ready.length || busy) return;
+    setBusy('export');
+    try {
+      const response = await call('/api/batch/export', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({jobIds: ready.map(p => p.jobId), names: ready.map(p => p.name),
+          quality: WEBP_QUALITY}),
+      }, 'ساخت ZIP');
+      saveBlob(await response.blob(), 't4-batch-webp.zip');
+      setMessage(`ZIP با ${ready.length} تصویر WebP ساخته و دانلود شد.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'دانلود ناموفق بود.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <section className="batch-panel" aria-label="پردازش دسته‌ای">
+      <div className="batch-head">
+        <h2 className="wizard-title">پردازش دسته‌ای</h2>
+        <button type="button" className="ghost" disabled={busy !== null} onClick={onClose}>
+          بازگشت به حالت تک‌تصویر
+        </button>
+      </div>
+      <p className="wizard-help">
+        ۱) چند تصویر انتخاب کنید و متن‌ها را استخراج کنید؛ نتیجه پس از خواندن همهٔ تصویرها یک‌جا نشان داده می‌شود. ۲) «کپی با پرامپت» را بزنید، در هوش مصنوعی بچسبانید و ترجمه را برگردانید.
+        ۳) همهٔ صفحه‌ها خودکار ساخته می‌شوند و خروجی WebP در یک ZIP دانلود می‌شود.
+      </p>
+
+      <h3 className="wizard-subtitle">۱) تصویرها</h3>
+      <div
+        className={`batch-drop${dragOver ? ' is-over' : ''}${busy !== null ? ' is-busy' : ''}`}
+        role="button"
+        tabIndex={0}
+        aria-label="ناحیهٔ انداختن یا چسباندن تصویرها"
+        onClick={() => busy === null && picker.current?.click()}
+        onKeyDown={event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            if (busy === null) picker.current?.click();
+          }
+        }}
+        onDragOver={event => {event.preventDefault(); if (busy === null) setDragOver(true);}}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={event => {
+          event.preventDefault();
+          setDragOver(false);
+          addFiles(event.dataTransfer.files);
+        }}
+      >
+        <strong>تصویرها را اینجا بیندازید</strong>
+        <span>یا کلیک کنید و انتخاب کنید؛ با Ctrl+V هم می‌شود تصویر چسباند.</span>
+        <input ref={picker} type="file" multiple accept="image/png,image/jpeg,image/webp"
+          aria-label="انتخاب تصویرها" hidden disabled={busy !== null}
+          onChange={event => {addFiles(event.target.files); event.target.value = '';}} />
+      </div>
+      <div className="wizard-nav start">
+        <span className="fonts-note">{files.length ? `${files.length} تصویر انتخاب شد.` : 'هنوز تصویری انتخاب نشده است.'}</span>
+        {files.length > 0 && (
+          <button type="button" className="ghost" disabled={busy !== null}
+            onClick={() => {setFiles([]); setPages([]);}}>پاک‌کردن فهرست</button>
+        )}
+        <button type="button" className="ocr" disabled={!files.length || busy !== null} onClick={() => void extract()}>
+          استخراج متن همهٔ تصویرها
+        </button>
+      </div>
+
+      {pages.length > 0 && (
+        <>
+          <h3 className="wizard-subtitle">۲) متن استخراج‌شده</h3>
+          <div className="wizard-nav start">
+            <button type="button" className="ocr" onClick={() => {
+              void navigator.clipboard?.writeText(`${prompt}${BATCH_PROMPT_NOTE}\n${combined}`)
+                .then(() => setMessage('پرامپت و متن همهٔ صفحه‌ها کپی شد؛ در هوش مصنوعی بچسبانید.'));
+            }}>کپی با پرامپت</button>
+            <button type="button" className="ghost"
+              onClick={() => saveBlob(new Blob([combined], {type: 'text/plain;charset=utf-8'}), 'texts.txt')}>
+              ذخیرهٔ به‌صورت فایل
+            </button>
+          </div>
+          <textarea className="batch-text" readOnly dir="ltr" aria-label="متن استخراج‌شده" value={combined} />
+
+          <h3 className="wizard-subtitle">۳) ترجمهٔ شما</h3>
+          <p className="wizard-help">همان قالب را نگه دارید: تیتر هر صفحه (=== 001 | نام ===) و شمارهٔ هر متن ([۱]).</p>
+          <textarea className="batch-text" dir="rtl" aria-label="متن ترجمه‌شده" value={translated}
+            onChange={event => setTranslated(event.target.value)} />
+          <div className="wizard-nav start">
+            <button type="button" className="ocr" disabled={busy !== null || !translated.trim()} onClick={() => void run()}>
+              اجرای دسته‌ای (پاک‌سازی و درج ترجمه)
+            </button>
+            <button type="button" className="ocr" disabled={busy !== null || doneCount === 0} onClick={() => void exportZip()}>
+              دانلود خروجی WebP (ZIP)
+            </button>
+          </div>
+
+          <ul className="batch-list">
+            {pages.map(page => (
+              <li key={page.jobId} className={`batch-row is-${page.state}`}>
+                <span>{page.page}. {page.name}</span>
+                <span>
+                  {page.state === 'done' ? 'آماده' : page.state === 'running' ? 'در حال ساخت…'
+                    : page.state === 'failed' ? `ناموفق: ${page.error}` : 'متن استخراج شد'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {busy && (
+        <div className="wizard-nav start">
+          <span className="wizard-note" role="status">{progress || 'در حال کار…'}</span>
+          {busy !== 'export' && (
+            <button type="button" className="ghost" onClick={() => {cancel.current = true;}}>توقف پس از صفحهٔ جاری</button>
+          )}
+        </div>
+      )}
+      {message && <p className="wizard-note" role="status">{message}</p>}
+    </section>
+  );
+}

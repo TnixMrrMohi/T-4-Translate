@@ -598,6 +598,103 @@ def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
     return [combined] if detected else fallback
 
 
+SWEEP_PASSES = 3         # حداکثر دفعات تکرار «جاروی بالن» وقتی باقی‌مانده می‌ماند
+SWEEP_LIGHT = 14.0       # فاصلهٔ رنگی کمتر از این یعنی «همان رنگ داخل بالن»
+SWEEP_MIN_PIXELS = 10    # کمتر از این تعداد پیکسل باقی‌مانده نادیده گرفته می‌شود
+SWEEP_OUTLINE = 110.0     # روشنایی خط دور بالن؛ تیره‌تر از این یعنی لبهٔ بالن
+SWEEP_EDGE = 12.0         # حداقل فاصلهٔ مرکز باقی‌مانده تا لبهٔ بالن (پیکسل)
+SWEEP_MAX_SHARE = 0.20   # اگر بیش از این سهمِ داخل بالن «جوهر» بود، بالن نیست (نقاشی)
+
+
+def _sweep_bubbles(cv2, np, result, boxes, selected, untouched, mask_total) -> int:
+    """متنی که OCR ندیده ولی داخل همان بالنِ پاک‌شده مانده، با چند دور پاک می‌شود.
+
+    مثال واقعی: کلمهٔ ایتالیک «LOOKS» وسط بالن را OCR نمی‌بیند، پس در هیچ کادری
+    نیست و بعد از پاک‌سازی می‌ماند و ترجمه روی آن می‌افتد. اینجا رنگ داخل هر
+    بالنِ تخت را از خودِ کادرِ پاک‌شده می‌گیریم، تکهٔ هم‌رنگِ متصل به آن را
+    (داخل بالن) پیدا می‌کنیم و هر چیزِ «غیرهم‌رنگ» که داخل آن تکه گیر افتاده را
+    پر می‌کنیم. چون لبهٔ ضدپیکسل ممکن است بعد از دور اول باز باقی بماند، تا
+    ``SWEEP_PASSES`` دور تکرار می‌شود. بالن‌هایی که تخت نیستند دست‌نخورده می‌مانند.
+    """
+    height, width = result.shape[:2]
+    repaired = 0
+    for box in boxes:
+        x0, y0, x1, y1 = box
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        # پنجرهٔ جست‌وجو: کادر بزرگ‌شده؛ بالن باید کامل داخل آن بسته باشد.
+        grow = max(40, int(1.2 * max(x1 - x0, y1 - y0)))
+        wx0, wy0 = max(0, x0 - grow), max(0, y0 - grow)
+        wx1, wy1 = min(width, x1 + grow), min(height, y1 + grow)
+        for _ in range(SWEEP_PASSES):
+            window = np.ascontiguousarray(result[wy0:wy1, wx0:wx1])
+            inner = window[max(0, y0 - wy0):y1 - wy0, max(0, x0 - wx0):x1 - wx0].reshape(-1, 3)
+            fill = _dominant_color(np, inner)
+            if fill is None or float(fill.mean()) < 150:   # فقط بالن‌های روشن
+                break
+            distance = np.linalg.norm(window.astype(np.float32) - fill, axis=2)
+            light = (distance < SWEEP_LIGHT).astype(np.uint8)
+            seed = (cy - wy0, cx - wx0)
+            count, labels = cv2.connectedComponents(light, connectivity=4)
+            label = int(labels[min(seed[0], labels.shape[0] - 1), min(seed[1], labels.shape[1] - 1)])
+            if label == 0:
+                # مرکز کادر روی جوهر افتاده؛ نزدیک‌ترین پیکسل هم‌رنگ را بگیر.
+                ys, xs = np.nonzero(light)
+                if not len(ys):
+                    break
+                nearest = int(np.argmin((ys - seed[0]) ** 2 + (xs - seed[1]) ** 2))
+                label = int(labels[ys[nearest], xs[nearest]])
+            component = (labels == label).astype(np.uint8)
+            touches = (component[0].any() or component[-1].any()
+                       or component[:, 0].any() or component[:, -1].any())
+            if touches:
+                break  # بالن بسته نیست یا از پنجره بزرگ‌تر است؛ تشخیص مطمئن نیست
+            # فقط «حفره»های بسته داخل تکهٔ هم‌رنگ باقی‌ماندهٔ متن‌اند؛ تورفتگی‌های باز
+            # (مثل لبهٔ بالن کنار دنباله) حفره نیستند و دست نمی‌خورند.
+            # بالنِ کمیک را خط دور تیره می‌بندد؛ زمینهٔ عکس/گرادیان چنین حلقهٔ تیره‌ای ندارد.
+            ring = (cv2.dilate(component, np.ones((7, 7), np.uint8)) != 0) & (component == 0)
+            ring_pixels = window[ring]
+            if len(ring_pixels) < 40 or float((ring_pixels.mean(axis=1) < SWEEP_OUTLINE).mean()) < 0.55:
+                break
+            contours, hierarchy = cv2.findContours(component, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours or hierarchy is None:
+                break
+            filled = np.zeros_like(component)
+            holes = np.zeros_like(component)
+            for index, contour in enumerate(contours):
+                if hierarchy[0][index][3] == -1:
+                    cv2.drawContours(filled, [contour], -1, 1, thickness=-1)
+                else:
+                    cv2.drawContours(holes, [contour], -1, 1, thickness=-1)
+            interior = int(filled.sum())
+            residue = (holes != 0) & (component == 0)
+            # حفره‌ای که کنار لبهٔ بالن است (مثل تکه‌خط دور دنباله) متن نیست؛ فقط
+            # حفره‌هایی که مرکزشان دست‌کم SWEEP_EDGE پیکسل از لبه فاصله دارد پاک می‌شوند.
+            edge_distance = cv2.distanceTransform(filled, cv2.DIST_L2, 3)
+            count_h, labels_h, _, centers = cv2.connectedComponentsWithStats(
+                residue.astype(np.uint8), connectivity=8)[0:4]
+            far = np.zeros_like(residue)
+            for index in range(1, count_h):
+                col = min(edge_distance.shape[1] - 1, int(centers[index][0]))
+                row = min(edge_distance.shape[0] - 1, int(centers[index][1]))
+                if edge_distance[row, col] >= SWEEP_EDGE:
+                    far |= labels_h == index
+            residue = far
+            amount = int(residue.sum())
+            if amount < SWEEP_MIN_PIXELS or amount / max(1, interior) > SWEEP_MAX_SHARE:
+                break
+            target = cv2.dilate(residue.astype(np.uint8), np.ones((5, 5), np.uint8)) != 0
+            target &= filled != 0
+            target &= (untouched[wy0:wy1, wx0:wx1] == 0)
+            if not target.any():
+                break
+            window[target] = np.clip(np.rint(fill), 0, 255).astype(np.uint8)
+            result[wy0:wy1, wx0:wx1] = window
+            mask_total[wy0:wy1, wx0:wx1][target] = 255
+            selected[wy0:wy1, wx0:wx1][target] = 255
+            repaired += int(target.sum())
+    return repaired
+
+
 def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
                 only: set[int] | None = None, force: bool = False,
                 extra: set[int] | None = None,
@@ -707,6 +804,12 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
             logger.exception("LaMa cleaning failed; retaining classical result")
             diagnostics.log_exception("cleaning.inpaint.failed", fallback="classical")
 
+    swept_before = mask_total.copy()
+    swept = _sweep_bubbles(cv2, np, result, boxes, selected, untouched, mask_total)
+    if swept:
+        diagnostics.log_event("cleaning.sweep", pixels=swept)
+    swept_mask = (mask_total != swept_before) & (mask_total != 0)
+
     if not high_quality or not hard_masks:
         diagnostics.log_event("cleaning.inpaint.skipped",
                               reason="disabled" if not high_quality else "no_hard_regions")
@@ -725,6 +828,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
         canvas = base_array.copy()
         for box in boxes:
             canvas[box[1]:box[3], box[0]:box[2]] = result[box[1]:box[3], box[0]:box[2]]
+        canvas[swept_mask] = result[swept_mask]
     else:
         canvas = result
         base_array = image

@@ -26,7 +26,16 @@ class ResourceLimitError(Exception):
 def _write(path: Path, value: dict):
     tmp = path.with_suffix('.tmp')
     tmp.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
-    tmp.replace(path)
+    # روی ویندوز اگر پردازش اصلی همان لحظه progress.json را باز کرده باشد، replace با
+    # PermissionError رد می‌شود؛ چند بار کوتاه دوباره تلاش می‌کنیم و در نهایت پیشرفت
+    # (که فقط تزئینی است) کار را نمی‌شکند.
+    for attempt in range(10):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            time.sleep(0.02 * (attempt + 1))
+    tmp.unlink(missing_ok=True)
 
 
 def _windows_limit(megabytes: int):

@@ -67,6 +67,7 @@ def test_model_tile_geometry_and_mask_values(monkeypatch,name,size):
         assert set(np.unique(mask))<={0,255}
         return patch.copy()
     monkeypatch.setattr(inpaint,'_run',identity)
+    monkeypatch.setattr(inpaint,'_fixed_tile',lambda:None)
     import cv2
     image=np.full((773,563,3),120,np.uint8)
     mask=np.ones(image.shape[:2],np.uint8)*255
@@ -79,6 +80,22 @@ def test_low_ram_avoids_loading_lama(monkeypatch):
     monkeypatch.setattr(inpaint,'_session',lambda:pytest.fail('should not load model under pressure'))
     image=np.full((40,40,3),200,np.uint8)
     assert inpaint.refine(image,image,[np.ones((40,40),bool)]) is image
+
+
+@pytest.mark.parametrize('name',['Medium','Low'])
+def test_fixed_512_model_is_padded_to_512_on_smaller_profiles(monkeypatch,name):
+    facts=info(gpuUsable=False,availableRamMb=2000 if name=='Low' else 8192)
+    monkeypatch.setattr(hardware,'resource_snapshot',lambda:facts)
+    hardware.set_profile(hardware.choose_profile(facts))
+    monkeypatch.setattr(inpaint,'_fixed_tile',lambda:512)
+    shapes=[]
+    def identity(np,cv2,patch,mask):
+        shapes.append(patch.shape);return patch.copy()
+    monkeypatch.setattr(inpaint,'_run',identity)
+    import cv2
+    image=np.full((300,300,3),120,np.uint8)
+    result=inpaint._tiled_fill(np,cv2,image,np.ones((300,300),np.uint8)*255)
+    assert shapes==[(512,512,3)] and np.array_equal(result,image)
 
 
 def test_fixed_512_model_is_not_upscaled_for_low(monkeypatch):

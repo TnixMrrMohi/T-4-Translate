@@ -215,7 +215,8 @@ def test_painted_background_is_continued_not_painted_over(tmp_path):
     path = tmp_path / 'page.png'
     background = _painted_page(path)
     lines = [{'quad': [[70, 90], [245, 90], [245, 175], [70, 175]]}]
-    clean, _ = clean_image(path, lines, {'1': 'ترجمه'})
+    # مسیر کلاسیک را می‌سنجد؛ مدل LaMa (اگر روی این دستگاه نصب باشد) جدا آزموده می‌شود.
+    clean, _ = clean_image(path, lines, {'1': 'ترجمه'}, high_quality=False)
     result = np.array(clean).astype(np.float32)
     rows = slice(100, 160), slice(78, 238)
     cleaned_profile = result[rows].mean(axis=(1, 2))
@@ -236,7 +237,7 @@ def test_forced_reclean_continues_background_texture(tmp_path):
     path = tmp_path / 'page.png'
     background = _painted_page(path)
     lines = [{'quad': [[70, 90], [245, 90], [245, 175], [70, 175]]}]
-    clean, _ = clean_image(path, lines, {'1': 'ترجمه'}, force=True)
+    clean, _ = clean_image(path, lines, {'1': 'ترجمه'}, force=True, high_quality=False)
     result = np.array(clean).astype(np.float32)
     rows = slice(100, 160), slice(78, 238)
     cleaned_profile = result[rows].mean(axis=(1, 2))

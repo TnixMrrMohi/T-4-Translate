@@ -18,6 +18,7 @@ from tempfile import SpooledTemporaryFile
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from app.desktop_security import DesktopOriginGuard
 from PIL import Image, UnidentifiedImageError
@@ -1119,6 +1120,44 @@ async def download_render_webp(job_id: str, quality: int = WEBP_QUALITY_DEFAULT)
         image_path, media_type="image/webp",
         headers={"Cache-Control": "no-store",
                  "Content-Disposition": f'attachment; filename="t4-{job_id}.webp"'})
+
+
+class BatchExportInput(BaseModel):
+    """خروجی دسته‌ای: فهرست کارها (به ترتیب صفحه) و نام فایل هر کدام."""
+
+    jobIds: list[str] = Field(min_length=1, max_length=500)
+    names: list[str] = Field(default_factory=list, max_length=500)
+    quality: int = WEBP_QUALITY_DEFAULT
+
+
+@app.post("/api/batch/export")
+async def batch_export(body: BatchExportInput):
+    """خروجی نهایی چند کار را WebP می‌کند و همه را در یک ZIP می‌دهد."""
+    import tempfile
+    import zipfile
+
+    used: set[str] = set()
+    entries: list[tuple[str, Path]] = []
+    for index, job_id in enumerate(body.jobIds):
+        response = await download_render_webp(job_id, body.quality)
+        raw = body.names[index] if index < len(body.names) else f"{index + 1:03d}"
+        stem = "".join(ch for ch in Path(raw).stem if ch not in r'\/:*?"<>|').strip() or f"{index + 1:03d}"
+        name, extra = stem, 1
+        while name.lower() in used:
+            extra += 1
+            name = f"{stem}-{extra}"
+        used.add(name.lower())
+        entries.append((f"{name}.webp", Path(response.path)))
+    handle = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    handle.close()
+    with zipfile.ZipFile(handle.name, "w", zipfile.ZIP_STORED) as archive:
+        for name, path in entries:
+            archive.write(path, name)
+    return FileResponse(
+        handle.name, media_type="application/zip",
+        headers={"Cache-Control": "no-store",
+                 "Content-Disposition": 'attachment; filename="t4-batch-webp.zip"'},
+        background=BackgroundTask(lambda: Path(handle.name).unlink(missing_ok=True)))
 
 
 class LayoutInput(BaseModel):
