@@ -3,16 +3,17 @@ import React, {useEffect, useRef, useState} from 'react';
 const WEBP_QUALITY = 90;
 const HEADER = /^===\s*(\d+)\s*\|\s*(.+?)\s*===\s*$/;
 
-/** یک تصویر اصلی داخل کارِ دسته‌ای (برای کارِ چسبانده‌شده، بازهٔ آن در تصویر چسبیده). */
-export type BatchMember = {name: string; top: number; bottom: number};
+/** تکه‌ای از خروجی یک کار که بخشی از فایل نهایی است. */
+export type BatchPiece = {jobId: string; top: number; bottom: number};
+
+/** یک تصویر اصلی؛ فایل نهایی‌اش از چند تکه (از کارهای مختلف) زیر هم ساخته می‌شود. */
+export type BatchFile = {name: string; pieces: BatchPiece[]};
 
 export type BatchPage = {
   page: number;
   name: string;
   jobId: string;
-  /** ارتفاع تصویر این کار؛ و تصویرهای اصلیِ داخلش. بیش از یکی یعنی چند صفحه به‌خاطر متنِ مرزی چسبانده شده‌اند. */
   height?: number;
-  members?: BatchMember[];
   revision: string;
   text: string;
   state: 'extracted' | 'running' | 'done' | 'failed';
@@ -85,6 +86,7 @@ export function BatchPanel({onClose, prompt, visible = true, onEdit}: {
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [pages, setPages] = useState<BatchPage[]>([]);
+  const [outFiles, setOutFiles] = useState<BatchFile[]>([]);
   const [translated, setTranslated] = useState('');
   const [busy, setBusy] = useState<null | 'extract' | 'apply' | 'export'>(null);
   const [message, setMessage] = useState('');
@@ -105,6 +107,7 @@ export function BatchPanel({onClose, prompt, visible = true, onEdit}: {
       if (saved && Array.isArray(saved.pages) && saved.pages.length) {
         setPages(saved.pages.map((p: BatchPage) => ({...p, state: p.state === 'running' ? 'extracted' : p.state})));
         setTranslated(typeof saved.translated === 'string' ? saved.translated : '');
+        if (Array.isArray(saved.files)) setOutFiles(saved.files);
       }
     } catch {
       // ذخیرهٔ خراب نادیده گرفته می‌شود.
@@ -113,11 +116,11 @@ export function BatchPanel({onClose, prompt, visible = true, onEdit}: {
   useEffect(() => {
     if (!restored.current) return;
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({pages, translated}));
+      localStorage.setItem(STORE_KEY, JSON.stringify({pages, translated, files: outFiles}));
     } catch {
       // حافظهٔ مرورگر پر یا بسته است.
     }
-  }, [pages, translated]);
+  }, [pages, translated, outFiles]);
   const picker = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -165,6 +168,7 @@ export function BatchPanel({onClose, prompt, visible = true, onEdit}: {
     setPages([]);
     setTranslated('');
     const found: BatchPage[] = [];
+    const fileList: BatchFile[] = [];
     const errors: string[] = [];
     for (let index = 0; index < files.length; index += 1) {
       if (cancel.current) break;
@@ -181,69 +185,69 @@ export function BatchPanel({onClose, prompt, visible = true, onEdit}: {
         const text = (source.items as {number: number; text: string; tone?: string}[])
           .map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
         found.push({page: found.length + 1, name: file.name, jobId: job.jobId,
-          revision: source.revision, text, state: 'extracted', height: job.height,
-          members: [{name: file.name, top: 0, bottom: job.height}]});
+          revision: source.revision, text, state: 'extracted', height: job.height});
+        fileList.push({name: file.name, pieces: [{jobId: job.jobId, top: 0, bottom: job.height}]});
       } catch (error) {
         errors.push(`${file.name}: ${error instanceof Error ? error.message : 'خطا'}`);
       }
     }
-    // متنی که از مرز دو صفحه بریده شده، فقط در یک تصویرِ چسبیده کامل پاک و درج می‌شود.
+    // متنی که از مرز دو صفحه بریده شده، فقط در یک «نوار مرزی» کامل پاک و درج می‌شود.
     let joinedCount = 0;
-    let at = 0;
-    while (!cancel.current && at < found.length - 1) {
-      const upper = found[at];
-      const lower = found[at + 1];
-      setProgress(`بررسی مرز صفحه‌ها ${at + 1} و ${at + 2}…`);
+    const loadPage = async (jobId: string, name: string, height: number): Promise<BatchPage> => {
+      const source = await (await call(
+        `/api/jobs/${jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
+      const text = (source.items as {number: number; text: string; tone?: string}[])
+        .map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
+      return {page: 0, name, jobId, revision: source.revision, text, state: 'extracted', height};
+    };
+    for (let at = 0; !cancel.current && at < fileList.length - 1; at += 1) {
+      const upperFile = fileList[at];
+      const lowerFile = fileList[at + 1];
+      const upperPiece = upperFile.pieces[upperFile.pieces.length - 1];
+      const lowerPiece = lowerFile.pieces[0];
+      setProgress(`بررسی مرز ${upperFile.name} و ${lowerFile.name}…`);
       try {
         const seam = await (await call('/api/batch/seam', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({upper: upper.jobId, lower: lower.jobId}),
+          body: JSON.stringify({upper: upperPiece.jobId, lower: lowerPiece.jobId}),
         }, 'بررسی مرز')).json();
-        if (!seam.join) {
-          at += 1;
-          continue;
-        }
-        setProgress(`چسباندن صفحه‌های ${at + 1} و ${at + 2} (متن روی مرز)…`);
-        const joined = await (await call('/api/batch/join', {
+        if (!seam.join) continue;
+        setProgress(`ساخت نوار مرزی ${upperFile.name} و ${lowerFile.name} (متن روی مرز)…`);
+        const cut = await (await call('/api/batch/stitch', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({jobIds: [upper.jobId, lower.jobId]}),
-        }, 'چسباندن صفحه‌ها')).json();
-        await call(`/api/jobs/${joined.jobId}/ocr`, {method: 'POST'}, 'OCR تصویر چسبیده');
-        const source = await (await call(
-          `/api/jobs/${joined.jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
-        const text = (source.items as {number: number; text: string; tone?: string}[])
-          .map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
-        const members: BatchMember[] = [];
-        (joined.parts as {jobId: string; top: number; bottom: number}[]).forEach((part, index) => {
-          const owner = index === 0 ? upper : lower;
-          const old = owner.height || (part.bottom - part.top) || 1;
-          const factor = (part.bottom - part.top) / old;
-          (owner.members ?? []).forEach(member => members.push({
-            name: member.name,
-            top: Math.round(part.top + member.top * factor),
-            bottom: Math.round(part.top + member.bottom * factor),
-          }));
-        });
-        found.splice(at, 2, {
-          page: 0, name: members.map(member => member.name).join(' + '), jobId: joined.jobId,
-          revision: source.revision, text, state: 'extracted', height: joined.height, members,
-        });
+          body: JSON.stringify({upper: upperPiece.jobId, lower: lowerPiece.jobId}),
+        }, 'ساخت نوار مرزی')).json();
+        await call(`/api/jobs/${cut.seam.jobId}/ocr`, {method: 'POST'}, 'OCR نوار مرزی');
+        const upperPage = await loadPage(cut.upper.jobId, upperFile.name, cut.upper.height);
+        const seamPage = await loadPage(cut.seam.jobId, `${upperFile.name} ↔ ${lowerFile.name} (مرز)`, cut.seam.height);
+        const lowerPage = await loadPage(cut.lower.jobId, lowerFile.name, cut.lower.height);
+        const first = found.findIndex(entry => entry.jobId === upperPiece.jobId);
+        const second = found.findIndex(entry => entry.jobId === lowerPiece.jobId);
+        if (first < 0 || second < 0) throw Error('ترتیب صفحه‌ها پیدا نشد.');
+        found.splice(second, 1, lowerPage);
+        found.splice(first, 1, upperPage, seamPage);
+        upperFile.pieces.splice(upperFile.pieces.length - 1, 1,
+          {jobId: cut.upper.jobId, top: 0, bottom: cut.upper.height},
+          {jobId: cut.seam.jobId, top: cut.seam.upperPart[0], bottom: cut.seam.upperPart[1]});
+        lowerFile.pieces.splice(0, 1,
+          {jobId: cut.seam.jobId, top: cut.seam.lowerPart[0], bottom: cut.seam.lowerPart[1]},
+          {jobId: cut.lower.jobId, top: 0, bottom: cut.lower.height});
         joinedCount += 1;
-        // کارهای جداگانهٔ قبلی دیگر لازم نیستند.
-        void fetch(`/api/jobs/${upper.jobId}`, {method: 'DELETE'}).catch(() => undefined);
-        void fetch(`/api/jobs/${lower.jobId}`, {method: 'DELETE'}).catch(() => undefined);
+        // دو کار اصلیِ قبلی دیگر لازم نیستند.
+        void fetch(`/api/jobs/${upperPiece.jobId}`, {method: 'DELETE'}).catch(() => undefined);
+        void fetch(`/api/jobs/${lowerPiece.jobId}`, {method: 'DELETE'}).catch(() => undefined);
       } catch (error) {
-        errors.push(`مرز صفحه‌ها: ${error instanceof Error ? error.message : 'خطا'}`);
-        at += 1;
+        errors.push(`مرز ${upperFile.name}: ${error instanceof Error ? error.message : 'خطا'}`);
       }
     }
     found.forEach((entry, index) => {entry.page = index + 1;});
+    setOutFiles(fileList);
     setPages(found);   // فقط وقتی همهٔ تصویرها خوانده شدند نشان داده می‌شود
     setBusy(null);
     setProgress('');
     setMessage(errors.length
       ? `${found.length} صفحه آماده شد؛ ${errors.length} خطا: ${errors.join(' | ')}`
-      : `متن ${found.length} صفحه استخراج شد${joinedCount ? ` (${joinedCount} مرز صفحه با متنِ بریده چسبانده شد)` : ''}. «کپی با پرامپت» را بزنید، ترجمه کنید و در کادر پایین بگذارید.`);
+      : `متن ${found.length} صفحه استخراج شد${joinedCount ? ` (${joinedCount} مرز با متنِ بریده جدا و یک‌تکه پردازش می‌شود)` : ''}. «کپی با پرامپت» را بزنید، ترجمه کنید و در کادر پایین بگذارید.`);
   }
 
   async function run() {
@@ -284,17 +288,16 @@ export function BatchPanel({onClose, prompt, visible = true, onEdit}: {
       const response = await call('/api/batch/export', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-          items: ready.flatMap(page => {
-            const members = page.members ?? [];
-            if (members.length <= 1) return [{jobId: page.jobId, name: members[0]?.name ?? page.name}];
-            // تصویرِ چسبیده دوباره به صفحه‌های اصلی‌اش بریده می‌شود.
-            return members.map(member => ({jobId: page.jobId, name: member.name, top: member.top, bottom: member.bottom}));
-          }),
+          items: outFiles
+            .filter(file => file.pieces.every(piece => pages.find(p => p.jobId === piece.jobId)?.state === 'done'))
+            .map(file => file.pieces.length === 1 && file.pieces[0].top === 0
+              ? {jobId: file.pieces[0].jobId, name: file.name}
+              : {jobId: file.pieces[0].jobId, name: file.name, pieces: file.pieces}),
           quality: WEBP_QUALITY,
         }),
       }, 'ساخت ZIP');
       saveBlob(await response.blob(), 't4-batch-webp.zip');
-      setMessage(`ZIP با ${ready.reduce((sum, page) => sum + Math.max(1, page.members?.length ?? 1), 0)} تصویر WebP ساخته و دانلود شد.`);
+      setMessage(`ZIP با ${outFiles.length} تصویر WebP ساخته و دانلود شد.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'دانلود ناموفق بود.');
     } finally {

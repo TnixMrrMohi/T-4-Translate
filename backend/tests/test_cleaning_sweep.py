@@ -142,17 +142,21 @@ def _job(tmp_path, monkeypatch, size, lines):
 def test_seam_detected_and_pages_joined(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from app import main
-    cut = {'text': 'THE WORLD HAS', 'confidence': 0.95, 'quad': [[10, 280], [200, 280], [200, 298], [10, 298]]}
+    cut = {'text': 'THE WORLD HAS', 'confidence': 0.95, 'quad': [[10, 1980], [200, 1980], [200, 1998], [10, 1998]]}
     mid = {'text': 'HELLO THERE', 'confidence': 0.95, 'quad': [[10, 100], [200, 100], [200, 120], [10, 120]]}
-    upper = _job(tmp_path, monkeypatch, (300, 300), [mid, cut])        # خط چسبیده به لبهٔ پایین
-    lower = _job(tmp_path, monkeypatch, (300, 200), [mid])
-    far = _job(tmp_path, monkeypatch, (300, 200), [mid])
+    upper = _job(tmp_path, monkeypatch, (300, 2000), [mid, cut])        # خط چسبیده به لبهٔ پایین
+    lower = _job(tmp_path, monkeypatch, (300, 2000), [mid])
+    far = _job(tmp_path, monkeypatch, (300, 2000), [mid])
     client = TestClient(main.app)
     assert client.post('/api/batch/seam', json={'upper': upper, 'lower': lower}).json() == {'join': True}
     assert client.post('/api/batch/seam', json={'upper': far, 'lower': lower}).json() == {'join': False}
-    joined = client.post('/api/batch/join', json={'jobIds': [upper, lower]}).json()
-    assert (joined['width'], joined['height']) == (300, 500)
-    assert [(p['top'], p['bottom']) for p in joined['parts']] == [(0, 300), (300, 500)]
+    result = client.post('/api/batch/stitch', json={'upper': upper, 'lower': lower}).json()
+    tail = result['seam']['upperPart'][1]
+    assert result['seam']['upperPart'] == [0, tail]
+    assert result['seam']['lowerPart'][0] == tail
+    # بالا + نوار + پایین = کل ارتفاع دو صفحه
+    assert result['upper']['height'] + result['seam']['height'] + result['lower']['height'] - 0 == 4000
+    assert result['seam']['height'] == tail + result['seam']['lowerPart'][1] - tail
 
 
 def test_junk_filter_drops_non_words():

@@ -1147,9 +1147,11 @@ SEAM_PX = 24   # خطی که تا این فاصله از لبهٔ بالا/پا�
 class BatchExportItem(BaseModel):
     jobId: str
     name: str = ""
-    # برش از خروجی کار (برای کارِ چسبانده‌شده از چند صفحه)؛ خالی یعنی کل تصویر.
+    # برش از خروجی کار؛ خالی یعنی کل تصویر.
     top: int | None = None
     bottom: int | None = None
+    # فایلی که از چند تکه (از کارهای مختلف) زیر هم ساخته می‌شود: [{jobId, top, bottom}, ...]
+    pieces: list[dict] | None = None
 
 
 class BatchExportInput(BaseModel):
@@ -1190,6 +1192,36 @@ async def batch_export(body: BatchExportInput):
                     extra += 1
                     name = f"{stem}-{extra}"
                 used.add(name.lower())
+                if item.pieces:
+                    sources = []
+                    for piece in item.pieces:
+                        sources.append((_fresh_render(str(piece["jobId"])), int(piece.get("top", 0)),
+                                        piece.get("bottom")))
+                    target = scratch / f"{index}.webp"
+
+                    def stack(sources=sources, target=target):
+                        crops = []
+                        try:
+                            for path, top, bottom in sources:
+                                with Image.open(path) as opened:
+                                    rgb = opened.convert("RGB")
+                                    crops.append(rgb.crop((0, max(0, top), rgb.width,
+                                                           min(rgb.height, int(bottom) if bottom is not None else rgb.height))))
+                            width = crops[0].width
+                            canvas = Image.new("RGB", (width, sum(c.height for c in crops)), (255, 255, 255))
+                            offset = 0
+                            for crop in crops:
+                                canvas.paste(crop, (0, offset))
+                                offset += crop.height
+                            canvas.save(target, format="WEBP", quality=quality, method=6)
+                            canvas.close()
+                        finally:
+                            for crop in crops:
+                                crop.close()
+
+                    await run_native_safely(stack)
+                    archive.write(target, f"{name}.webp")
+                    continue
                 if item.top is None or item.bottom is None:
                     response = await download_render_webp(item.jobId, quality)
                     archive.write(Path(response.path), f"{name}.webp")
@@ -1221,7 +1253,9 @@ class SeamInput(BaseModel):
 def _touches(lines: list, height: int, bottom: bool) -> bool:
     """آیا خطِ واقعی (نه نویز) به لبهٔ پایین/بالای تصویر می‌چسبد؟"""
     for line in lines:
-        if bubbles.is_junk_text(line.get("text", ""), line.get("confidence")):
+        # حتی تکهٔ «بی‌معنی» (نصفِ یک کلمه که از مرز بریده شده، مثل «TONAY» به‌جای «TODAY») نشانهٔ
+        # متنِ مرزی است؛ چسباندن بی‌دلیل فقط کمی کند است، ولی ندیدنش متن را نصفه می‌گذارد.
+        if not str(line.get("text", "")).strip():
             continue
         ys = [point[1] for point in line.get("quad") or []]
         if not ys:
@@ -1240,55 +1274,108 @@ def batch_seam(body: SeamInput) -> dict:
     return {"join": _touches(top_lines, int(upper["height"]), True) or _touches(bottom_lines, int(lower["height"]), False)}
 
 
-class JoinInput(BaseModel):
-    jobIds: list[str] = Field(min_length=2, max_length=20)
+SEAM_ZONE = 1500       # بیشترین ارتفاعِ ناحیهٔ مرزی از هر صفحه
+SEAM_MIN_ZONE = 200    # کمترین ارتفاعِ ناحیهٔ مرزی از هر صفحه
+SEAM_LINE_PAD = 24     # حاشیهٔ دور هر خط که برش نباید داخلش بیفتد
 
 
-@app.post("/api/batch/join")
-def batch_join(body: JoinInput) -> dict:
-    """چند صفحهٔ پشت‌سرهم را زیر هم می‌چسباند و یک کار تازه می‌سازد (متن بین دو صفحه کامل پردازش شود)."""
-    sources = []
-    for job_id in body.jobIds:
-        info = get_job(job_id)
-        sources.append((job_id, workspace_for(job_id) / "source.img", info))
-    width = int(sources[0][2]["width"])
-    parts, frames, top = [], [], 0
-    total_height = 0
-    for job_id, path, info in sources:
-        scaled = round(int(info["height"]) * width / max(1, int(info["width"])))
-        total_height += scaled
-    if width * total_height > MAX_PIXELS:
-        raise HTTPException(400, "تصویر چسبانده‌شده بیش از حد بزرگ است.")
-    canvas = Image.new("RGB", (width, total_height), (255, 255, 255))
-    try:
-        for job_id, path, info in sources:
-            with Image.open(path) as opened:
-                frame = opened.convert("RGB")
-                if frame.width != width:
-                    frame = frame.resize((width, round(frame.height * width / frame.width)), Image.LANCZOS)
-                canvas.paste(frame, (0, top))
-                parts.append({"jobId": job_id, "top": top, "bottom": top + frame.height})
-                top += frame.height
-    except (OSError, ValueError):
-        canvas.close()
-        raise HTTPException(400, "خواندن تصویر یکی از صفحه‌ها ناموفق بود.") from None
+def _gap_cut(lines: list, height: int, bottom: bool) -> int:
+    """محل برش در یک شکافِ بدون متن نزدیک مرز: وسطِ بزرگ‌ترین فاصلهٔ خالی میان خط‌های OCR.
+
+    ناحیهٔ مرزی جدا پردازش می‌شود؛ پس برش نباید از وسط بالن/متن رد شود.
+    """
+    low, high = ((max(1, height - SEAM_ZONE), height - SEAM_MIN_ZONE) if bottom
+                 else (SEAM_MIN_ZONE, min(height - 1, SEAM_ZONE)))
+    if high <= low:
+        return int(max(1, min(height - 1, high if bottom else low)))
+    spans = []
+    for line in lines:
+        ys = [point[1] for point in line.get("quad") or []]
+        if ys:
+            spans.append((min(ys) - SEAM_LINE_PAD, max(ys) + SEAM_LINE_PAD))
+    spans.sort()
+    best, best_size, cursor = None, -1, low
+    for start, end in spans + [(high + 1, high + 1)]:
+        if start > cursor:
+            gap = (cursor, min(start, high))
+            if gap[1] - gap[0] > best_size:
+                best, best_size = gap, gap[1] - gap[0]
+        cursor = max(cursor, end)
+    if best is None or best_size <= 0:
+        return int(high if bottom else low)
+    return int((best[0] + best[1]) // 2)
+
+
+def _new_job(image: Image.Image, lines: list | None, base_ocr: dict | None) -> dict:
+    """تصویر را به‌صورت کار تازه ذخیره می‌کند؛ اگر ``lines`` داده شود، OCR هم همراهش نوشته می‌شود."""
     root = Path(os.environ.get("T4_DATA_DIR", str(Path.home() / ".t4-translate"))) / "jobs"
     job_id = uuid.uuid4().hex
     workspace = root / job_id
     workspace.mkdir(parents=True)
     try:
-        canvas.save(workspace / "source.img", format="PNG")
-        info = {"width": width, "height": total_height, "format": "PNG",
+        image.save(workspace / "source.img", format="PNG")
+        info = {"width": image.width, "height": image.height, "format": "PNG",
                 "sizeBytes": (workspace / "source.img").stat().st_size, "jobId": job_id, "status": "uploaded",
                 "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         (workspace / "state.json.tmp").write_text(json.dumps(info), encoding="utf-8")
         os.replace(workspace / "state.json.tmp", workspace / "state.json")
+        if lines is not None:
+            document = {**(base_ocr or {}), "jobId": job_id, "lines": lines, "revision": ocr_revision(lines)}
+            (workspace / "ocr.json.tmp").write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+            os.replace(workspace / "ocr.json.tmp", workspace / "ocr.json")
     except Exception:
         shutil.rmtree(workspace, ignore_errors=True)
         raise
+    return info
+
+
+def _shift_lines(lines: list, dy: int) -> list:
+    return [{**line, "quad": [[point[0], point[1] + dy] for point in line["quad"]]} for line in lines]
+
+
+@app.post("/api/batch/stitch")
+def batch_stitch(body: SeamInput) -> dict:
+    """متنِ بریدهٔ مرز دو صفحه را در یک «نوار مرزی» جمع می‌کند.
+
+    پایین صفحهٔ بالا و بالای صفحهٔ پایین (هرکدام تا حدود ۱۵۰۰ پیکسل، با برش در شکافِ بدون متن) زیر هم
+    چسبانده می‌شوند و یک کار می‌شوند؛ بقیهٔ هر صفحه کار جدا می‌ماند و OCRِ قبلی‌اش دوباره استفاده می‌شود.
+    نوار کوچک است و در سقف حافظه می‌ماند (چسباندن کل دو صفحه نمی‌ماند).
+    """
+    upper_info, lower_info = get_job(body.upper), get_job(body.lower)
+    if int(upper_info["width"]) != int(lower_info["width"]):
+        raise HTTPException(409, "عرض دو صفحه یکی نیست؛ متن مرزی خودکار پردازش نمی‌شود.")
+    upper_ocr, lower_ocr = get_ocr(body.upper), get_ocr(body.lower)
+    upper_h, lower_h = int(upper_info["height"]), int(lower_info["height"])
+    cut_upper = _gap_cut(upper_ocr.get("lines") or [], upper_h, True)
+    cut_lower = _gap_cut(lower_ocr.get("lines") or [], lower_h, False)
+    if cut_upper < 100 or lower_h - cut_lower < 100:
+        raise HTTPException(409, "صفحه برای جداکردن نوار مرزی بیش از حد کوتاه است.")
+    width = int(upper_info["width"])
+    with Image.open(workspace_for(body.upper) / "source.img") as a, \
+            Image.open(workspace_for(body.lower) / "source.img") as b:
+        top_img, tail_a = a.convert("RGB").crop((0, 0, width, cut_upper)), a.convert("RGB").crop((0, cut_upper, width, upper_h))
+        head_b, rest_img = b.convert("RGB").crop((0, 0, width, cut_lower)), b.convert("RGB").crop((0, cut_lower, width, lower_h))
+    strip = Image.new("RGB", (width, tail_a.height + head_b.height), (255, 255, 255))
+    strip.paste(tail_a, (0, 0))
+    strip.paste(head_b, (0, tail_a.height))
+    lines_a = [line for line in upper_ocr.get("lines") or []
+               if max((pt[1] for pt in line["quad"]), default=0) <= cut_upper]
+    lines_b = _shift_lines([line for line in lower_ocr.get("lines") or []
+                            if min((pt[1] for pt in line["quad"]), default=0) >= cut_lower], -cut_lower)
+    try:
+        upper_job = _new_job(top_img, lines_a, upper_ocr)
+        seam_job = _new_job(strip, None, None)
+        lower_job = _new_job(rest_img, lines_b, lower_ocr)
     finally:
-        canvas.close()
-    return {**info, "parts": parts}
+        for image in (top_img, tail_a, head_b, rest_img, strip):
+            image.close()
+    return {
+        "upper": {"jobId": upper_job["jobId"], "height": upper_job["height"]},
+        "seam": {"jobId": seam_job["jobId"], "height": seam_job["height"],
+                 "upperPart": [0, upper_h - cut_upper],
+                 "lowerPart": [upper_h - cut_upper, upper_h - cut_upper + cut_lower]},
+        "lower": {"jobId": lower_job["jobId"], "height": lower_job["height"]},
+    }
 
 
 class LayoutInput(BaseModel):
