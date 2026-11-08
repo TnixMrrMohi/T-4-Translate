@@ -1,7 +1,7 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 
 /** تنظیم دستی یک متن: اندازه، مرکز، چرخش و فونت. */
-export type TextOverride = {size?: number; x?: number; y?: number; rotation?: number; font?: string};
+export type TextOverride = {size?: number; x?: number; y?: number; rotation?: number; font?: string; text?: string};
 export type TextOverrides = Record<string, TextOverride>;
 
 export type LayoutBlock = {
@@ -46,6 +46,16 @@ type Props = {
   onCommit: (next: TextOverrides, block: number | null) => void;
   disabled?: boolean;
   tall?: boolean;
+  /** هر بار که متنِ انتخاب‌شده عوض شد (برای ابزارهای کنارِ ویرایشگر، مثل پاک‌سازیِ همان ناحیه). */
+  onSelect?: (number: number | null) => void;
+  /** نوار ابزار اضافه زیر نوار اصلی برای متنِ انتخاب‌شده. */
+  toolbarExtra?: (block: LayoutBlock | null) => React.ReactNode;
+  /** لایهٔ اضافه روی خودِ تصویر (مثلاً کادر ناحیهٔ پاک‌سازیِ متنِ انتخاب‌شده). */
+  stageExtra?: (block: LayoutBlock | null, scale: number) => React.ReactNode;
+  /** عنوان قابل‌خواندن برای تصویر (فهرست صفحه‌ها). */
+  imageAlt?: string;
+  /** متنِ پیش‌نمایش نامرئی می‌ماند (تصویر خودش خروجی نهایی است) و فقط کادرها دیده می‌شوند. */
+  ghost?: boolean;
 };
 
 const MIN_SIZE = 6;
@@ -66,6 +76,7 @@ function fontFamily(fontId: string | null | undefined) {
  */
 export function TextLayoutEditor({
   imageUrl, width, height, blocks, fonts, value, onCommit, disabled = false, tall = false,
+  onSelect, toolbarExtra, stageExtra, imageAlt, ghost = false,
 }: Props) {
   const [draft, setDraft] = useState<TextOverrides>(value);
   const [selected, setSelected] = useState<number | null>(null);
@@ -137,6 +148,7 @@ export function TextLayoutEditor({
       y: current.y ?? block.center[1],
       rotation: current.rotation ?? 0,
       ...(current.font ? {font: current.font} : {}),
+      ...(current.text ? {text: current.text} : {}),
       ...change,
     };
     const next: TextOverrides = {...previous, [String(number)]: merged};
@@ -221,12 +233,24 @@ export function TextLayoutEditor({
   const effective = (block: LayoutBlock) => {
     const override = draft[String(block.number)] ?? {};
     return {
+      text: override.text ?? block.text,
       size: override.size ?? block.size,
       center: [override.x ?? block.center[0], override.y ?? block.center[1]] as [number, number],
       rotation: override.rotation ?? 0,
       font: override.font ?? null,
     };
   };
+
+  useEffect(() => {
+    onSelect?.(selected);
+  }, [selected]);
+
+  // متن قابل‌ویرایشِ بالنِ انتخاب‌شده؛ با دکمهٔ «اعمال متن» ذخیره می‌شود (Enter = شکست خط).
+  const [textDraft, setTextDraft] = useState('');
+  const selectedText = selectedBlock ? effective(selectedBlock).text : '';
+  useEffect(() => {
+    setTextDraft(selectedText);
+  }, [selected, selectedText]);
 
   const resetBlock = () => {
     if (selected === null) return;
@@ -322,6 +346,43 @@ export function TextLayoutEditor({
         </div>
       </div>
 
+      {selectedBlock && (
+        <div className="layout-text-edit">
+          <label className="layout-field">
+            <span>متن و خط‌بندی (Enter = خط جدید)</span>
+            <textarea
+              dir="rtl"
+              rows={Math.min(6, Math.max(2, textDraft.split('\n').length))}
+              value={textDraft}
+              disabled={disabled}
+              aria-label="متن این بالن و شکست خط‌ها"
+              onChange={event => setTextDraft(event.target.value)}
+            />
+          </label>
+          <div className="layout-actions">
+            <button type="button" className="ghost" disabled={disabled || textDraft === selectedText || !textDraft.trim()}
+              onClick={() => patch(selectedBlock.number, {text: textDraft}, selectedBlock, true)}>
+              اعمال متن
+            </button>
+            {draft[String(selectedBlock.number)]?.text && (
+              <button type="button" className="ghost" disabled={disabled}
+                onClick={() => {
+                  const next = {...draftRef.current};
+                  const current = {...(next[String(selectedBlock.number)] ?? {})};
+                  delete current.text;
+                  next[String(selectedBlock.number)] = current;
+                  draftRef.current = next;
+                  setDraft(next);
+                  commitRef.current(next, selectedBlock.number);
+                }}>
+                بازگشت به ترجمهٔ اصلی
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {toolbarExtra?.(selectedBlock)}
+
       <p className="layout-hint">
         جابه‌جایی: کشیدن متن • اندازه: کشیدن گوشه‌ها • چرخش: کشیدن دستهٔ بالای کادر • جابه‌جایی دقیق با کلیدهای جهت
       </p>
@@ -331,7 +392,7 @@ export function TextLayoutEditor({
         ref={stageRef}
         style={stageHeight ? {height: `${stageHeight}px`} : undefined}
       >
-        <img src={imageUrl} alt="تصویر پاک‌شده برای چیدمان متن" draggable={false} />
+        <img src={imageUrl} alt={imageAlt ?? 'تصویر پاک‌شده برای چیدمان متن'} draggable={false} />
         {blocks.map(block => {
           const state = effective(block);
           const baseWidth = Math.max(4, block.box[2] - block.box[0]);
@@ -383,9 +444,11 @@ export function TextLayoutEditor({
                   fontSize: `${Math.max(5, state.size * scale)}px`,
                   fontFamily: fontFamily(state.font),
                   lineHeight: 1.2,
+                  whiteSpace: 'pre-line',
+                  ...(ghost ? {color: 'transparent', textShadow: 'none'} : {}),
                 }}
               >
-                {block.text}
+                {state.text}
               </span>
               <span className="layout-tag">{block.number}</span>
               {active && (
@@ -424,6 +487,7 @@ export function TextLayoutEditor({
             </div>
           );
         })}
+        {stageExtra?.(selectedBlock, scale)}
       </div>
       <p className="layout-note" aria-live="polite">
         {selectedBlock

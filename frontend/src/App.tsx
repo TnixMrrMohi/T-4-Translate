@@ -1745,34 +1745,6 @@ export function App() {
   const [batchOpen, setBatchOpen] = useState(false);
   // بخش دسته‌ای پس از اولین باز شدن زنده می‌ماند تا هنگام ویرایش یک صفحه، فصل از بین نرود.
   const [batchSeen, setBatchSeen] = useState(false);
-  const pendingStep = useRef<number | null>(null);
-  useEffect(() => {
-    const target = pendingStep.current;
-    if (target !== null && !loadingData && maxStep >= target) {
-      pendingStep.current = null;
-      setStep(target);
-    }
-  }, [loadingData, maxStep, job?.jobId]);
-
-  /** یک صفحهٔ فصل را در ویرایشگر تک‌تصویر باز می‌کند (مرحلهٔ ۳ پاک‌سازی، ۴ متن/فونت). */
-  async function editBatchJob(jobId: string, target: number) {
-    if (busy || loadingData) return;
-    try {
-      const response = await fetch(`/api/jobs/${jobId}`);
-      if (!response.ok) throw Error('این صفحه دیگر روی این سیستم نیست.');
-      const info = await response.json();
-      uploadStarted.current = false;
-      localStorage.setItem(key, jobId);
-      setJob({jobId, width: info.width, height: info.height, format: info.format, status: info.status});
-      setSourceVersion(Date.now());
-      setStep(1);
-      pendingStep.current = target;
-      setBatchOpen(false);
-      setMessage('صفحه برای ویرایش باز شد؛ با دکمهٔ «پردازش دسته‌ای» به فصل برمی‌گردید.');
-    } catch (error) {
-      fail(error instanceof Error ? error.message : 'باز کردن صفحه ناموفق بود.');
-    }
-  }
 
   return (
     <main className="page">
@@ -1798,7 +1770,7 @@ export function App() {
 
       {batchSeen && (
         <BatchPanel onClose={() => setBatchOpen(false)} prompt={translationPrompt}
-          visible={batchOpen} onEdit={(jobId, target) => void editBatchJob(jobId, target)} />
+          visible={batchOpen} />
       )}
 
       <div className="layout" style={batchOpen ? {display: 'none'} : undefined}>

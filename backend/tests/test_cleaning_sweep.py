@@ -165,3 +165,14 @@ def test_junk_filter_drops_non_words():
         assert is_junk_text(text, conf), text
     for text, conf in (('Hu...', .9), ('AYE~ AYE!', .93), ('NO.', .9), ('WHAT?', .9), ('THE WORLD... HAS COME', .9)):
         assert not is_junk_text(text, conf), text
+
+
+def test_manual_text_override_and_line_breaks():
+    from app import layout, rendering
+    from PIL import ImageFont
+    cleaned = layout.sanitize({'text': ' سلام \r\n  دنیا ', 'font': 'x', 'size': 20})
+    assert cleaned['text'] == 'سلام\nدنیا' and cleaned['size'] == 20
+    assert 'text' not in layout.sanitize({'text': '   '})
+    font = ImageFont.truetype(str(rendering.font_path()), 20)
+    assert rendering.wrap_text('الف ب\nج', font, 10000) == ['الف ب', 'ج']
+    assert rendering.wrap_text('الف ب ج', font, 10000) == ['الف ب ج']

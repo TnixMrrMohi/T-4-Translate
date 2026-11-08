@@ -1,4 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
+import {ChapterPage} from './ChapterPage';
 
 const WEBP_QUALITY = 90;
 const HEADER = /^===\s*(\d+)\s*\|\s*(.+?)\s*===\s*$/;
@@ -79,10 +80,8 @@ export const BATCH_PROMPT_NOTE = [
 
 const STORE_KEY = 't4-batch-v2';
 
-export function BatchPanel({onClose, prompt, visible = true, onEdit}: {
+export function BatchPanel({onClose, prompt, visible = true}: {
   onClose: () => void; prompt: string; visible?: boolean;
-  /** باز کردن یک کار در ویرایشگر تک‌تصویر (مرحلهٔ ۳ = پاک‌سازی، ۴ = متن/فونت). */
-  onEdit?: (jobId: string, step: number) => void;
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [pages, setPages] = useState<BatchPage[]>([]);
@@ -402,25 +401,13 @@ export function BatchPanel({onClose, prompt, visible = true, onEdit}: {
         <div className="chapter-view" aria-label="نمای فصل">
           <h3 className="wizard-subtitle">نمای فصل (از بالا به پایین)</h3>
           <p className="wizard-help">
-            همهٔ صفحه‌ها به ترتیب زیر هم‌اند. برای هر صفحه می‌توانید متن، فونت و اندازه را در ویرایشگر
-            عوض کنید یا پشت متن را دوباره پاک کنید؛ پس از برگشت، همین‌جا تازه می‌شود.
+            همهٔ صفحه‌ها به ترتیب زیر هم‌اند. روی هر متنِ تصویر کلیک کنید: فونت، اندازه، چرخش، جا، متن و
+            خط‌بندی‌اش را عوض کنید یا پشتش را دوباره پاک کنید (با اندازه و جای دلخواهِ ناحیه). تغییرها
+            همان لحظه ذخیره و درج می‌شوند.
           </p>
           {pages.filter(page => page.state === 'done').map(page => (
-            <figure key={page.jobId} className="chapter-page">
-              <figcaption>
-                <span dir="ltr">{page.page}. {page.name}</span>
-                {onEdit && (
-                  <span className="chapter-actions">
-                    <button type="button" className="ghost small" disabled={busy !== null}
-                      onClick={() => onEdit(page.jobId, 4)}>متن، فونت و اندازه</button>
-                    <button type="button" className="ghost small" disabled={busy !== null}
-                      onClick={() => onEdit(page.jobId, 3)}>پاک‌سازی مجدد</button>
-                  </span>
-                )}
-              </figcaption>
-              <img loading="lazy" alt={`صفحهٔ ${page.page}`}
-                src={`/api/jobs/${page.jobId}/render?v=${chapterVersion}`} />
-            </figure>
+            <ChapterPage key={page.jobId} jobId={page.jobId} label={page.name} index={page.page}
+              version={chapterVersion} />
           ))}
         </div>
       )}
