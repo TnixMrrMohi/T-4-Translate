@@ -36,6 +36,7 @@ SOFT_DISTANCE = 4.0    # پیکسل‌هایی که «کاملاً هم‌رنگ
 MASK_GROW = 3          # بزرگ‌کردن ماسک هر حرف برای گرفتن لبهٔ نرم/ضدپیکسل
 GRAIN_LIMIT = 9.0      # سقف دانهٔ اضافه‌شده به وصله تا نقطه‌نقطه نشود
 RESIDUAL_SHARE = 0.02  # اگر این سهم از چهارضلعی هنوز «جوهر» ماند، محلی وصله می‌شود
+FORCE_GROW = 9         # حاشیهٔ اضافهٔ پاک‌سازی مجدد دور چهارضلعی متن (پیکسل)
 RESIDUAL_ALLOW = 20    # کادر مجازِ وصله، کمی بزرگ‌تر از کادر OCR
 CONTEXT_PAD = 32       # حاشیهٔ نمونه‌برداری از بافتِ اطراف هنگام پر کردنِ ناحیه
 
@@ -468,14 +469,17 @@ def _fill_ink(cv2, np, image, result, box, background, mask_total,
         mask_region = mask_total[wy0:wy1, wx0:wx1]
         mask_region[target != 0] = 255
         filled_any = True
-    if quad_mask is not None and not force:
+    # «پاک‌سازی مجدد» هم باقی‌ماندهٔ جوهر را وصله می‌کند؛ بدون این، روی پس‌زمینهٔ
+    # شلوغ تکه‌های حرف می‌ماند و فقط لکه‌ای نیمه‌پاک دیده می‌شود.
+    if quad_mask is not None:
         filled_any |= _patch_residual(cv2, np, result, box, background, quad_mask,
                                       mask_total, grain, collector)
     return filled_any
 
 
 def _patch_residual(cv2, np, result, box, background, quad_mask, mask_total,
-                    grain=None, collector=None) -> bool:
+                    grain=None, collector=None, share: float = RESIDUAL_SHARE,
+                    grow: int = MASK_GROW) -> bool:
     """اگر بخشی از خودِ چهارضلعیِ متن هنوز جوهر دارد، همان‌جا وصله می‌شود.
 
     حالت‌های واقعی مثل حروفِ سفیدِ درشت روی تصویرِ شلوغ (نویسهٔ صوتی/تیتر) با
@@ -492,7 +496,7 @@ def _patch_residual(cv2, np, result, box, background, quad_mask, mask_total,
         return False
     current = np.linalg.norm(region.astype(np.float32) - background, axis=2)
     residual = (current > INK_DISTANCE) & inside
-    if residual.sum() < 24 or residual.sum() / total < RESIDUAL_SHARE:
+    if residual.sum() < 24 or residual.sum() / total < share:
         return False
     # فقط جای خودِ حروف (به‌اضافهٔ کمی حاشیه) عوض می‌شود، نه کلِ چهارضلعی: پر
     # کردنِ کلِ ناحیه با یک رنگ، روی عکس/نقاشی مثل «یک تکه بک‌گراند چسبانده‌شده»
@@ -517,7 +521,7 @@ def _patch_residual(cv2, np, result, box, background, quad_mask, mask_total,
             continue
         keep |= labels == index
     target = cv2.dilate(keep.astype(np.uint8),
-                        np.ones((MASK_GROW * 2 + 1,) * 2, np.uint8)) != 0
+                        np.ones((grow * 2 + 1,) * 2, np.uint8)) != 0
     allowed = cv2.dilate(inside.astype(np.uint8),
                          np.ones((RESIDUAL_ALLOW, RESIDUAL_ALLOW), np.uint8)) != 0
     target &= allowed
@@ -695,6 +699,30 @@ def _sweep_bubbles(cv2, np, result, boxes, selected, untouched, mask_total) -> i
     return repaired
 
 
+def _force_clear_mask(cv2, np, result, box, background, quad_mask):
+    """ماسک «پاک‌سازی مجدد» برای یک خط، یا None اگر دیگر جوهری در چهارضلعی نمانده.
+
+    روی پس‌زمینهٔ شلوغ (حروف سفیدِ دورخط‌دار روی عکس) پاک‌کردنِ تکه‌به‌تکه تکه‌های حرف
+    و هالهٔ سفید را باقی می‌گذارد. این‌جا کلِ چهارضلعی (به‌اضافهٔ حاشیهٔ ``FORCE_GROW``،
+    چون کادر OCR تنگ است و دورخط کمی بیرون می‌زند) برای پرشدن از بافتِ اطراف برداشته
+    می‌شود. پر کردن برای همهٔ خط‌های انتخاب‌شده یک‌جا انجام می‌شود تا هر خط از خطِ
+    همسایه‌اش، که هنوز متن دارد، رنگ نگیرد.
+    """
+    x0, y0, x1, y1 = box
+    inside = quad_mask[y0:y1, x0:x1] != 0
+    total = int(inside.sum())
+    if total < 1:
+        return None
+    current = np.linalg.norm(result[y0:y1, x0:x1].astype(np.float32) - background, axis=2)
+    left = (current > INK_DISTANCE * 0.6) & inside
+    if left.sum() < 6 or left.sum() / total < 0.003:
+        return None
+    grow = np.ones((FORCE_GROW * 2 + 1,) * 2, np.uint8)
+    mask = np.zeros(result.shape[:2], bool)
+    mask[y0:y1, x0:x1] = cv2.dilate(inside.astype(np.uint8), grow) != 0
+    return mask
+
+
 def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
                 only: set[int] | None = None, force: bool = False,
                 extra: set[int] | None = None,
@@ -781,6 +809,23 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
                   force=force, quad_mask=quad_only != 0, grain=page_grain,
                   collector=hard_masks)
         report(0.08 + 0.47 * (index + 1) / len(boxes), "clean_classical")
+
+    if force:
+        union = np.zeros((height, width), bool)
+        for box, vertices in zip(boxes, quads):
+            quad_only = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillPoly(quad_only, [vertices], 255)
+            background = _background(np, cv2, image, box, quad_only)
+            if background is None:
+                continue
+            grown = _force_clear_mask(cv2, np, result, box, background, quad_only != 0)
+            if grown is not None:
+                union |= grown
+        # ناحیه‌های انتخاب‌نشده یا ترجمه‌نشده هرگز لمس نمی‌شوند.
+        union &= untouched == 0
+        if union.any():
+            if _context_fill(cv2, np, result, union, CONTEXT_PAD, page_grain, 0x1B873593, hard_masks):
+                mask_total[union] = 255
 
     # جایی که الگوریتم رنگی نمی‌توانست پس‌زمینه را بسازد (نقاشی/عکس)، اگر مدل
     # هوشمند نصب باشد همان ناحیه با آن بازسازی می‌شود؛ وگرنه نتیجهٔ فعلی می‌ماند.
