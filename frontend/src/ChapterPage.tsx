@@ -144,6 +144,7 @@ export function ChapterPage({jobId, label, index, version}: {
       ) : (
         <TextLayoutEditor
           tall
+          floating
           ghost
           imageUrl={`/api/jobs/${jobId}/display/render?width=1400&v=${renderVer}`}
           imageAlt={`خروجی صفحهٔ ${index}؛ روی هر متن کلیک کنید`}

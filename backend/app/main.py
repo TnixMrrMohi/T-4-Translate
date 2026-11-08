@@ -871,14 +871,22 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
         base = None
         line_grow: dict[int, int] = {}
         line_shift: dict[int, tuple[int, int]] = {}
+        block_list = saved_translation_blocks(job_id, source["lines"], translation)
+        # متن بیرون از بالن همیشه ۱۲ پیکسل ناحیهٔ بزرگ‌تر و یک دور پاک‌سازی دوباره می‌گیرد: نقطه و
+        # تکه‌های حرف روی پس‌زمینه بیرون از کادر OCR می‌مانند. عدد کاربر روی همین مبنا اضافه می‌شود.
+        outside_lines: set[int] = set()
+        for item in block_list:
+            if item.get("kind") == "outside":
+                for line in item["lines"]:
+                    outside_lines.add(line)
+                    line_grow[line] = cleaning.OUTSIDE_GROW
         if areas is not None:
-            block_list = saved_translation_blocks(job_id, source["lines"], translation)
             only = {line for item in block_list if item["number"] in areas for line in item["lines"]}
             for item in block_list:
                 value = max(-30, min(80, int(body.grow.get(item["number"], 0))))
                 if item["number"] in areas and value:
                     for line in item["lines"]:
-                        line_grow[line] = value
+                        line_grow[line] = line_grow.get(line, 0) + value
                 moved = body.shift.get(item["number"])
                 if item["number"] in areas and moved and len(moved) == 2 and any(moved):
                     pair = (max(-400, min(400, int(moved[0]))), max(-400, min(400, int(moved[1]))))
@@ -894,12 +902,13 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
                     clean, mask = await run_native_safely(
                         partial(cleaning.clean_image, workspace / "source.img", source["lines"],
                                 line_translations, base=base, only=only, force=base is not None, grow=line_grow, shift=line_shift,
+                                repeat=outside_lines,
                                 extra=set(translation.get("cleanLines") or []), on_progress=report))
                 else:
                     clean,mask=await execution.run('clean',{
                         'path':str(workspace/'source.img'),'lines':source['lines'],
                         'translations':line_translations,'base':str(base) if base else None,
-                        'only':sorted(only) if only is not None else None,'force':base is not None,'grow':line_grow,'shift':{k:list(v) for k,v in line_shift.items()},
+                        'only':sorted(only) if only is not None else None,'force':base is not None,'grow':line_grow,'repeat':sorted(outside_lines),'shift':{k:list(v) for k,v in line_shift.items()},
                         'extra':translation.get('cleanLines') or []},workspace,f'{job_id}:clean')
                 progress.check_cancelled(f'{job_id}:clean')
             except cleaning.CleaningError as exc:

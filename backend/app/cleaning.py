@@ -36,6 +36,7 @@ SOFT_DISTANCE = 4.0    # پیکسل‌هایی که «کاملاً هم‌رنگ
 MASK_GROW = 3          # بزرگ‌کردن ماسک هر حرف برای گرفتن لبهٔ نرم/ضدپیکسل
 GRAIN_LIMIT = 9.0      # سقف دانهٔ اضافه‌شده به وصله تا نقطه‌نقطه نشود
 RESIDUAL_SHARE = 0.02  # اگر این سهم از چهارضلعی هنوز «جوهر» ماند، محلی وصله می‌شود
+OUTSIDE_GROW = 12       # ناحیهٔ اضافهٔ همیشگیِ پاک‌سازیِ متن بیرون از بالن (پیکسل)
 STRICT_RING = 70       # فاصلهٔ رنگ از حلقهٔ دور کادر که باقی‌ماندهٔ حرف/هاله حساب می‌شود
 STRICT_CONTRAST = 45   # تفاوت (نسبت به فیلتر میانه) که باقی‌ماندهٔ حرف حساب می‌شود
 SOFT_FORCE_GROW = 4    # همان، ولی در پاک‌سازی اول (نزدیک خط دور بالن را نباید برداشت)
@@ -749,7 +750,7 @@ def _force_clear_mask(cv2, np, result, box, background, quad_mask, grow_px: int 
 def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
                 only: set[int] | None = None, force: bool = False,
                 extra: set[int] | None = None, grow: dict[int, int] | None = None,
-                shift: dict[int, tuple[int, int]] | None = None,
+                shift: dict[int, tuple[int, int]] | None = None, repeat: set[int] | None = None,
                 high_quality: bool = True, on_progress=None) -> tuple[Image.Image, Image.Image]:
     """متن نواحی ترجمه‌شده را پاک می‌کند و تصویر و ماسک را برمی‌گرداند.
 
@@ -759,6 +760,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
     * ``force``: حالت تهاجمی برای همان نواحی انتخابی (فقط داخل چهارضلعیِ خودِ خط).
     * ``grow``: تغییر اندازهٔ ناحیهٔ پاک‌سازی هر خط (شمارهٔ ۱-پایه ← پیکسل)؛ مثبت بزرگ‌تر،
       منفی کوچک‌تر. بدون آن اندازهٔ خودکار می‌ماند.
+    * ``repeat``: خط‌هایی که یک دور پاک‌سازی تهاجمی دیگر هم می‌گیرند (متن بیرون از بالن).
     * ``shift``: جابه‌جایی ناحیهٔ پاک‌سازی هر خط (شمارهٔ ۱-پایه ← (dx, dy) پیکسل).
     * ``extra``: خط‌هایی که باید پاک شوند ولی ترجمه‌ای ندارند (متن تبلیغاتیِ حذف‌شده).
     """
@@ -786,6 +788,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
     boxes: list[tuple[int, int, int, int]] = []
     quads: list = []
     box_grow: list[int] = []
+    box_lines: list[int] = []
     for number, line in enumerate(lines, 1):
         quad = line.get('quad')
         if not isinstance(quad, list) or len(quad) != 4:
@@ -828,6 +831,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
                       int(points[:, 0].max()) + 1, int(points[:, 1].max()) + 1))
         quads.append(quad_vertices)
         box_grow.append(extra_grow)
+        box_lines.append(number)
     if not boxes:
         raise CleaningError('هیچ ناحیهٔ ترجمه‌شده‌ای برای پاک‌سازی وجود ندارد.')
 
@@ -868,6 +872,27 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
         if union.any():
             if _context_fill(cv2, np, result, union, CONTEXT_PAD, page_grain, 0x1B873593, hard_masks):
                 mask_total[union] = 255
+
+    if repeat:
+        # دور دوم: روی همان نتیجه، تهاجمی و با حاشیهٔ بزرگ‌تر (متن بیرون از بالن).
+        again = np.zeros((height, width), bool)
+        for box, vertices, extra_grow, number in zip(boxes, quads, box_grow, box_lines):
+            if number not in repeat:
+                continue
+            quad_only = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillPoly(quad_only, [vertices], 255)
+            background = _background(np, cv2, image, box, quad_only)
+            if background is None:
+                continue
+            _fill_ink(cv2, np, image, result, box, background, mask_total, force=True,
+                      quad_mask=quad_only != 0, grain=page_grain, collector=hard_masks)
+            grown = _force_clear_mask(cv2, np, result, box, background, quad_only != 0,
+                                      max(0, FORCE_GROW + extra_grow))
+            if grown is not None:
+                again |= grown
+        again &= untouched == 0
+        if again.any() and _context_fill(cv2, np, result, again, CONTEXT_PAD, page_grain, 0x2F4A7C15, hard_masks):
+            mask_total[again] = 255
 
     # جایی که الگوریتم رنگی نمی‌توانست پس‌زمینه را بسازد (نقاشی/عکس)، اگر مدل
     # هوشمند نصب باشد همان ناحیه با آن بازسازی می‌شود؛ وگرنه نتیجهٔ فعلی می‌ماند.

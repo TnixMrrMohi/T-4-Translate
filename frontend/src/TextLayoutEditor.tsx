@@ -56,6 +56,8 @@ type Props = {
   imageAlt?: string;
   /** متنِ پیش‌نمایش نامرئی می‌ماند (تصویر خودش خروجی نهایی است) و فقط کادرها دیده می‌شوند. */
   ghost?: boolean;
+  /** ابزارها به‌جای نوار بالای تصویر، در یک پنجرهٔ شناور کنار متنِ انتخاب‌شده باز می‌شوند. */
+  floating?: boolean;
 };
 
 const MIN_SIZE = 6;
@@ -76,7 +78,7 @@ function fontFamily(fontId: string | null | undefined) {
  */
 export function TextLayoutEditor({
   imageUrl, width, height, blocks, fonts, value, onCommit, disabled = false, tall = false,
-  onSelect, toolbarExtra, stageExtra, imageAlt, ghost = false,
+  onSelect, toolbarExtra, stageExtra, imageAlt, ghost = false, floating = false,
 }: Props) {
   const [draft, setDraft] = useState<TextOverrides>(value);
   const [selected, setSelected] = useState<number | null>(null);
@@ -271,9 +273,10 @@ export function TextLayoutEditor({
 
   const stageHeight = Math.max(120, Math.round((height || 0) * scale));
 
-  return (
-    <div className={`layout-editor${tall ? ' is-tall' : ''}`}>
+  const controls = (
+    <>
       <div className="layout-toolbar">
+        {!floating && (
         <label className="layout-field">
           <span>متن</span>
           <select
@@ -290,6 +293,7 @@ export function TextLayoutEditor({
             ))}
           </select>
         </label>
+        )}
         <label className="layout-field">
           <span>فونت</span>
           <select
@@ -382,6 +386,17 @@ export function TextLayoutEditor({
         </div>
       )}
       {toolbarExtra?.(selectedBlock)}
+    </>
+  );
+
+  const popoverRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (floating && selected !== null) popoverRef.current?.scrollIntoView?.({block: 'nearest'});
+  }, [floating, selected]);
+
+  return (
+    <div className={`layout-editor${tall ? ' is-tall' : ''}`}>
+      {!floating && controls}
 
       <p className="layout-hint">
         جابه‌جایی: کشیدن متن • اندازه: کشیدن گوشه‌ها • چرخش: کشیدن دستهٔ بالای کادر • جابه‌جایی دقیق با کلیدهای جهت
@@ -488,6 +503,33 @@ export function TextLayoutEditor({
           );
         })}
         {stageExtra?.(selectedBlock, scale)}
+        {floating && selectedBlock && (() => {
+          const state = effective(selectedBlock);
+          const ratio = state.size / Math.max(1, selectedBlock.size);
+          const boxHeight = Math.max(4, selectedBlock.box[3] - selectedBlock.box[1]) * ratio;
+          const stageWidth = Math.max(0, width * scale);
+          const popoverWidth = Math.min(360, Math.max(240, stageWidth - 8));
+          const left = Math.max(4, Math.min(stageWidth - popoverWidth - 4, state.center[0] * scale - popoverWidth / 2));
+          const top = (state.center[1] + boxHeight / 2) * scale + 14;
+          return (
+            <div
+              className="layout-popover"
+              ref={popoverRef}
+              role="dialog"
+              aria-label={`ویرایش متن ${selectedBlock.number}`}
+              style={{left: `${left}px`, top: `${top}px`, width: `${popoverWidth}px`}}
+              onPointerDown={event => event.stopPropagation()}
+              onKeyDown={event => event.stopPropagation()}
+            >
+              <div className="layout-popover-head">
+                <b>متن {selectedBlock.number}</b>
+                <span>{selectedBlock.kindLabel}</span>
+                <button type="button" className="ghost small" aria-label="بستن" onClick={() => setSelected(null)}>✕</button>
+              </div>
+              {controls}
+            </div>
+          );
+        })()}
       </div>
       <p className="layout-note" aria-live="polite">
         {selectedBlock
