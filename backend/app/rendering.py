@@ -28,6 +28,7 @@ FONT_TO_SOURCE_RATIO = 1.0
 # اندازهٔ هدفِ قلم نسبت به بالن؛ ترجمه‌های بلند با _fit کوچک‌تر می‌شوند و می‌شکنند.
 BUBBLE_FONT_HEIGHT_RATIO = 0.22
 BUBBLE_FONT_WIDTH_RATIO = 0.12
+BUBBLE_SIZE_REDUCTION = 5  # کاهش اندازهٔ خودکار متن داخل بالن (پیکسل)
 MIN_FONT_SIZE = 8
 LINE_HEIGHT_RATIO = 1.45
 PADDING_RATIO = 0.08
@@ -191,6 +192,12 @@ def shape_text(text: str) -> str:
 
 def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> list[str]:
     """شکستن متن منطقی به خطوط، پیش از shaping؛ هر خط بعداً مستقل shape می‌شود."""
+    if "\n" in text:
+        # manual line breaks: each paragraph wraps separately
+        manual: list[str] = []
+        for paragraph in text.split("\n"):
+            manual.extend(wrap_text(paragraph, font, max_width))
+        return manual
     words = text.split()
     if not words:
         return []
@@ -441,7 +448,8 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
         if not isinstance(block, dict):
             continue
         number = block.get("number")
-        text = translations.get(str(number)) or translations.get(number) or ""
+        override = layout.get(str(number)) or {}
+        text = override.get("text") or translations.get(str(number)) or translations.get(number) or ""
         text = str(text).strip()
         bbox = block.get("bbox") or []
         if not text or len(bbox) != 4:
@@ -477,7 +485,6 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
             fill = float(block.get("fill") or 1.0)
         except (TypeError, ValueError):
             fill = 1.0
-        override = layout.get(str(number)) or {}
         path = fonts.get(kind)
         chosen_font = override.get("font")
         if isinstance(chosen_font, str) and chosen_font in font_files:
@@ -515,6 +522,13 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
         else:
             font, wrapped = _fit(text, box_width - 2 * padding,
                                  box_height - 2 * padding, path, cap)
+            if font and kind not in ("outside", "promo"):
+                # داخل بالن‌ها پیش‌فرض ۵ واحد کوچک‌تر نوشته می‌شود (اندازهٔ دستی دست‌نخورده می‌ماند)؛
+                # برای قلم‌های ریز حداکثر ۲۰٪، تا متن ناخوانا نشود.
+                smaller = int(font.size) - min(BUBBLE_SIZE_REDUCTION, int(round(font.size * 0.2)))
+                if MIN_FONT_SIZE <= smaller < int(font.size):
+                    font = _font(smaller, path)
+                    wrapped = wrap_text(text, font, max(8.0, box_width - 2 * padding))
         if not font or not wrapped:
             continue
         center_x = (left_b + right_b) / 2

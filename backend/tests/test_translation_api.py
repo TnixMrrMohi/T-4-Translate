@@ -7,7 +7,7 @@ from app import ocr
 
 def test_translation_flow_and_stale_revision(tmp_path, monkeypatch):
     monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
-    lines = [{'text': 'First', 'quad': [], 'confidence': .8}, {'text': 'Second', 'quad': [], 'confidence': .7}]
+    lines = [{'text': 'First', 'quad': [], 'confidence': .8}, {'text': 'Second', 'quad': [], 'confidence': .9}]
     monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: lines)
     b = BytesIO(); Image.new('RGB', (20, 20)).save(b, format='PNG')
     with TestClient(app) as client:

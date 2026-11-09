@@ -1,7 +1,7 @@
 import {describe, expect, it, vi, beforeEach} from 'vitest';
 import {act, fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import {advanceProgress, App, focusAreaView, PROGRESS_CEILING} from './App';
+import {advanceProgress, App, CleanCanvas, focusAreaView, PROGRESS_CEILING} from './App';
 
 type Handler = (init?: RequestInit) => Response | undefined;
 
@@ -600,8 +600,10 @@ describe('تشخیص نوع بالن‌ها در مرحلهٔ ترجمه', () =>
 
   it('بخش «نوع بالن‌ها» از کارت مرحله ۲ حذف شده و فقط پیش‌نمایش کنار می‌ماند', async () => {
     await openStep();
-    // تصویر تشخیص بالن‌ها در ستون پیش‌نمایش‌ها می‌ماند…
-    expect(await screen.findByAltText('پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام')).toBeInTheDocument();
+    // فقط یک پیش‌نمایش (OCR) در ستون کنار می‌ماند؛ پیش‌نمایش دومِ بالن‌ها حذف شده…
+    expect(await screen.findByAltText('پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده')).toBeInTheDocument();
+    expect(screen.queryByAltText('پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('.sidebar-previews .preview-card')).toHaveLength(1);
     // …ولی هیچ متنی دربارهٔ نوع/دسته/فونت بالن در کارت نیست.
     const card = within(document.querySelector('.workspace') as HTMLElement);
     expect(card.queryByRole('heading', {name: 'نوع بالن‌ها'})).not.toBeInTheDocument();
@@ -1267,10 +1269,10 @@ describe('پیش‌نمایش‌های مرحلهٔ ۲', () => {
       ).not.toBe(before));
     }
 
-    const missing = await screen.findByText('پیش‌نمایش آماده نشد؛ برای ساخت دوباره کلیک کنید');
+    const missing = await screen.findByText('پیش‌نمایش آماده نشد');
     expect(missing).toBeInTheDocument();
-    // کلیک روی همان قاب، نسخهٔ کامل را باز می‌کند.
-    await user.click(thumb);
+    // دکمهٔ «بزرگ‌نمایی»، نسخهٔ کامل را باز می‌کند.
+    await user.click(screen.getByRole('button', {name: /بزرگ‌نمایی/}));
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
   });
 
@@ -1284,10 +1286,26 @@ describe('پیش‌نمایش‌های مرحلهٔ ۲', () => {
     const {container} = render(<App />);
     await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
 
-    await user.click(container.querySelector('.preview-thumb') as HTMLElement);
+    await user.click(screen.getByRole('button', {name: /بزرگ‌نمایی/}));
     const dialog = await screen.findByRole('dialog');
     const image = within(dialog).getAllByRole('img')[0];
     expect(image.getAttribute('src')).toContain('/ocr-preview');
+  });
+
+  it('پیش‌نمایش با عرض کامل و اسکرول عمودی خودش نمایش داده می‌شود، نه فشرده در قاب ثابت', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 690, height: 5880, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+    });
+    const {container} = render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+    const box = container.querySelector('.preview-thumb.is-scroll') as HTMLElement;
+    expect(box).toBeTruthy();
+    const image = box.querySelector('img') as HTMLImageElement;
+    // نسخهٔ نمایشی با عرض کافی، نه بندانگشتیِ کوچک.
+    expect(image.getAttribute('src')).toContain('/display/ocr?width=');
+    expect(container.querySelectorAll('.sidebar-previews .preview-card')).toHaveLength(1);
   });
 });
 
@@ -1462,31 +1480,33 @@ describe('ناحیه‌های پاک‌سازی در مرحلهٔ ۳', () => {
     render(<App />);
     await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'});
     await user.click(screen.getByRole('button', {name: 'اجرای پاک‌سازی'}));
-    await screen.findByRole('heading', {name: 'ناحیه‌های پاک‌سازی'});
+    await screen.findByTestId('clean-canvas');
     return {api, user};
   }
 
-  it('هر ناحیهٔ پاک‌شده با شماره و متنش فهرست می‌شود و ناحیهٔ بی‌ترجمه نمی‌آید', async () => {
+  it('تصویر پاک‌شده جای فهرست متنی را می‌گیرد و هر ناحیهٔ ترجمه‌شده یک نقطهٔ کلیک دارد', async () => {
     const {api} = await openCleaning();
     expect(api.calls.some(call => call.url.includes('/clean-areas'))).toBe(true);
 
-    const list = screen.getByRole('group', {name: 'ناحیه‌های پاک‌سازی'});
-    expect(within(list).getAllByRole('checkbox')).toHaveLength(2);
-    expect(within(list).getByText('گمشو!')).toBeInTheDocument();
-    expect(within(list).getByText('به‌زودی می‌بینمت.')).toBeInTheDocument();
-    expect(within(list).getByText('فریاد')).toBeInTheDocument();
-    expect(within(list).queryByRole('checkbox', {name: 'ناحیهٔ ۳'})).not.toBeInTheDocument();
+    const canvas = screen.getByTestId('clean-canvas');
+    expect(within(canvas).getByRole('img').getAttribute('src')).toContain('/display/clean?width=');
+    expect(within(canvas).getAllByRole('button')).toHaveLength(2);
+    expect(within(canvas).getByRole('button', {name: 'ناحیهٔ ۱'})).toBeInTheDocument();
+    // ناحیهٔ بی‌ترجمه نقطهٔ کلیک ندارد.
+    expect(within(canvas).queryByRole('button', {name: 'ناحیهٔ ۳'})).not.toBeInTheDocument();
+    // فهرست چک‌باکسی و پیش‌نمایش‌های ستون کنار دیگر نیستند.
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('.sidebar-previews .preview-card')).toHaveLength(0);
   });
 
-  it('انتخاب یک ناحیه و «پاک‌سازی مجدد» فقط همان ناحیه را به سرور می‌فرستد', async () => {
+  it('کلیک روی یک ناحیه پنجرهٔ «پاک‌سازی مجدد این ناحیه» باز می‌کند و فقط همان را می‌فرستد', async () => {
     const {api, user} = await openCleaning();
-    const list = screen.getByRole('group', {name: 'ناحیه‌های پاک‌سازی'});
-    const row = within(list).getByRole('checkbox', {name: 'ناحیهٔ ۲'});
-    await user.click(row);
-    expect(row).toBeChecked();
+    expect(screen.queryByRole('dialog', {name: 'ناحیهٔ ۲'})).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: 'ناحیهٔ ۲'}));
 
-    const button = screen.getByRole('button', {name: 'پاک‌سازی مجدد ناحیه‌های انتخاب‌شده'});
-    await user.click(button);
+    const popover = await screen.findByRole('dialog', {name: 'ناحیهٔ ۲'});
+    expect(within(popover).getByText('به‌زودی می‌بینمت.')).toBeInTheDocument();
+    await user.click(within(popover).getByRole('button', {name: 'پاک‌سازی مجدد این ناحیه'}));
 
     await waitFor(() => {
       const post = api.calls.filter(call => call.method === 'POST' && call.url.endsWith('/clean') && call.body);
@@ -1496,45 +1516,25 @@ describe('ناحیه‌های پاک‌سازی در مرحلهٔ ۳', () => {
     expect(await screen.findByText('پاک‌سازی 1 ناحیهٔ انتخاب‌شده دوباره انجام شد.')).toBeInTheDocument();
   });
 
-  it('«انتخاب همه» همهٔ ناحیه‌ها را انتخاب و دوباره خالی می‌کند', async () => {
-    const {user} = await openCleaning();
-    const list = screen.getByRole('group', {name: 'ناحیه‌های پاک‌سازی'});
-    await user.click(screen.getByRole('button', {name: 'انتخاب همه'}));
-    within(list).getAllByRole('checkbox').forEach(box => expect(box).toBeChecked());
+  it('«پاک‌سازی مجدد کل صفحه» روی همان تصویر پاک‌شده اجرا می‌شود، نه از اول', async () => {
+    const {api, user} = await openCleaning();
+    // دکمهٔ «اجرای دوباره» که از اول جایگزین می‌کرد دیگر نیست.
+    expect(screen.queryByRole('button', {name: 'اجرای دوبارهٔ پاک‌سازی'})).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: 'پاک‌سازی مجدد کل صفحه'}));
 
-    await user.click(screen.getByRole('button', {name: 'حذف انتخاب‌ها'}));
-    within(list).getAllByRole('checkbox').forEach(box => expect(box).not.toBeChecked());
-    expect(screen.getByRole('button', {name: 'پاک‌سازی مجدد ناحیه‌های انتخاب‌شده'})).toBeDisabled();
+    await waitFor(() => {
+      const post = api.calls.filter(call => call.method === 'POST' && call.url.endsWith('/clean') && call.body);
+      expect(post).toHaveLength(1);
+      expect(post[0].body).toEqual({areas: [1, 2]});
+    });
   });
 
-  it('بدون انتخاب ناحیه، دکمهٔ پاک‌سازی مجدد غیرفعال است', async () => {
-    await openCleaning();
-    expect(screen.getByRole('button', {name: 'پاک‌سازی مجدد ناحیه‌های انتخاب‌شده'})).toBeDisabled();
-  });
-
-  it('کلیک روی ناحیه، پیش‌نمایش را باز و بلافاصله روی همان ناحیه زوم می‌کند', async () => {
+  it('کلیک روی جای دیگرِ تصویر پنجرهٔ ناحیه را می‌بندد', async () => {
     const {user} = await openCleaning();
-
-    await user.click(screen.getByRole('button', {name: 'نمایش ناحیهٔ ۲ روی پیش‌نمایش'}));
-
-    const dialog = await screen.findByRole('dialog', {name: 'ناحیه‌های پاک‌سازی با شماره'});
-    // برچسب روشن می‌گوید کدام ناحیه دیده می‌شود.
-    expect(within(dialog).getByText('ناحیهٔ ۲')).toBeInTheDocument();
-    // از حالت «تناسب صفحه» بیرون آمده و زوم عددی دارد.
-    const stage = dialog.querySelector('.modal-stage');
-    expect(stage).not.toBeNull();
-    expect(stage).not.toHaveClass('fit');
-    expect(dialog.querySelector('.modal-zoom')?.textContent).toMatch(/٪$/);
-    // خود ردیف هم نشانه‌گذاری می‌شود.
-    expect(screen.getByRole('button', {name: 'نمایش ناحیهٔ ۲ روی پیش‌نمایش'}).closest('.area-row'))
-      .toHaveClass('is-focused');
-  });
-
-  it('انتخاب با چک‌باکس همچنان فقط انتخاب است و پیش‌نمایش را باز نمی‌کند', async () => {
-    const {user} = await openCleaning();
-    await user.click(screen.getByRole('checkbox', {name: 'ناحیهٔ ۱'}));
-    expect(screen.getByRole('checkbox', {name: 'ناحیهٔ ۱'})).toBeChecked();
-    expect(screen.queryByRole('dialog', {name: 'ناحیه‌های پاک‌سازی با شماره'})).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: 'ناحیهٔ ۱'}));
+    expect(await screen.findByRole('dialog', {name: 'ناحیهٔ ۱'})).toBeInTheDocument();
+    await user.click(within(screen.getByRole('dialog', {name: 'ناحیهٔ ۱'})).getByRole('button', {name: 'بستن'}));
+    expect(screen.queryByRole('dialog', {name: 'ناحیهٔ ۱'})).not.toBeInTheDocument();
   });
 });
 
@@ -1950,5 +1950,28 @@ describe('زمان باقی‌مانده و لغو پردازش تطبیقی', (
     expect(screen.getByText(/زمان تقریبی باقی‌مانده:/)).toHaveTextContent('۱۲');
     hold.resolve();
     await screen.findByRole('heading',{name:'مرحله ۴: درج ترجمه روی تصویر'});
+  });
+});
+
+describe('اندازهٔ ناحیهٔ پاک‌سازی', () => {
+  it('دکمه‌های +/− اندازه را عوض می‌کنند و مقدار همراه درخواست ناحیه می‌رود', async () => {
+    const calls: Array<[number[], unknown]> = [];
+    const user = userEvent.setup();
+    render(<CleanCanvas jobId="j" version={1} pageWidth={800} pageHeight={600} disabled={false}
+      areas={[{number: 2, lines: [2], bbox: [100, 100, 300, 200], kind: 'speech', kindLabel: 'صحبت عادی',
+        text: 'سلام', translated: true}]}
+      onReclean={(numbers, adjust) => calls.push([numbers, adjust])} />);
+    await user.click(screen.getByRole('button', {name: 'ناحیهٔ ۲'}));
+    const group = screen.getByRole('group', {name: 'اندازهٔ ناحیهٔ پاک‌سازی'});
+    await user.click(within(group).getByRole('button', {name: 'بزرگ‌تر'}));
+    await user.click(within(group).getByRole('button', {name: 'بزرگ‌تر'}));
+    await user.click(within(group).getByRole('button', {name: 'کوچک‌تر'}));
+    expect(within(group).getByRole('status')).toHaveTextContent('۴');
+    const move = screen.getByRole('group', {name: 'جای ناحیهٔ پاک‌سازی'});
+    await user.click(within(move).getByRole('button', {name: 'پایین'}));
+    await user.click(within(move).getByRole('button', {name: 'راست'}));
+    await user.click(within(move).getByRole('button', {name: 'راست'}));
+    await user.click(screen.getByRole('button', {name: 'پاک‌سازی مجدد این ناحیه'}));
+    expect(calls).toEqual([[[2], {grow: {2: 4}, shift: {2: [8, 4]}}]]);
   });
 });

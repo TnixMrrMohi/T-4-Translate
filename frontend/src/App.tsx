@@ -4,6 +4,7 @@ import {CompareSlider} from './CompareSlider';
 import {TextLayoutEditor} from './TextLayoutEditor';
 import {UpdatePanel} from './UpdatePanel';
 import SystemPanel from './SystemPanel';
+import {BatchPanel} from './BatchPanel';
 import type {LayoutDoc, TextOverrides} from './TextLayoutEditor';
 import './style.css';
 
@@ -167,6 +168,8 @@ type PreviewProps = {
   pageHeight?: number;
   /** درخواست «برو سراغ این ناحیه»؛ با هر کلیک nonce عوض می‌شود. */
   focusRequest?: AreaFocus | null;
+  /** تصویر با عرض کامل کارت و پیمایش عمودی خودش نمایش داده می‌شود (نه فشرده در یک قاب ثابت). */
+  scroll?: boolean;
 };
 
 /** درخواست تمرکز روی یک ناحیهٔ صفحه (مثلاً یک ناحیهٔ پاک‌سازی). */
@@ -376,8 +379,179 @@ function Overlay({label, onBackdropClick, className = 'modal-backdrop', children
 }
 
 /** بندانگشتی ثابت‌اندازه؛ تصویر کامل (حتی ۱۵۰۰۰ پیکسل) فقط در مودال نمایش داده می‌شود. */
+/** تصویر پاک‌شدهٔ مرحلهٔ ۳ با ناحیه‌های قابل‌کلیک؛ کلیک روی هر ناحیه یک پنجرهٔ کوچک با «پاک‌سازی مجدد» باز می‌کند. */
+/** تغییر اندازه/جای ناحیهٔ پاک‌سازی (پیکسلِ تصویر اصلی). */
+export type AreaAdjust = {grow?: Record<number, number>; shift?: Record<number, [number, number]>};
+
+export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disabled, onReclean}: {
+  jobId: string; version: number; pageWidth: number; pageHeight: number;
+  areas: CleanArea[]; disabled: boolean; onReclean: (numbers: number[], adjust?: AreaAdjust) => void;
+}) {
+  const [picked, setPicked] = useState<number | null>(null);
+  // تغییر اندازهٔ ناحیهٔ پاک‌سازی هر بالن (پیکسل؛ منفی = کوچک‌تر)
+  const [grows, setGrows] = useState<Record<number, number>>({});
+  const growOf = (number: number) => grows[number] ?? 0;
+  // جابه‌جایی ناحیه (پیکسلِ تصویر)؛ با کشیدن کادر یا دکمه‌های جهت عوض می‌شود.
+  const [moves, setMoves] = useState<Record<number, [number, number]>>({});
+  const moveOf = (number: number): [number, number] => moves[number] ?? [0, 0];
+  const nudge = (number: number, dx: number, dy: number) =>
+    setMoves(old => {
+      const [x, y] = old[number] ?? [0, 0];
+      return {...old, [number]: [Math.max(-400, Math.min(400, x + dx)), Math.max(-400, Math.min(400, y + dy))]};
+    });
+  const pageRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  // پنجرهٔ ناحیه (با ردیف‌های اندازه و جابه‌جایی بلند شده) نباید زیر لبهٔ کادر برش بخورد.
+  useEffect(() => {
+    if (picked !== null) popoverRef.current?.scrollIntoView?.({block: 'nearest'});
+  }, [picked]);
+  const drag = useRef<{number: number; x: number; y: number; moved: boolean} | null>(null);
+  const bump = (number: number, delta: number) =>
+    setGrows(old => ({...old, [number]: Math.max(-30, Math.min(80, (old[number] ?? 0) + delta))}));
+  useEffect(() => {setPicked(null);}, [version]);
+  const boxOf = (area: CleanArea) => {
+    const box = area.area && area.area.length === 4 ? area.area : area.bbox;
+    if (!box || box.length !== 4) return null;
+    // کادر نمایشی همراه با تغییر اندازه جابه‌جا می‌شود تا اثرش پیش از اجرا دیده شود.
+    const g = growOf(area.number);
+    const [mx, my] = moveOf(area.number);
+    if (!g && !mx && !my) return box;
+    const x0 = Math.max(0, box[0] + mx - g), y0 = Math.max(0, box[1] + my - g);
+    const x1 = Math.min(pageWidth, box[2] + mx + g), y1 = Math.min(pageHeight, box[3] + my + g);
+    return x1 - x0 > 4 && y1 - y0 > 4 ? [x0, y0, x1, y1] : box;
+  };
+  const active = areas.find(area => area.number === picked) ?? null;
+  const activeBox = active ? boxOf(active) : null;
+  const percent = (value: number, total: number) => `${Math.max(0, Math.min(100, (value / Math.max(1, total)) * 100))}%`;
+  // پنجره زیر ناحیه باز می‌شود؛ اگر ناحیه پایین صفحه است، بالای آن.
+  const below = activeBox ? activeBox[3] / Math.max(1, pageHeight) < 0.7 : true;
+  const num = (value: number) => value.toLocaleString('fa-IR');
+  return (
+    <div className="clean-canvas" data-testid="clean-canvas">
+      <div className="clean-canvas-scroll">
+        <div
+          className="clean-canvas-page"
+          ref={pageRef}
+          style={{aspectRatio: `${Math.max(1, pageWidth)} / ${Math.max(1, pageHeight)}`}}
+          onClick={() => setPicked(null)}
+        >
+          <img src={`/api/jobs/${jobId}/display/clean?width=1400&v=${version}`} alt="تصویر پاک‌سازی‌شده، بدون متن اصلی" />
+          {areas.map(area => {
+            const box = boxOf(area);
+            if (!box) return null;
+            return (
+              <button
+                key={area.number}
+                type="button"
+                className={`clean-hotspot${picked === area.number ? ' is-active' : ''}`}
+                style={{
+                  left: percent(box[0], pageWidth), top: percent(box[1], pageHeight),
+                  width: percent(box[2] - box[0], pageWidth), height: percent(box[3] - box[1], pageHeight),
+                }}
+                aria-label={`ناحیهٔ ${num(area.number)}`}
+                aria-pressed={picked === area.number}
+                title="کلیک: انتخاب ناحیه — کشیدن (روی ناحیهٔ انتخاب‌شده): جابه‌جایی"
+                onPointerDown={event => {
+                  if (picked !== area.number || disabled) return;
+                  drag.current = {number: area.number, x: event.clientX, y: event.clientY, moved: false};
+                  event.currentTarget.setPointerCapture?.(event.pointerId);
+                }}
+                onPointerMove={event => {
+                  const state = drag.current;
+                  const rect = pageRef.current?.getBoundingClientRect();
+                  if (!state || !rect || rect.width <= 0) return;
+                  const scale = pageWidth / rect.width;
+                  const dx = Math.round((event.clientX - state.x) * scale);
+                  const dy = Math.round((event.clientY - state.y) * scale);
+                  if (!state.moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+                  state.moved = true;
+                  state.x = event.clientX; state.y = event.clientY;
+                  nudge(state.number, dx, dy);
+                }}
+                onPointerUp={() => {window.setTimeout(() => {drag.current = null;}, 0);}}
+                onClick={event => {
+                  event.stopPropagation();
+                  if (drag.current?.moved) return;   // کشیدن بود، نه کلیک
+                  setPicked(area.number);
+                }}
+              >
+                <span className="clean-hotspot-tag">{num(area.number)}</span>
+              </button>
+            );
+          })}
+          {active && activeBox && (
+            <div
+              className="clean-popover"
+              ref={popoverRef}
+              role="dialog"
+              aria-label={`ناحیهٔ ${num(active.number)}`}
+              style={{
+                left: `min(${percent(activeBox[0], pageWidth)}, calc(100% - 250px))`,
+                ...(below
+                  ? {top: `calc(${percent(activeBox[3], pageHeight)} + 6px)`}
+                  : {bottom: `calc(100% - ${percent(activeBox[1], pageHeight)} + 6px)`}),
+              }}
+              onClick={event => event.stopPropagation()}
+            >
+              <div className="clean-popover-head">
+                <b>ناحیهٔ {num(active.number)}</b>
+                <span>{active.kindLabel}</span>
+                <button type="button" className="ghost small" aria-label="بستن" onClick={() => setPicked(null)}>✕</button>
+              </div>
+              <p dir="rtl">{active.text}</p>
+              <div className="clean-size" role="group" aria-label="اندازهٔ ناحیهٔ پاک‌سازی">
+                <span>اندازهٔ ناحیه</span>
+                <button type="button" className="ghost small" aria-label="کوچک‌تر" disabled={disabled}
+                  onClick={() => bump(active.number, -4)}>−</button>
+                <output aria-live="polite">{num(growOf(active.number))}</output>
+                <button type="button" className="ghost small" aria-label="بزرگ‌تر" disabled={disabled}
+                  onClick={() => bump(active.number, 4)}>+</button>
+                {(growOf(active.number) !== 0 || moveOf(active.number).some(Boolean)) && (
+                  <button type="button" className="ghost small" disabled={disabled}
+                    onClick={() => {
+                      setGrows(old => ({...old, [active.number]: 0}));
+                      setMoves(old => ({...old, [active.number]: [0, 0]}));
+                    }}>بازنشانی</button>
+                )}
+              </div>
+              <div className="clean-size" role="group" aria-label="جای ناحیهٔ پاک‌سازی">
+                <span>جابه‌جایی</span>
+                <button type="button" className="ghost small" aria-label="بالا" disabled={disabled}
+                  onClick={() => nudge(active.number, 0, -4)}>↑</button>
+                <button type="button" className="ghost small" aria-label="پایین" disabled={disabled}
+                  onClick={() => nudge(active.number, 0, 4)}>↓</button>
+                <button type="button" className="ghost small" aria-label="چپ" disabled={disabled}
+                  onClick={() => nudge(active.number, -4, 0)}>←</button>
+                <button type="button" className="ghost small" aria-label="راست" disabled={disabled}
+                  onClick={() => nudge(active.number, 4, 0)}>→</button>
+                <span className="clean-size-hint">یا کادر را بکشید</span>
+              </div>
+              <button
+                type="button"
+                className="ocr"
+                disabled={disabled}
+                onClick={() => {
+                  const g = growOf(active.number);
+                  const move = moveOf(active.number);
+                  const adjust: AreaAdjust = {};
+                  if (g) adjust.grow = {[active.number]: g};
+                  if (move[0] || move[1]) adjust.shift = {[active.number]: move};
+                  onReclean([active.number], g || move[0] || move[1] ? adjust : undefined);
+                  setPicked(null);
+                }}
+              >
+                پاک‌سازی مجدد این ناحیه
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1,
-                        pageWidth = 0, pageHeight = 0, focusRequest = null}: PreviewProps) {
+                        pageWidth = 0, pageHeight = 0, focusRequest = null, scroll = false}: PreviewProps) {
   const [open, setOpen] = useState(false);
   const [fit, setFit] = useState(true);
   const [zoom, setZoom] = useState(1);
@@ -479,6 +653,8 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   const [thumbFailed, setThumbFailed] = useState(false);
   const retryTimer = useRef<number | null>(null);
   const thumbUrl = `/api/jobs/${jobId}/thumb/${kind}?v=${version}&r=${thumbRetry}`;
+  // نسخهٔ پیمایشی با عرض کافی برای خوانا بودن متن، نه بندانگشتیِ کوچک.
+  const scrollUrl = `/api/jobs/${jobId}/display/${kind}?width=800&v=${version}&r=${thumbRetry}`;
   const fullUrl = `/api/jobs/${jobId}/${
     kind === 'source' ? 'source.img'
       : kind === 'ocr' ? 'ocr-preview'
@@ -521,6 +697,27 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
         style={{'--preview-ratio': PREVIEW_RATIO} as React.CSSProperties}
         data-preview-ratio={PREVIEW_RATIO}
       >
+        {scroll ? (
+          <div className="preview-thumb is-scroll" data-testid="preview-scroll">
+            {thumbFailed ? (
+              <span className="preview-missing" role="img" aria-label={`${alt} — پیش‌نمایش آماده نشد`}>
+                <span className="preview-missing-icon" aria-hidden="true">🖼</span>
+                <span>پیش‌نمایش آماده نشد</span>
+              </span>
+            ) : (
+              <img
+                src={scrollUrl}
+                alt={alt}
+                loading="lazy"
+                onLoad={() => setThumbFailed(false)}
+                onError={() => {
+                  if (thumbRetry < 2) retryThumb();
+                  else setThumbFailed(true);
+                }}
+              />
+            )}
+          </div>
+        ) : (
         <button
           type="button"
           ref={thumbRef}
@@ -548,7 +745,11 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
           )}
           <span className="zoom-hint">{tall ? 'صفحهٔ بلند — بزرگ‌نمایی' : 'بزرگ‌نمایی'}</span>
         </button>
-        <figcaption>{caption}</figcaption>
+        )}
+        <figcaption>
+          {caption}
+          {scroll && <button type="button" ref={thumbRef} className="ghost small" onClick={openModal} aria-label={`بزرگ‌نمایی: ${alt}`}>بزرگ‌نمایی</button>}
+        </figcaption>
       </figure>
 
       {open && (
@@ -1236,8 +1437,8 @@ export function App() {
   }
 
   /** پاک‌سازی مجدد فقط ناحیه‌های انتخاب‌شده (بر پایهٔ تصویر پاک‌شدهٔ فعلی). */
-  async function recleanAreas() {
-    if (!job || busy || areasBusy || loadingData || areaPick.length === 0) return;
+  async function recleanAreas(numbers: number[] = areaPick, adjust?: AreaAdjust) {
+    if (!job || busy || areasBusy || loadingData || numbers.length === 0) return;
     setAreasBusy(true);
     setMessage('در حال پاک‌سازی مجدد ناحیه‌های انتخاب‌شده…');
     startProgress(job.jobId, 'clean');
@@ -1245,7 +1446,7 @@ export function App() {
       const response = await fetch(`/api/jobs/${job.jobId}/clean`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({areas: areaPick}),
+        body: JSON.stringify(adjust ? {areas: numbers, ...adjust} : {areas: numbers}),
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -1502,7 +1703,7 @@ export function App() {
 
   // فهرست ناحیه‌های پاک‌سازی در مرحلهٔ ۳ (و بعد از هر پاک‌سازی) تازه می‌شود.
   useEffect(() => {
-    if (step === 3 && job?.jobId) void loadCleanAreas(job.jobId);
+    if ((step === 3 || step === 4) && job?.jobId) void loadCleanAreas(job.jobId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, job?.jobId, cleanVersion]);
 
@@ -1541,11 +1742,23 @@ export function App() {
   }
 
   const translatedAreas = cleanAreas.filter(area => area.translated);
+  const [batchOpen, setBatchOpen] = useState(false);
+  // بخش دسته‌ای پس از اولین باز شدن زنده می‌ماند تا هنگام ویرایش یک صفحه، فصل از بین نرود.
+  const [batchSeen, setBatchSeen] = useState(false);
 
   return (
     <main className="page">
       <header className="app-header">
         <div className="header-tools">
+          <button
+            type="button"
+            className={`mode-toggle${batchOpen ? ' is-active' : ''}`}
+            aria-pressed={batchOpen}
+            disabled={busy}
+            onClick={() => {setBatchSeen(true); setBatchOpen(open => !open);}}
+          >
+            {batchOpen ? 'تک‌تصویر' : 'پردازش دسته‌ای'}
+          </button>
           <button className="ocr reset" disabled={busy} onClick={resetApp}>ریست</button>
           <SystemPanel />
         </div>
@@ -1555,7 +1768,12 @@ export function App() {
 
       <UpdatePanel />
 
-      <div className="layout">
+      {batchSeen && (
+        <BatchPanel onClose={() => setBatchOpen(false)} prompt={translationPrompt}
+          visible={batchOpen} />
+      )}
+
+      <div className="layout" style={batchOpen ? {display: 'none'} : undefined}>
         {/* ستون راست: پنج مرحله و پیش‌نمایش تصویر همان مرحله */}
         <aside className="sidebar" aria-label="مراحل و پیش‌نمایش">
         <ol className="wizard-steps" aria-label="مراحل کار">
@@ -1588,6 +1806,7 @@ export function App() {
               version={sourceVersion}
               aspect={job.height / job.width}
               alt="نمایش تصویر اصلی"
+              scroll
               downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
               caption={<span>تصویر اصلی — برای بزرگ‌نمایی کلیک کنید</span>}
             />
@@ -1599,44 +1818,9 @@ export function App() {
               version={ocrVersion}
               aspect={job.height / job.width}
               alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
+              scroll
               downloadName={`t4-${job.jobId}-ocr.png`}
               caption={<span>کادر و شمارهٔ خطوط (همان شماره‌های متن کنار)</span>}
-            />
-          )}
-          {step === 2 && bubbles && bubbles.bubbles.length > 0 && job && (
-            <ImagePreview
-              jobId={job.jobId}
-              kind="bubble"
-              version={bubbleVersion}
-              aspect={job.height / job.width}
-              alt="پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام"
-              downloadName={`t4-${job.jobId}-bubbles.png`}
-              caption={<span>کادر هر بالن با نام دسته و درصد اطمینان</span>}
-            />
-          )}
-          {step === 3 && job && cleanVersion > 0 && (
-            <ImagePreview
-              jobId={job.jobId}
-              kind="clean-areas"
-              version={cleanVersion}
-              aspect={job.height / job.width}
-              alt="ناحیه‌های پاک‌سازی با شماره"
-              downloadName={`t4-${job.jobId}-clean-areas.png`}
-              pageWidth={job.width}
-              pageHeight={job.height}
-              focusRequest={areaFocus}
-              caption={<span>ناحیه‌های پاک‌سازی — شماره‌ها مثل فهرست کنار</span>}
-            />
-          )}
-          {step === 3 && job && cleanVersion > 0 && (
-            <ImagePreview
-              jobId={job.jobId}
-              kind="clean"
-              version={cleanVersion}
-              aspect={job.height / job.width}
-              alt="تصویر پاک‌سازی‌شده، بدون متن اصلی"
-              downloadName={`t4-${job.jobId}-clean.png`}
-              caption={<span>تصویر پاک‌سازی‌شده (بدون متن اصلی)</span>}
             />
           )}
           {step === 4 && job && renderVersion > 0 && (
@@ -1913,75 +2097,40 @@ export function App() {
                 <>
                   <p className="wizard-help">
                     ناحیهٔ خطوط ترجمه‌شده پاک می‌شود تا متن فارسی جای آن بنشیند. پاک‌سازی با آخرین ترجمهٔ <b>ذخیره‌شده</b> انجام می‌شود، نه تغییرات ذخیره‌نشده.
+                    {cleanVersion > 0 && ' برای پاک‌سازی مجدد یک بخش، روی همان بخش از تصویر کلیک کنید.'}
                   </p>
                   <div className="wizard-nav start">
-                    <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void cleanImage()}>
-                      {cleanVersion > 0 ? 'اجرای دوبارهٔ پاک‌سازی' : 'اجرای پاک‌سازی'}
-                    </button>
+                    {cleanVersion === 0 ? (
+                      <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void cleanImage()}>
+                        اجرای پاک‌سازی
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="ocr"
+                        disabled={busy || areasBusy || loadingData || translatedAreas.length === 0}
+                        title="روی همین تصویرِ پاک‌شده دوباره اجرا می‌شود؛ جایگزین نتیجهٔ فعلی نمی‌شود"
+                        onClick={() => void recleanAreas(translatedAreas.map(area => area.number))}
+                      >
+                        پاک‌سازی مجدد کل صفحه
+                      </button>
+                    )}
                   </div>
 
-                  <p className="wizard-note">
-                    {cleanVersion > 0
-                      ? 'پاک‌سازی انجام شد؛ نتیجه را در ستون راست ببینید.'
-                      : busy ? 'در حال پاک‌سازی…' : 'هنوز پاک‌سازی اجرا نشده است.'}
-                  </p>
+                  {cleanVersion === 0 && (
+                    <p className="wizard-note">{busy ? 'در حال پاک‌سازی…' : 'هنوز پاک‌سازی اجرا نشده است.'}</p>
+                  )}
 
-                  {cleanVersion > 0 && translatedAreas.length > 0 && (
-                    <>
-                      <h3 className="wizard-subtitle">ناحیه‌های پاک‌سازی</h3>
-                      <p className="wizard-help">
-                        شماره‌ها همان شماره‌های روی پیش‌نمایشِ «ناحیه‌های پاک‌سازی» در ستون راست است. هر ناحیه را
-                        انتخاب کنید تا فقط همان یکی دوباره پاک‌سازی شود و بقیه دست‌نخورده بمانند.
-                      </p>
-                      <div className="area-list" role="group" aria-label="ناحیه‌های پاک‌سازی">
-                        {translatedAreas.map(area => (
-                          <div
-                            key={area.number}
-                            className={`area-row${areaPick.includes(area.number) ? ' is-picked' : ''}`
-                              + `${areaFocus?.label === `ناحیهٔ ${area.number.toLocaleString('fa-IR')}` ? ' is-focused' : ''}`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={areaPick.includes(area.number)}
-                              onChange={() => toggleArea(area.number)}
-                              disabled={busy || areasBusy}
-                              aria-label={`ناحیهٔ ${area.number.toLocaleString('fa-IR')}`}
-                            />
-                            <button
-                              type="button"
-                              className="area-open"
-                              title="نمایش همین ناحیه روی پیش‌نمایش"
-                              aria-label={`نمایش ناحیهٔ ${area.number.toLocaleString('fa-IR')} روی پیش‌نمایش`}
-                              onClick={() => focusArea(area)}
-                            >
-                              <span className="area-number">{area.number.toLocaleString('fa-IR')}</span>
-                              <span className="area-kind">{area.kindLabel}</span>
-                              <span className="area-text" dir="rtl">{area.text}</span>
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="wizard-nav start">
-                        <button
-                          type="button"
-                          className="ghost"
-                          disabled={busy || areasBusy}
-                          onClick={() => setAreaPick(
-                            areaPick.length === translatedAreas.length ? [] : translatedAreas.map(area => area.number),
-                          )}
-                        >
-                          {areaPick.length === translatedAreas.length ? 'حذف انتخاب‌ها' : 'انتخاب همه'}
-                        </button>
-                        <button
-                          type="button"
-                          className="ocr"
-                          disabled={busy || areasBusy || loadingData || areaPick.length === 0}
-                          onClick={() => void recleanAreas()}
-                        >
-                          پاک‌سازی مجدد ناحیه‌های انتخاب‌شده
-                        </button>
-                      </div>
-                    </>
+                  {cleanVersion > 0 && (
+                    <CleanCanvas
+                      jobId={job.jobId}
+                      version={cleanVersion}
+                      pageWidth={job.width}
+                      pageHeight={job.height}
+                      areas={translatedAreas}
+                      disabled={busy || areasBusy || loadingData}
+                      onReclean={(numbers, adjust) => void recleanAreas(numbers, adjust)}
+                    />
                   )}
 
                   <div className="wizard-nav">
@@ -2038,6 +2187,36 @@ export function App() {
                         ? 'برای ویرایش جای متن‌ها، ابتدا پاک‌سازی را اجرا کنید.'
                         : layoutBusy ? 'در حال آماده‌سازی چیدمان…' : 'چیدمان متن‌ها در دسترس نیست.'}
                     </p>
+                  )}
+
+                  {cleanVersion > 0 && translatedAreas.length > 0 && (
+                    <details className="clean-under">
+                      <summary>پاک‌سازی مجدد زیر متن‌ها (اگر هنوز متن اصلی دیده می‌شود)</summary>
+                      <p className="wizard-help">
+                        روی بخشی که متن اصلی در آن مانده کلیک کنید و «پاک‌سازی مجدد این ناحیه» را بزنید. پس از آن
+                        ترجمه را دوباره درج کنید.
+                      </p>
+                      <CleanCanvas
+                        jobId={job.jobId}
+                        version={cleanVersion}
+                        pageWidth={job.width}
+                        pageHeight={job.height}
+                        areas={translatedAreas}
+                        disabled={busy || areasBusy || loadingData}
+                        onReclean={(numbers, adjust) => void recleanAreas(numbers, adjust)}
+                      />
+                      <div className="wizard-nav start">
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={busy || areasBusy || loadingData}
+                          title="روی همین تصویرِ پاک‌شده دوباره اجرا می‌شود؛ جایگزین نتیجهٔ فعلی نمی‌شود"
+                          onClick={() => void recleanAreas(translatedAreas.map(area => area.number))}
+                        >
+                          پاک‌سازی مجدد کل صفحه
+                        </button>
+                      </div>
+                    </details>
                   )}
 
                   <h3 className="wizard-subtitle">فونت هر نوع بالن</h3>

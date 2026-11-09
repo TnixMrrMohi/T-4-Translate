@@ -197,6 +197,20 @@ def _axis_weights(np, start, end, starts, index, tile: int = CHUNK):
     return weights
 
 
+def _fixed_tile() -> int | None:
+    """اندازهٔ ورودی مربعیِ ثابتِ مدل، یا None اگر مدل ابعاد پویا دارد."""
+    session = _session()
+    if session is None or not hasattr(session, 'get_inputs'):
+        return None
+    shape = getattr(session.get_inputs()[0], 'shape', None)
+    if not shape or len(shape) < 4:
+        return None
+    height, width = shape[-2:]
+    if isinstance(height, int) and isinstance(width, int) and height > 0 and height == width:
+        return height
+    return None
+
+
 def _tiled_fill(np, cv2, image, mask, on_progress=None):
     """Sequential 512×512 inference with normalized overlap feathering.
 
@@ -206,7 +220,11 @@ def _tiled_fill(np, cv2, image, mask, on_progress=None):
     Accumulators live in CPU RAM; only one tile at a time goes to the provider.
     """
     height, width = image.shape[:2]
-    tile = hardware.current_profile(refresh=True)['tile']
+    profile_tile = hardware.current_profile(refresh=True)['tile']
+    # مدل با ورودی ثابت فقط همان اندازه را می‌پذیرد؛ پروفایل‌های Low/Medium (تایل ۲۵۶/۳۸۴)
+    # قبلاً همیشه به نتیجهٔ کلاسیک می‌افتادند. تکه را به اندازهٔ مدل پد می‌کنیم.
+    fixed = _fixed_tile()
+    tile = fixed or profile_tile
     ys, xs = _tile_starts(height, tile), _tile_starts(width, tile)
     report = on_progress or (lambda fraction: None)
     tile_count = len(ys) * len(xs)
@@ -229,7 +247,7 @@ def _tiled_fill(np, cv2, image, mask, on_progress=None):
             profile = hardware.current_profile(refresh=True)
             # Re-start this crop at the smaller geometry on an emergency downgrade.
             # The partial larger accumulator is discarded, never mixed with a new grid.
-            if profile['tile'] < tile:
+            if not fixed and profile['tile'] < tile:
                 del total, weights
                 return _tiled_fill(np, cv2, image, mask, on_progress)
             if profile.get('availableRamMb') is not None and profile['availableRamMb'] < 1024:

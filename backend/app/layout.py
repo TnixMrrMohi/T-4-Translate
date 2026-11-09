@@ -5,6 +5,7 @@
 * ``size``: اندازهٔ قلم بر حسب پیکسل تصویر
 * ``x`` و ``y``: مرکز متن روی تصویر
 * ``rotation``: چرخش بر حسب درجه (مثبت = ساعت‌گرد)
+* ``text``: متن دستی همین بالن؛ هر خط جدید (Enter) یک شکست خطِ اجباری است
 * ``font``: شناسهٔ فونت از فهرست فونت‌های نصب‌شده (خالی = فونت خودکارِ همان نوع بالن)
 
 نبودِ هر کلید یعنی «خودکار»؛ پس ذخیرهٔ خالی یعنی رندر پیش‌فرض و قبلی.
@@ -20,6 +21,7 @@ MAX_SIZE = 400.0
 MIN_SIZE = 6.0
 MAX_ROTATION = 180.0
 MAX_FONT_ID = 120
+MAX_TEXT = 1500
 
 
 def path_for(workspace: Path) -> Path:
@@ -82,6 +84,12 @@ def sanitize(value) -> dict:
     rotation = _number(value.get("rotation"), -MAX_ROTATION, MAX_ROTATION)
     if rotation is not None:
         result["rotation"] = round(rotation, 2)
+    # متن دستی (با شکست خط دلخواه)؛ خالی یعنی همان ترجمهٔ ذخیره‌شده.
+    text = value.get("text")
+    if isinstance(text, str):
+        text = "\n".join(line.strip() for line in text.replace("\r\n", "\n").split("\n")).strip()[:MAX_TEXT]
+        if text:
+            result["text"] = text
     font = value.get("font")
     if isinstance(font, str):
         font = font.strip()[:MAX_FONT_ID]

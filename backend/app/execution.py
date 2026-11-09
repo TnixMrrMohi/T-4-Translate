@@ -26,7 +26,16 @@ class ResourceLimitError(Exception):
 def _write(path: Path, value: dict):
     tmp = path.with_suffix('.tmp')
     tmp.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
-    tmp.replace(path)
+    # روی ویندوز اگر پردازش اصلی همان لحظه progress.json را باز کرده باشد، replace با
+    # PermissionError رد می‌شود؛ چند بار کوتاه دوباره تلاش می‌کنیم و در نهایت پیشرفت
+    # (که فقط تزئینی است) کار را نمی‌شکند.
+    for attempt in range(10):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            time.sleep(0.02 * (attempt + 1))
+    tmp.unlink(missing_ok=True)
 
 
 def _windows_limit(megabytes: int):
@@ -97,7 +106,9 @@ def _worker(kind: str, payload: dict, directory: str, profile: dict):
         clean,mask=cleaning.clean_image(Path(payload['path']),payload['lines'],payload['translations'],
             base=Path(payload['base']) if payload.get('base') else None,
             only=set(payload['only']) if payload.get('only') is not None else None,
-            force=payload.get('force',False),extra=set(payload.get('extra') or []),on_progress=report)
+            force=payload.get('force',False),extra=set(payload.get('extra') or []),
+            grow={int(k):int(v) for k,v in (payload.get('grow') or {}).items()},repeat=set(payload.get('repeat') or []),
+            shift={int(k):(int(v[0]),int(v[1])) for k,v in (payload.get('shift') or {}).items()},on_progress=report)
         try:
             clean.save(root/'clean.png');mask.save(root/'mask.png')
         finally:

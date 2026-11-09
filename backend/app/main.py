@@ -18,6 +18,7 @@ from tempfile import SpooledTemporaryFile
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from app.desktop_security import DesktopOriginGuard
 from PIL import Image, UnidentifiedImageError
@@ -605,6 +606,10 @@ class CleanInput(BaseModel):
     """ناحیه‌های انتخاب‌شده برای پاک‌سازی؛ خالی یعنی همهٔ ناحیه‌های ترجمه‌شده."""
 
     areas: list[int] | None = Field(default=None, max_length=9999)
+    # تغییر اندازهٔ ناحیهٔ پاک‌سازی هر بالن (شمارهٔ بالن ← پیکسل؛ منفی = کوچک‌تر).
+    grow: dict[int, int] = Field(default_factory=dict, max_length=9999)
+    # جابه‌جایی ناحیهٔ پاک‌سازی هر بالن (شمارهٔ بالن ← [dx, dy] پیکسل).
+    shift: dict[int, list[int]] = Field(default_factory=dict, max_length=9999)
 
 
 PROMO_ACTIONS = ("replace", "remove", "keep")
@@ -640,7 +645,10 @@ def bubbles_for(job_id: str, lines: list) -> dict:
 
 def translation_blocks(job_id: str, lines: list) -> list:
     """بلوک‌های ترجمه: هر بالن یک متن، نه هر خط یک متن."""
-    return bubbles.blocks(bubbles_for(job_id, lines), lines)
+    result = bubbles.drop_junk_blocks(bubbles.blocks(bubbles_for(job_id, lines), lines), lines)
+    for index, item in enumerate(result, 1):
+        item["number"] = index
+    return result
 
 
 def saved_translation_blocks(job_id: str, lines: list, translation: dict) -> list:
@@ -861,9 +869,29 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
                 raise HTTPException(400, "هیچ ناحیه‌ای برای پاک‌سازی انتخاب نشده است.")
         only = None
         base = None
+        line_grow: dict[int, int] = {}
+        line_shift: dict[int, tuple[int, int]] = {}
+        block_list = saved_translation_blocks(job_id, source["lines"], translation)
+        # متن بیرون از بالن همیشه ۱۲ پیکسل ناحیهٔ بزرگ‌تر و یک دور پاک‌سازی دوباره می‌گیرد: نقطه و
+        # تکه‌های حرف روی پس‌زمینه بیرون از کادر OCR می‌مانند. عدد کاربر روی همین مبنا اضافه می‌شود.
+        outside_lines: set[int] = set()
+        for item in block_list:
+            if item.get("kind") == "outside":
+                for line in item["lines"]:
+                    outside_lines.add(line)
+                    line_grow[line] = cleaning.OUTSIDE_GROW
         if areas is not None:
-            block_list = saved_translation_blocks(job_id, source["lines"], translation)
             only = {line for item in block_list if item["number"] in areas for line in item["lines"]}
+            for item in block_list:
+                value = max(-30, min(80, int(body.grow.get(item["number"], 0))))
+                if item["number"] in areas and value:
+                    for line in item["lines"]:
+                        line_grow[line] = line_grow.get(line, 0) + value
+                moved = body.shift.get(item["number"])
+                if item["number"] in areas and moved and len(moved) == 2 and any(moved):
+                    pair = (max(-400, min(400, int(moved[0]))), max(-400, min(400, int(moved[1]))))
+                    for line in item["lines"]:
+                        line_shift[line] = pair
             existing = workspace / "clean.png"
             if not existing.is_file():
                 raise HTTPException(409, "ابتدا یک‌بار پاک‌سازی کامل را اجرا کنید.")
@@ -873,13 +901,14 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
                 if os.environ.get('T4_WORKER_MODE') == 'inline':
                     clean, mask = await run_native_safely(
                         partial(cleaning.clean_image, workspace / "source.img", source["lines"],
-                                line_translations, base=base, only=only, force=base is not None,
+                                line_translations, base=base, only=only, force=base is not None, grow=line_grow, shift=line_shift,
+                                repeat=outside_lines,
                                 extra=set(translation.get("cleanLines") or []), on_progress=report))
                 else:
                     clean,mask=await execution.run('clean',{
                         'path':str(workspace/'source.img'),'lines':source['lines'],
                         'translations':line_translations,'base':str(base) if base else None,
-                        'only':sorted(only) if only is not None else None,'force':base is not None,
+                        'only':sorted(only) if only is not None else None,'force':base is not None,'grow':line_grow,'repeat':sorted(outside_lines),'shift':{k:list(v) for k,v in line_shift.items()},
                         'extra':translation.get('cleanLines') or []},workspace,f'{job_id}:clean')
                 progress.check_cancelled(f'{job_id}:clean')
             except cleaning.CleaningError as exc:
@@ -1119,6 +1148,250 @@ async def download_render_webp(job_id: str, quality: int = WEBP_QUALITY_DEFAULT)
         image_path, media_type="image/webp",
         headers={"Cache-Control": "no-store",
                  "Content-Disposition": f'attachment; filename="t4-{job_id}.webp"'})
+
+
+SEAM_PX = 24   # خطی که تا این فاصله از لبهٔ بالا/پایین باشد، احتمالاً از مرز دو صفحه بریده شده
+
+
+class BatchExportItem(BaseModel):
+    jobId: str
+    name: str = ""
+    # برش از خروجی کار؛ خالی یعنی کل تصویر.
+    top: int | None = None
+    bottom: int | None = None
+    # فایلی که از چند تکه (از کارهای مختلف) زیر هم ساخته می‌شود: [{jobId, top, bottom, source?}, ...]
+    pieces: list[dict] | None = None
+    # صفحهٔ بدون متن: خروجی همان تصویر اصلی است (ترجمه و درجی در کار نیست).
+    source: bool = False
+
+
+class BatchExportInput(BaseModel):
+    """خروجی دسته‌ای: فهرست کارها (به ترتیب صفحه) و نام فایل هر کدام."""
+
+    jobIds: list[str] = Field(default_factory=list, max_length=500)
+    names: list[str] = Field(default_factory=list, max_length=500)
+    items: list[BatchExportItem] = Field(default_factory=list, max_length=1000)
+    quality: int = WEBP_QUALITY_DEFAULT
+
+
+def _clean_file_stem(raw: str, index: int) -> str:
+    return "".join(ch for ch in Path(raw).stem if ch not in r'\/:*?"<>|').strip() or f"{index + 1:03d}"
+
+
+@app.post("/api/batch/export")
+async def batch_export(body: BatchExportInput):
+    """خروجی نهایی چند کار را WebP می‌کند و همه را در یک ZIP می‌دهد."""
+    import tempfile
+    import zipfile
+
+    items = list(body.items) or [
+        BatchExportItem(jobId=job_id, name=body.names[i] if i < len(body.names) else "")
+        for i, job_id in enumerate(body.jobIds)]
+    if not items:
+        raise HTTPException(400, "کاری برای خروجی انتخاب نشده است.")
+    quality = max(WEBP_QUALITY_MIN, min(WEBP_QUALITY_MAX, body.quality))
+    used: set[str] = set()
+    handle = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    handle.close()
+    scratch = Path(tempfile.mkdtemp(prefix="t4-batch-"))
+    try:
+        with zipfile.ZipFile(handle.name, "w", zipfile.ZIP_STORED) as archive:
+            for index, item in enumerate(items):
+                stem = _clean_file_stem(item.name or f"{index + 1:03d}", index)
+                name, extra = stem, 1
+                while name.lower() in used:
+                    extra += 1
+                    name = f"{stem}-{extra}"
+                used.add(name.lower())
+                if item.source and not item.pieces:
+                    item.pieces = [{"jobId": item.jobId, "source": True}]
+                if item.pieces:
+                    sources = []
+                    for piece in item.pieces:
+                        job_key = str(piece["jobId"])
+                        path = (workspace_for(job_key) / "source.img") if piece.get("source") else _fresh_render(job_key)
+                        if not path.is_file():
+                            raise HTTPException(409, "تصویر یکی از صفحه‌ها آماده نیست.")
+                        sources.append((path, int(piece.get("top", 0)), piece.get("bottom")))
+                    target = scratch / f"{index}.webp"
+
+                    def stack(sources=sources, target=target):
+                        crops = []
+                        try:
+                            for path, top, bottom in sources:
+                                with Image.open(path) as opened:
+                                    rgb = opened.convert("RGB")
+                                    crops.append(rgb.crop((0, max(0, top), rgb.width,
+                                                           min(rgb.height, int(bottom) if bottom is not None else rgb.height))))
+                            width = crops[0].width
+                            canvas = Image.new("RGB", (width, sum(c.height for c in crops)), (255, 255, 255))
+                            offset = 0
+                            for crop in crops:
+                                canvas.paste(crop, (0, offset))
+                                offset += crop.height
+                            canvas.save(target, format="WEBP", quality=quality, method=6)
+                            canvas.close()
+                        finally:
+                            for crop in crops:
+                                crop.close()
+
+                    await run_native_safely(stack)
+                    archive.write(target, f"{name}.webp")
+                    continue
+                if item.top is None or item.bottom is None:
+                    response = await download_render_webp(item.jobId, quality)
+                    archive.write(Path(response.path), f"{name}.webp")
+                    continue
+                render = _fresh_render(item.jobId)
+                target = scratch / f"{index}.webp"
+
+                def crop(render=render, target=target, top=item.top, bottom=item.bottom):
+                    with Image.open(render) as opened:
+                        part = opened.convert("RGB").crop((0, max(0, top), opened.width, min(opened.height, bottom)))
+                        part.save(target, format="WEBP", quality=quality, method=6)
+
+                await run_native_safely(crop)
+                archive.write(target, f"{name}.webp")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return FileResponse(
+        handle.name, media_type="application/zip",
+        headers={"Cache-Control": "no-store",
+                 "Content-Disposition": 'attachment; filename="t4-batch-webp.zip"'},
+        background=BackgroundTask(lambda: Path(handle.name).unlink(missing_ok=True)))
+
+
+class SeamInput(BaseModel):
+    upper: str
+    lower: str
+
+
+def _touches(lines: list, height: int, bottom: bool) -> bool:
+    """آیا خطِ واقعی (نه نویز) به لبهٔ پایین/بالای تصویر می‌چسبد؟"""
+    for line in lines:
+        # حتی تکهٔ «بی‌معنی» (نصفِ یک کلمه که از مرز بریده شده، مثل «TONAY» به‌جای «TODAY») نشانهٔ
+        # متنِ مرزی است؛ چسباندن بی‌دلیل فقط کمی کند است، ولی ندیدنش متن را نصفه می‌گذارد.
+        if not str(line.get("text", "")).strip():
+            continue
+        ys = [point[1] for point in line.get("quad") or []]
+        if not ys:
+            continue
+        if (bottom and max(ys) >= height - SEAM_PX) or (not bottom and min(ys) <= SEAM_PX):
+            return True
+    return False
+
+
+@app.post("/api/batch/seam")
+def batch_seam(body: SeamInput) -> dict:
+    """اگر متنی از مرز این دو صفحهٔ پشت‌سرهم بریده شده باشد، ``join`` درست است."""
+    upper, lower = get_job(body.upper), get_job(body.lower)
+    top_lines = get_ocr(body.upper).get("lines") or []
+    bottom_lines = get_ocr(body.lower).get("lines") or []
+    return {"join": _touches(top_lines, int(upper["height"]), True) or _touches(bottom_lines, int(lower["height"]), False)}
+
+
+SEAM_ZONE = 1500       # بیشترین ارتفاعِ ناحیهٔ مرزی از هر صفحه
+SEAM_MIN_ZONE = 200    # کمترین ارتفاعِ ناحیهٔ مرزی از هر صفحه
+SEAM_LINE_PAD = 24     # حاشیهٔ دور هر خط که برش نباید داخلش بیفتد
+
+
+def _gap_cut(lines: list, height: int, bottom: bool) -> int:
+    """محل برش در یک شکافِ بدون متن نزدیک مرز: وسطِ بزرگ‌ترین فاصلهٔ خالی میان خط‌های OCR.
+
+    ناحیهٔ مرزی جدا پردازش می‌شود؛ پس برش نباید از وسط بالن/متن رد شود.
+    """
+    low, high = ((max(1, height - SEAM_ZONE), height - SEAM_MIN_ZONE) if bottom
+                 else (SEAM_MIN_ZONE, min(height - 1, SEAM_ZONE)))
+    if high <= low:
+        return int(max(1, min(height - 1, high if bottom else low)))
+    spans = []
+    for line in lines:
+        ys = [point[1] for point in line.get("quad") or []]
+        if ys:
+            spans.append((min(ys) - SEAM_LINE_PAD, max(ys) + SEAM_LINE_PAD))
+    spans.sort()
+    best, best_size, cursor = None, -1, low
+    for start, end in spans + [(high + 1, high + 1)]:
+        if start > cursor:
+            gap = (cursor, min(start, high))
+            if gap[1] - gap[0] > best_size:
+                best, best_size = gap, gap[1] - gap[0]
+        cursor = max(cursor, end)
+    if best is None or best_size <= 0:
+        return int(high if bottom else low)
+    return int((best[0] + best[1]) // 2)
+
+
+def _new_job(image: Image.Image, lines: list | None, base_ocr: dict | None) -> dict:
+    """تصویر را به‌صورت کار تازه ذخیره می‌کند؛ اگر ``lines`` داده شود، OCR هم همراهش نوشته می‌شود."""
+    root = Path(os.environ.get("T4_DATA_DIR", str(Path.home() / ".t4-translate"))) / "jobs"
+    job_id = uuid.uuid4().hex
+    workspace = root / job_id
+    workspace.mkdir(parents=True)
+    try:
+        image.save(workspace / "source.img", format="PNG")
+        info = {"width": image.width, "height": image.height, "format": "PNG",
+                "sizeBytes": (workspace / "source.img").stat().st_size, "jobId": job_id, "status": "uploaded",
+                "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        (workspace / "state.json.tmp").write_text(json.dumps(info), encoding="utf-8")
+        os.replace(workspace / "state.json.tmp", workspace / "state.json")
+        if lines is not None:
+            document = {**(base_ocr or {}), "jobId": job_id, "lines": lines, "revision": ocr_revision(lines)}
+            (workspace / "ocr.json.tmp").write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+            os.replace(workspace / "ocr.json.tmp", workspace / "ocr.json")
+    except Exception:
+        shutil.rmtree(workspace, ignore_errors=True)
+        raise
+    return info
+
+
+def _shift_lines(lines: list, dy: int) -> list:
+    return [{**line, "quad": [[point[0], point[1] + dy] for point in line["quad"]]} for line in lines]
+
+
+@app.post("/api/batch/stitch")
+def batch_stitch(body: SeamInput) -> dict:
+    """متنِ بریدهٔ مرز دو صفحه را در یک «نوار مرزی» جمع می‌کند.
+
+    پایین صفحهٔ بالا و بالای صفحهٔ پایین (هرکدام تا حدود ۱۵۰۰ پیکسل، با برش در شکافِ بدون متن) زیر هم
+    چسبانده می‌شوند و یک کار می‌شوند؛ بقیهٔ هر صفحه کار جدا می‌ماند و OCRِ قبلی‌اش دوباره استفاده می‌شود.
+    نوار کوچک است و در سقف حافظه می‌ماند (چسباندن کل دو صفحه نمی‌ماند).
+    """
+    upper_info, lower_info = get_job(body.upper), get_job(body.lower)
+    if int(upper_info["width"]) != int(lower_info["width"]):
+        raise HTTPException(409, "عرض دو صفحه یکی نیست؛ متن مرزی خودکار پردازش نمی‌شود.")
+    upper_ocr, lower_ocr = get_ocr(body.upper), get_ocr(body.lower)
+    upper_h, lower_h = int(upper_info["height"]), int(lower_info["height"])
+    cut_upper = _gap_cut(upper_ocr.get("lines") or [], upper_h, True)
+    cut_lower = _gap_cut(lower_ocr.get("lines") or [], lower_h, False)
+    if cut_upper < 100 or lower_h - cut_lower < 100:
+        raise HTTPException(409, "صفحه برای جداکردن نوار مرزی بیش از حد کوتاه است.")
+    width = int(upper_info["width"])
+    with Image.open(workspace_for(body.upper) / "source.img") as a, \
+            Image.open(workspace_for(body.lower) / "source.img") as b:
+        top_img, tail_a = a.convert("RGB").crop((0, 0, width, cut_upper)), a.convert("RGB").crop((0, cut_upper, width, upper_h))
+        head_b, rest_img = b.convert("RGB").crop((0, 0, width, cut_lower)), b.convert("RGB").crop((0, cut_lower, width, lower_h))
+    strip = Image.new("RGB", (width, tail_a.height + head_b.height), (255, 255, 255))
+    strip.paste(tail_a, (0, 0))
+    strip.paste(head_b, (0, tail_a.height))
+    lines_a = [line for line in upper_ocr.get("lines") or []
+               if max((pt[1] for pt in line["quad"]), default=0) <= cut_upper]
+    lines_b = _shift_lines([line for line in lower_ocr.get("lines") or []
+                            if min((pt[1] for pt in line["quad"]), default=0) >= cut_lower], -cut_lower)
+    try:
+        upper_job = _new_job(top_img, lines_a, upper_ocr)
+        seam_job = _new_job(strip, None, None)
+        lower_job = _new_job(rest_img, lines_b, lower_ocr)
+    finally:
+        for image in (top_img, tail_a, head_b, rest_img, strip):
+            image.close()
+    return {
+        "upper": {"jobId": upper_job["jobId"], "height": upper_job["height"]},
+        "seam": {"jobId": seam_job["jobId"], "height": seam_job["height"],
+                 "upperPart": [0, upper_h - cut_upper],
+                 "lowerPart": [upper_h - cut_upper, upper_h - cut_upper + cut_lower]},
+        "lower": {"jobId": lower_job["jobId"], "height": lower_job["height"]},
+    }
 
 
 class LayoutInput(BaseModel):

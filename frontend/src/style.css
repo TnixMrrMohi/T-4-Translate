@@ -392,3 +392,76 @@
   .update-actions{margin-inline-start:0;width:100%}
   .update-field,.update-field.is-narrow{flex:1 1 100%}
 }
+
+/* پیش‌نمایش پیمایشی: عرض کامل کارت و اسکرول عمودی، بدون فشرده‌شدن صفحهٔ بلند */
+.preview-thumb.is-scroll{aspect-ratio:auto;height:auto;max-height:calc(100vh - 330px);min-height:160px;overflow-y:auto;overflow-x:hidden;cursor:default;display:block}
+.preview-thumb.is-scroll img{position:static;width:100%;height:auto;object-fit:initial;display:block}
+.preview-card figcaption button.small{padding:4px 10px;font-size:12px;border-radius:8px}
+
+/* مرحلهٔ ۳: تصویر پاک‌شده جای بیشترِ صفحه را می‌گیرد؛ ناحیه‌ها قابل‌کلیک‌اند */
+.clean-canvas{margin:10px 0 16px}
+.clean-canvas-scroll{max-height:calc(100vh - 230px);min-height:260px;overflow:auto;border:1px solid #00ffcc40;border-radius:12px;background:repeating-conic-gradient(#0a0f12 0% 25%, #0d1620 0% 50%) 50% / 26px 26px}
+.clean-canvas-page{position:relative;width:100%}
+.clean-canvas-page img{display:block;width:100%;height:100%;object-fit:fill}
+.clean-hotspot{position:absolute;padding:0;margin:0;border:1px dashed #00ffccaa;background:#00ffcc12;border-radius:6px;cursor:pointer;opacity:1}
+.clean-hotspot:hover,.clean-hotspot.is-active{background:#00ffcc33;border:2px solid #00ffcc}
+.clean-hotspot-tag{position:absolute;top:-1px;inset-inline-start:-1px;background:#00ffcc;color:#04120f;font-size:11px;font-weight:bold;line-height:1;padding:3px 6px;border-radius:0 0 6px 0}
+.clean-popover{position:absolute;z-index:5;width:240px;background:#0b1416;border:1px solid #00ffcc;border-radius:12px;padding:10px;box-shadow:0 8px 24px #000c;display:flex;flex-direction:column;gap:8px;font-size:13px}
+.clean-popover-head{display:flex;gap:8px;align-items:center}
+.clean-popover-head span{color:#8fb8b0;flex:1}
+.clean-popover p{margin:0;max-height:90px;overflow:auto;color:#d4e5e1;line-height:1.8}
+.clean-popover-head button{padding:2px 8px;font-size:12px;border-radius:7px;line-height:1.4;flex:none}
+
+.clean-under{margin:14px 0;border:1px solid #00ffcc33;border-radius:12px;padding:10px 12px;background:#070f11}
+.clean-under summary{cursor:pointer;color:#9bf3cc;font-weight:bold}
+
+.batch-panel{max-width:980px;margin:16px auto;padding:16px;border:1px solid #00ffcc33;border-radius:14px;background:#070f11}
+.batch-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.batch-text{width:100%;min-height:200px;margin:8px 0;padding:10px;border-radius:10px;border:1px solid #00ffcc33;background:#04090a;color:inherit;font:inherit;line-height:1.7}
+.batch-list{list-style:none;margin:12px 0;padding:0;display:grid;gap:6px}
+.batch-row{display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:8px;background:#0b1a1d}
+.batch-row.is-done{border-right:3px solid #00ffcc}.batch-row.is-failed{border-right:3px solid #ff5a6e}
+
+.app-header .mode-toggle{padding:6px 12px;font-size:12px;line-height:1.4;white-space:nowrap;opacity:1;cursor:pointer;background:#10231f;color:#00ffcc;border:1px solid #00ffcc88;border-radius:8px}
+.app-header .mode-toggle.is-active{background:#00ffcc;color:#050505}
+.app-header .mode-toggle:disabled{opacity:.5;cursor:not-allowed}
+.batch-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:130px;padding:18px;margin:8px 0;text-align:center;border:2px dashed #00ffcc88;border-radius:14px;background:#050b0c;color:#9bf3cc;cursor:pointer;transition:background .15s,border-color .15s,box-shadow .15s}
+.batch-drop strong{font-size:16px;color:#00ffcc}.batch-drop span{font-size:13px;color:#a0ffe0}
+.batch-drop:hover,.batch-drop:focus-visible,.batch-drop.is-over{outline:none;background:#0b1a1d;border-color:#00ffcc;box-shadow:0 0 14px rgba(0,255,204,.3)}
+.batch-drop.is-busy{opacity:.5;cursor:wait}
+
+.batch-head .ghost{padding:6px 12px;font-size:12px;opacity:1;cursor:pointer;white-space:nowrap}
+
+/* دکمه‌های فعال هر کلاسی داشته باشند، اشاره‌گر دست می‌گیرند؛ فقط غیرفعال‌ها ممنوع نشان می‌دهند. */
+button:not(:disabled),summary,[role="button"]:not([aria-disabled="true"]){cursor:pointer}
+button:disabled{cursor:not-allowed}
+
+.clean-size{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:12px;color:#a0ffe0}
+.clean-size output{min-width:34px;text-align:center;font-weight:bold;color:#00ffcc}
+.clean-size .small{padding:3px 10px;font-size:14px;line-height:1}
+
+.clean-size-hint{font-size:11px;opacity:.8}
+.clean-hotspot.is-active{cursor:move;touch-action:none}
+
+.chapter-view{margin-top:20px;border-top:1px solid #00ffcc33;padding-top:12px}
+.chapter-page{margin:0 auto 18px;max-width:760px}
+.chapter-page img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid #00ffcc22;background:#fff}
+.chapter-page figcaption{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;font-size:12px;color:#a0ffe0}
+.chapter-actions{display:flex;gap:8px}
+.chapter-actions .small{padding:4px 10px;font-size:12px}
+
+.chapter-area{position:absolute;border:2px dashed #00ffcc;background:rgba(0,255,204,.08);pointer-events:none;border-radius:6px;z-index:2}
+.chapter-clean{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:6px 0;padding:8px 10px;border:1px solid #00ffcc33;border-radius:10px;background:#0a1416;font-size:12px}
+.chapter-clean b{color:#00ffcc}
+.chapter-final{display:inline-flex;gap:4px;align-items:center;cursor:pointer}
+.chapter-busy{color:#ffd166}
+.layout-text-edit{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin:6px 0}
+.layout-text-edit textarea{min-width:260px;width:100%;padding:8px;border-radius:8px;border:1px solid #00ffcc44;background:#04090a;color:inherit;font:inherit;line-height:1.7}
+
+.layout-popover{position:absolute;z-index:6;padding:10px 12px;background:#0a1416;border:1px solid #00ffcc66;border-radius:12px;box-shadow:0 10px 28px rgba(0,0,0,.6);max-height:70vh;overflow:auto}
+.layout-popover-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;color:#a0ffe0}
+.layout-popover-head b{color:#00ffcc}
+.layout-popover-head .small{margin-inline-start:auto;padding:2px 8px}
+.layout-popover .layout-toolbar{display:flex;flex-wrap:wrap;gap:8px}
+.layout-popover .layout-field{min-width:0}
+.layout-popover .layout-text-edit textarea{min-width:0}

@@ -358,25 +358,50 @@ def _shift(raw, offset: int) -> list[dict]:
     return result
 
 
+def _box(line: dict) -> tuple[float, float, float, float]:
+    xs = [point[0] for point in line['quad']]
+    ys = [point[1] for point in line['quad']]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def _same_line(first: dict, second: dict) -> bool:
-    """آیا این دو نتیجه یک خط‌اند که در هم‌پوشانی دو نوار دوبار دیده شده است؟"""
-    if str(first.get('text', '')).strip() != str(second.get('text', '')).strip():
+    """آیا این دو نتیجه یک خط‌اند که در هم‌پوشانی دو نوار دوبار دیده شده است؟
+
+    متن دو خواندن ممکن است کمی فرق کند (بریدن نوار فاصله و حروف را عوض می‌کند)،
+    پس معیار اصلی هم‌پوشانی کادرهاست؛ خط‌های واقعیِ متفاوت هیچ‌وقت چنین روی هم نمی‌افتند.
+    """
+    ax0, ay0, ax1, ay1 = _box(first)
+    bx0, by0, bx1, by1 = _box(second)
+    inter = max(0.0, min(ax1, bx1) - max(ax0, bx0)) * max(0.0, min(ay1, by1) - max(ay0, by0))
+    smaller = min((ax1 - ax0) * (ay1 - ay0), (bx1 - bx0) * (by1 - by0))
+    # نسبت به کادر کوچک‌تر: خواندنِ ناقصِ یک خط (مثل «OEHIKUE») داخل خواندن کامل می‌افتد.
+    return smaller > 0 and inter / smaller >= 0.6
+
+
+def _area(line: dict) -> float:
+    x0, y0, x1, y1 = _box(line)
+    return (x1 - x0) * (y1 - y0)
+
+
+def _prefer(candidate: dict, current: dict) -> bool:
+    """خواندن کامل‌تر (کادر بزرگ‌تر) برتر است؛ در اندازهٔ نزدیک، اطمینان بیشتر."""
+    if _area(candidate) > _area(current) * 1.2:
+        return True
+    if _area(current) > _area(candidate) * 1.2:
         return False
-    a, b = first['quad'], second['quad']
-    ax = sum(point[0] for point in a) / 4
-    ay = sum(point[1] for point in a) / 4
-    bx = sum(point[0] for point in b) / 4
-    by = sum(point[1] for point in b) / 4
-    height = max(4.0, max(point[1] for point in a) - min(point[1] for point in a))
-    return abs(ax - bx) <= 12 and abs(ay - by) <= height * 0.6
+    return float(candidate.get('confidence', 0)) > float(current.get('confidence', 0))
 
 
 def _dedupe(lines: list[dict]) -> list[dict]:
     kept: list[dict] = []
     for line in lines:
-        if any(_same_line(line, other) for other in kept):
-            continue
-        kept.append(line)
+        for index, other in enumerate(kept):
+            if _same_line(line, other):
+                if _prefer(line, other):
+                    kept[index] = line
+                break
+        else:
+            kept.append(line)
     return kept
 
 
@@ -419,7 +444,7 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
         )
         if height <= strip_height + overlap:
             report(0.08, 'model')  # نخستین فراخوانی، مدل را در حافظه بار می‌کند
-            result = _shift(_read(str(path)), 0)
+            result = _dedupe(_shift(_read(str(path)), 0))
             report(0.94, 'strips')
             report(0.97, 'merge')
             report(0.99, 'save')

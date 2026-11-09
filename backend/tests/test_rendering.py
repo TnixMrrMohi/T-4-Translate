@@ -203,7 +203,7 @@ def test_tiny_source_text_in_bubble_is_enlarged_and_long_translation_wraps_by_wo
     block["number"] = 1  # bubbles.blocks() شماره را هنگام مرتب‌سازی اضافه می‌کند.
     assert block["area"] == [50, 30, 360, 260]  # اعتبارسنجی بالن نباید آن را حذف کند.
     entry = rendering.plan_blocks(image, [block], {"1": translation})[0]
-    assert entry["size"] >= 28
+    assert entry["size"] >= 23   # ۵ واحد کوچک‌تر از پیش‌فرضِ قبلی (۲۸)
     assert len(entry["wrapped"]) >= 2
     assert " ".join(entry["wrapped"]).split() == translation.split()
     font = rendering._font(entry["size"], entry["path"])
@@ -227,7 +227,7 @@ def test_short_text_in_a_big_bubble_does_not_fill_it():
     canvas, _ = rendering.render_blocks(image, [block], {"1": "عجیبه."})
     ink = _ink_box(canvas)
     assert ink
-    assert 28 <= (ink[3] - ink[1]) <= 46
+    assert 23 <= (ink[3] - ink[1]) <= 46
     assert (ink[2] - ink[0]) <= 160
 
 
@@ -255,4 +255,4 @@ def test_growth_stops_at_a_bubble_border():
     ink = canvas.convert("L").point(lambda value: 255 if value < 100 else 0).getbbox()
     assert ink
     assert 43 <= ink[0] and ink[2] <= 257 and 43 <= ink[1] and ink[3] <= 217
-    assert (ink[3] - ink[1]) > 20
+    assert (ink[3] - ink[1]) > 12

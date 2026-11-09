@@ -1,0 +1,198 @@
+import numpy as np
+import pytest
+from PIL import Image
+
+cv2 = pytest.importorskip('cv2')
+
+from app.cleaning import clean_image
+
+
+def _bubble_page(tmp_path):
+    """بالن سفید با خط دور مشکی؛ دو خط OCR دارد ولی کلمهٔ میانی را OCR ندیده است."""
+    page = np.full((260, 360, 3), 40, np.uint8)
+    cv2.ellipse(page, (180, 130), (150, 100), 0, 0, 360, (255, 255, 255), -1)
+    cv2.ellipse(page, (180, 130), (150, 100), 0, 0, 360, (0, 0, 0), 4)
+    cv2.putText(page, 'MY ARMOR', (110, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)
+    cv2.putText(page, 'LOOKS', (130, 135), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)   # OCR این را ندید
+    cv2.putText(page, 'NEW', (140, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)
+    path = tmp_path / 'page.png'
+    Image.fromarray(page).save(path)
+    lines = [
+        {'quad': [[105, 65], [250, 65], [250, 98], [105, 98]]},
+        {'quad': [[135, 160], [225, 160], [225, 190], [135, 190]]},
+    ]
+    return path, lines
+
+
+def test_text_the_ocr_missed_inside_a_translated_bubble_is_swept(tmp_path):
+    path, lines = _bubble_page(tmp_path)
+    clean, _ = clean_image(path, lines, {'1': 'زره من', '2': 'نو است'}, high_quality=False)
+    out = np.array(clean.convert('L'))
+    looks = out[112:142, 125:235]                  # کلمه‌ای که OCR ندیده بود
+    assert (looks < 128).sum() == 0
+    # خط دور بالن دست‌نخورده می‌ماند.
+    assert (out[130, 25:40] < 60).any() and (out[30:40, 180] < 60).any()
+
+
+def test_untranslated_line_inside_the_bubble_is_not_swept(tmp_path):
+    path, lines = _bubble_page(tmp_path)
+    # فقط خط اول ترجمه دارد؛ خط دوم («NEW») ترجمه‌نشده است و باید بماند.
+    clean, _ = clean_image(path, lines, {'1': 'زره من'}, high_quality=False)
+    out = np.array(clean.convert('L'))
+    assert (out[160:190, 135:225] < 128).sum() > 0
+
+
+def test_batch_export_zips_webp_of_each_job(tmp_path, monkeypatch):
+    import io
+    import zipfile
+    from fastapi.testclient import TestClient
+    from app import main
+
+    files = []
+    for index in range(2):
+        path = tmp_path / f'r{index}.webp'
+        Image.new('RGB', (8, 8), (index * 80, 0, 0)).save(path, 'WEBP')
+        files.append(path)
+
+    async def fake(job_id, quality):
+        from fastapi.responses import FileResponse
+        return FileResponse(files[int(job_id)], media_type='image/webp')
+
+    monkeypatch.setattr(main, 'download_render_webp', fake)
+    client = TestClient(main.app)
+    response = client.post('/api/batch/export',
+                           json={'jobIds': ['0', '1'], 'names': ['p1.png', 'p1.jpg']})
+    assert response.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    assert sorted(archive.namelist()) == ['p1-2.webp', 'p1.webp']
+
+
+def test_grow_resizes_the_cleaned_area(tmp_path, monkeypatch):
+    """مثبت = ناحیهٔ پاک‌شده بزرگ‌تر، منفی = کوچک‌تر؛ بدون آن همان اندازهٔ خودکار."""
+    from app import cleaning
+    # جاروی بالن هر لکهٔ تنهای داخل بالن را پاک می‌کند؛ اینجا فقط اثر اندازه سنجیده می‌شود.
+    monkeypatch.setattr(cleaning, '_sweep_bubbles', lambda *a, **k: 0)
+    page = np.full((200, 400, 3), 40, np.uint8)
+    cv2.rectangle(page, (60, 40), (340, 160), (255, 255, 255), -1)        # بالن سفید
+    cv2.putText(page, 'HELLO', (130, 110), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
+    cv2.line(page, (272, 85), (272, 112), (0, 0, 0), 3)                   # خط کمی بیرون از کادر OCR
+    path = tmp_path / 'page.png'
+    Image.fromarray(page).save(path)
+    lines = [{'quad': [[128, 78], [262, 78], [262, 118], [128, 118]]}]
+
+    def stroke_removed(grow):
+        clean, _ = clean_image(path, lines, {'1': 'سلام'}, force=True, only={1},
+                               grow={1: grow} if grow else None, high_quality=False)
+        return bool(np.array(clean.convert('L'))[90:108, 271:274].min() > 200)
+
+    assert stroke_removed(0)           # اندازهٔ خودکار: خط داخل حاشیهٔ پیش‌فرض است و پاک می‌شود
+    assert not stroke_removed(-18)     # کوچک‌کردن: بیرون از ناحیه می‌ماند
+    assert stroke_removed(10)
+
+
+def test_force_clear_mask_follows_grow(tmp_path):
+    from app.cleaning import _force_clear_mask
+    result = np.full((120, 200, 3), 200, np.uint8)
+    result[40:60, 60:140] = 30                                            # جوهرِ باقی‌مانده
+    quad = np.zeros((120, 200), np.uint8)
+    cv2.fillPoly(quad, [np.array([[60, 40], [140, 40], [140, 60], [60, 60]], np.int32)], 255)
+    background = np.array([200, 200, 200], np.float32)
+    box = (40, 20, 160, 80)
+    small = _force_clear_mask(cv2, np, result, box, background, quad != 0, 2)
+    large = _force_clear_mask(cv2, np, result, box, background, quad != 0, 12)
+    assert small is not None and large is not None and small.sum() < large.sum()
+
+
+def test_shift_moves_the_cleaned_area(tmp_path, monkeypatch):
+    from app import cleaning
+    monkeypatch.setattr(cleaning, '_sweep_bubbles', lambda *a, **k: 0)
+    page = np.full((260, 400, 3), 40, np.uint8)
+    cv2.rectangle(page, (30, 20), (370, 240), (255, 255, 255), -1)
+    cv2.putText(page, 'HELLO', (130, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)    # بالا
+    cv2.putText(page, 'WORLD', (130, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)   # پایین (OCR ندیده)
+    path = tmp_path / 'page.png'
+    Image.fromarray(page).save(path)
+    lines = [{'quad': [[128, 38], [262, 38], [262, 80], [128, 80]]}]
+
+    def dark_left(shift):
+        clean, _ = clean_image(path, lines, {'1': 'سلام'}, force=True, only={1},
+                               shift={1: shift} if shift else None, high_quality=False)
+        out = np.array(clean.convert('L'))
+        return int((out[40:80, 120:270] < 100).sum()), int((out[170:210, 120:270] < 100).sum())
+
+    top_ink, bottom_ink = dark_left(None)
+    assert top_ink == 0 and bottom_ink > 0
+    top_ink, bottom_ink = dark_left((0, 130))      # ناحیه به پایین کشیده شد
+    assert top_ink > 0 and bottom_ink == 0
+
+
+def _job(tmp_path, monkeypatch, size, lines):
+    import json
+    from app import main
+    monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
+    job_id = __import__('uuid').uuid4().hex
+    ws = tmp_path / 'jobs' / job_id
+    ws.mkdir(parents=True)
+    Image.new('RGB', size, (255, 255, 255)).save(ws / 'source.img', format='PNG')
+    (ws / 'state.json').write_text(json.dumps({'width': size[0], 'height': size[1], 'format': 'PNG', 'jobId': job_id}))
+    (ws / 'ocr.json').write_text(json.dumps({'lines': lines}))
+    return job_id
+
+
+def test_seam_detected_and_pages_joined(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main
+    cut = {'text': 'THE WORLD HAS', 'confidence': 0.95, 'quad': [[10, 1980], [200, 1980], [200, 1998], [10, 1998]]}
+    mid = {'text': 'HELLO THERE', 'confidence': 0.95, 'quad': [[10, 100], [200, 100], [200, 120], [10, 120]]}
+    upper = _job(tmp_path, monkeypatch, (300, 2000), [mid, cut])        # خط چسبیده به لبهٔ پایین
+    lower = _job(tmp_path, monkeypatch, (300, 2000), [mid])
+    far = _job(tmp_path, monkeypatch, (300, 2000), [mid])
+    client = TestClient(main.app)
+    assert client.post('/api/batch/seam', json={'upper': upper, 'lower': lower}).json() == {'join': True}
+    assert client.post('/api/batch/seam', json={'upper': far, 'lower': lower}).json() == {'join': False}
+    result = client.post('/api/batch/stitch', json={'upper': upper, 'lower': lower}).json()
+    tail = result['seam']['upperPart'][1]
+    assert result['seam']['upperPart'] == [0, tail]
+    assert result['seam']['lowerPart'][0] == tail
+    # بالا + نوار + پایین = کل ارتفاع دو صفحه
+    assert result['upper']['height'] + result['seam']['height'] + result['lower']['height'] - 0 == 4000
+    assert result['seam']['height'] == tail + result['seam']['lowerPart'][1] - tail
+
+
+def test_junk_filter_drops_non_words():
+    from app.bubbles import is_junk_text
+    for text, conf in (('Q', .9), ('兰存', .8), ('SSMASN', .55), ('%', .7), ('?!', .9), ('Keligh', .66)):
+        assert is_junk_text(text, conf), text
+    for text, conf in (('Hu...', .9), ('AYE~ AYE!', .93), ('NO.', .9), ('WHAT?', .9), ('THE WORLD... HAS COME', .9)):
+        assert not is_junk_text(text, conf), text
+
+
+def test_manual_text_override_and_line_breaks():
+    from app import layout, rendering
+    from PIL import ImageFont
+    cleaned = layout.sanitize({'text': ' سلام \r\n  دنیا ', 'font': 'x', 'size': 20})
+    assert cleaned['text'] == 'سلام\nدنیا' and cleaned['size'] == 20
+    assert 'text' not in layout.sanitize({'text': '   '})
+    font = ImageFont.truetype(str(rendering.font_path()), 20)
+    assert rendering.wrap_text('الف ب\nج', font, 10000) == ['الف ب', 'ج']
+    assert rendering.wrap_text('الف ب ج', font, 10000) == ['الف ب ج']
+
+
+def test_export_uses_original_image_for_pages_without_text(tmp_path, monkeypatch):
+    import io
+    import zipfile
+    from fastapi.testclient import TestClient
+    from app import main
+    plain = _job(tmp_path, monkeypatch, (60, 40), [])
+    other = _job(tmp_path, monkeypatch, (60, 40), [])
+    client = TestClient(main.app)
+    response = client.post('/api/batch/export', json={'items': [
+        {'jobId': plain, 'name': 'a.png', 'source': True},
+        {'jobId': plain, 'name': 'b.png', 'pieces': [{'jobId': plain, 'source': True},
+                                                       {'jobId': other, 'source': True, 'top': 10, 'bottom': 30}]},
+    ]})
+    assert response.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    assert sorted(archive.namelist()) == ['a.webp', 'b.webp']
+    assert Image.open(io.BytesIO(archive.read('a.webp'))).size == (60, 40)
+    assert Image.open(io.BytesIO(archive.read('b.webp'))).size == (60, 60)   # ۴۰ + ۲۰
