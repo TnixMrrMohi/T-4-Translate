@@ -15,6 +15,8 @@ export type BatchPage = {
   name: string;
   jobId: string;
   height?: number;
+  /** صفحه‌ای که متنی برای ترجمه ندارد؛ بدون پردازش و با تصویر اصلی در خروجی می‌آید. */
+  noText?: boolean;
   revision: string;
   text: string;
   state: 'extracted' | 'running' | 'done' | 'failed';
@@ -22,8 +24,11 @@ export type BatchPage = {
 };
 
 /** متن همهٔ صفحه‌ها با تیتر هر صفحه؛ همین قالب برای ترجمه برگردانده می‌شود. */
+export const isPlainPage = (page: BatchPage) => page.noText ?? page.text.trim() === '';
+
 export function buildBatchText(pages: BatchPage[]): string {
-  return pages.map(p => `=== ${String(p.page).padStart(3, '0')} | ${p.name} ===\n${p.text}\n`).join('\n');
+  // صفحه‌های بدون متن در فهرست ترجمه نمی‌آیند (چیزی برای ترجمه ندارند).
+  return pages.filter(p => !isPlainPage(p)).map(p => `=== ${String(p.page).padStart(3, '0')} | ${p.name} ===\n${p.text}\n`).join('\n');
 }
 
 /** متن ترجمه‌شده را بر اساس تیتر صفحه‌ها (=== 001 | name ===) تکه می‌کند. */
@@ -184,7 +189,7 @@ export function BatchPanel({onClose, prompt, visible = true}: {
         const text = (source.items as {number: number; text: string; tone?: string}[])
           .map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
         found.push({page: found.length + 1, name: file.name, jobId: job.jobId,
-          revision: source.revision, text, state: 'extracted', height: job.height});
+          revision: source.revision, text, state: 'extracted', height: job.height, noText: text.trim() === ''});
         fileList.push({name: file.name, pieces: [{jobId: job.jobId, top: 0, bottom: job.height}]});
       } catch (error) {
         errors.push(`${file.name}: ${error instanceof Error ? error.message : 'خطا'}`);
@@ -197,7 +202,7 @@ export function BatchPanel({onClose, prompt, visible = true}: {
         `/api/jobs/${jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
       const text = (source.items as {number: number; text: string; tone?: string}[])
         .map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
-      return {page: 0, name, jobId, revision: source.revision, text, state: 'extracted', height};
+      return {page: 0, name, jobId, revision: source.revision, text, state: 'extracted', height, noText: text.trim() === ''};
     };
     for (let at = 0; !cancel.current && at < fileList.length - 1; at += 1) {
       const upperFile = fileList[at];
@@ -258,6 +263,11 @@ export function BatchPanel({onClose, prompt, visible = true}: {
       if (cancel.current) break;
       const page = pages[index];
       setProgress(`ساخت صفحه ${index + 1} از ${pages.length}: ${page.name}`);
+      if (isPlainPage(page)) {
+        // بدون متن: چیزی برای ترجمه/پاک‌سازی نیست؛ همان تصویر اصلی در خروجی می‌ماند.
+        update(index, {state: 'done', error: undefined});
+        continue;
+      }
       update(index, {state: 'running', error: undefined});
       try {
         const text = parts.get(page.page);
@@ -289,9 +299,21 @@ export function BatchPanel({onClose, prompt, visible = true}: {
         body: JSON.stringify({
           items: outFiles
             .filter(file => file.pieces.every(piece => pages.find(p => p.jobId === piece.jobId)?.state === 'done'))
-            .map(file => file.pieces.length === 1 && file.pieces[0].top === 0
-              ? {jobId: file.pieces[0].jobId, name: file.name}
-              : {jobId: file.pieces[0].jobId, name: file.name, pieces: file.pieces}),
+            .map(file => {
+              const plain = (jobId: string) => {
+                const owner = pages.find(p => p.jobId === jobId);
+                return owner ? isPlainPage(owner) : false;
+              };
+              if (file.pieces.length === 1 && file.pieces[0].top === 0) {
+                return plain(file.pieces[0].jobId)
+                  ? {jobId: file.pieces[0].jobId, name: file.name, source: true}
+                  : {jobId: file.pieces[0].jobId, name: file.name};
+              }
+              return {
+                jobId: file.pieces[0].jobId, name: file.name,
+                pieces: file.pieces.map(piece => (plain(piece.jobId) ? {...piece, source: true} : piece)),
+              };
+            }),
           quality: WEBP_QUALITY,
         }),
       }, 'ساخت ZIP');
@@ -388,7 +410,7 @@ export function BatchPanel({onClose, prompt, visible = true}: {
               <li key={page.jobId} className={`batch-row is-${page.state}`}>
                 <span>{page.page}. {page.name}</span>
                 <span>
-                  {page.state === 'done' ? 'آماده' : page.state === 'running' ? 'در حال ساخت…'
+                  {page.state === 'done' ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده') : page.state === 'running' ? 'در حال ساخت…'
                     : page.state === 'failed' ? `ناموفق: ${page.error}` : 'متن استخراج شد'}
                 </span>
               </li>
@@ -407,7 +429,7 @@ export function BatchPanel({onClose, prompt, visible = true}: {
           </p>
           {pages.filter(page => page.state === 'done').map(page => (
             <ChapterPage key={page.jobId} jobId={page.jobId} label={page.name} index={page.page}
-              version={chapterVersion} />
+              version={chapterVersion} plain={isPlainPage(page)} />
           ))}
         </div>
       )}

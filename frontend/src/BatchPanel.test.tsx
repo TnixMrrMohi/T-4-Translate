@@ -38,3 +38,19 @@ describe('ناحیهٔ انداختن تصویر', () => {
     expect(screen.getByText('فقط تصویر PNG، JPG یا WebP پذیرفته می‌شود.')).toBeInTheDocument();
   });
 });
+
+import {isPlainPage} from './BatchPanel';
+
+describe('صفحه‌های بدون متن', () => {
+  it('در فهرست ترجمه نمی‌آیند و بدون ترجمه «آماده» حساب می‌شوند', () => {
+    const pages = [
+      {page: 1, name: 'a.png', jobId: 'x', revision: 'r', text: '', state: 'extracted' as const},
+      {page: 2, name: 'b.png', jobId: 'y', revision: 'r', text: '[1] HI', state: 'extracted' as const},
+    ];
+    expect(isPlainPage(pages[0])).toBe(true);
+    expect(isPlainPage(pages[1])).toBe(false);
+    const text = buildBatchText(pages);
+    expect(text).not.toContain('a.png');
+    expect(text).toContain('=== 002 | b.png ===');
+  });
+});

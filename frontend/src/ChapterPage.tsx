@@ -26,8 +26,10 @@ async function send(path: string, init: RequestInit, what: string): Promise<Resp
  * فونت، اندازه، چرخش، جا، متن/خط‌بندی و «پاک‌سازی مجدد پشت آن» در دسترس است.
  * ویرایشگر فقط وقتی صفحه به دید می‌آید بارگذاری می‌شود تا فصل‌های بلند سنگین نشوند.
  */
-export function ChapterPage({jobId, label, index, version}: {
+export function ChapterPage({jobId, label, index, version, plain = false}: {
   jobId: string; label: string; index: number; version: number;
+  /** صفحهٔ بدون متن: فقط تصویر اصلی نشان داده می‌شود و چیزی برای ویرایش نیست. */
+  plain?: boolean;
 }) {
   const holder = useRef<HTMLElement>(null);
   const [seen, setSeen] = useState(typeof IntersectionObserver === 'undefined');
@@ -65,8 +67,8 @@ export function ChapterPage({jobId, label, index, version}: {
   }, [jobId]);
 
   useEffect(() => {
-    if (seen) void loadDoc();
-  }, [seen, loadDoc, version]);
+    if (seen && !plain) void loadDoc();
+  }, [seen, plain, loadDoc, version]);
 
   useEffect(() => () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
@@ -139,7 +141,10 @@ export function ChapterPage({jobId, label, index, version}: {
         </span>
       </figcaption>
 
-      {!doc || doc.blocks.length === 0 ? (
+      {plain ? (
+        <img loading="lazy" alt={`صفحهٔ ${index} (بدون متن)`}
+          src={`/api/jobs/${jobId}/display/source?width=1400&v=${version}`} />
+      ) : !doc || doc.blocks.length === 0 ? (
         <img loading="lazy" alt={`صفحهٔ ${index}`} src={`/api/jobs/${jobId}/render?v=${renderVer}`} />
       ) : (
         <TextLayoutEditor

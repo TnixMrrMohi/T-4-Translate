@@ -176,3 +176,23 @@ def test_manual_text_override_and_line_breaks():
     font = ImageFont.truetype(str(rendering.font_path()), 20)
     assert rendering.wrap_text('الف ب\nج', font, 10000) == ['الف ب', 'ج']
     assert rendering.wrap_text('الف ب ج', font, 10000) == ['الف ب ج']
+
+
+def test_export_uses_original_image_for_pages_without_text(tmp_path, monkeypatch):
+    import io
+    import zipfile
+    from fastapi.testclient import TestClient
+    from app import main
+    plain = _job(tmp_path, monkeypatch, (60, 40), [])
+    other = _job(tmp_path, monkeypatch, (60, 40), [])
+    client = TestClient(main.app)
+    response = client.post('/api/batch/export', json={'items': [
+        {'jobId': plain, 'name': 'a.png', 'source': True},
+        {'jobId': plain, 'name': 'b.png', 'pieces': [{'jobId': plain, 'source': True},
+                                                       {'jobId': other, 'source': True, 'top': 10, 'bottom': 30}]},
+    ]})
+    assert response.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    assert sorted(archive.namelist()) == ['a.webp', 'b.webp']
+    assert Image.open(io.BytesIO(archive.read('a.webp'))).size == (60, 40)
+    assert Image.open(io.BytesIO(archive.read('b.webp'))).size == (60, 60)   # ۴۰ + ۲۰

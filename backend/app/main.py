@@ -1159,8 +1159,10 @@ class BatchExportItem(BaseModel):
     # برش از خروجی کار؛ خالی یعنی کل تصویر.
     top: int | None = None
     bottom: int | None = None
-    # فایلی که از چند تکه (از کارهای مختلف) زیر هم ساخته می‌شود: [{jobId, top, bottom}, ...]
+    # فایلی که از چند تکه (از کارهای مختلف) زیر هم ساخته می‌شود: [{jobId, top, bottom, source?}, ...]
     pieces: list[dict] | None = None
+    # صفحهٔ بدون متن: خروجی همان تصویر اصلی است (ترجمه و درجی در کار نیست).
+    source: bool = False
 
 
 class BatchExportInput(BaseModel):
@@ -1201,11 +1203,16 @@ async def batch_export(body: BatchExportInput):
                     extra += 1
                     name = f"{stem}-{extra}"
                 used.add(name.lower())
+                if item.source and not item.pieces:
+                    item.pieces = [{"jobId": item.jobId, "source": True}]
                 if item.pieces:
                     sources = []
                     for piece in item.pieces:
-                        sources.append((_fresh_render(str(piece["jobId"])), int(piece.get("top", 0)),
-                                        piece.get("bottom")))
+                        job_key = str(piece["jobId"])
+                        path = (workspace_for(job_key) / "source.img") if piece.get("source") else _fresh_render(job_key)
+                        if not path.is_file():
+                            raise HTTPException(409, "تصویر یکی از صفحه‌ها آماده نیست.")
+                        sources.append((path, int(piece.get("top", 0)), piece.get("bottom")))
                     target = scratch / f"{index}.webp"
 
                     def stack(sources=sources, target=target):
