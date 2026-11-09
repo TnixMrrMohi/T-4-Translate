@@ -22,3 +22,6 @@ build/
 
 # Local runtime diagnostics (created beside the project/executable)
 T4Translate-diagnostics.txt*
+
+web/
+scripts/patch*.py

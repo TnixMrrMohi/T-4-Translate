@@ -164,7 +164,9 @@ def _surface_fill(cv2, np, window, target):
     if not len(rows):
         return None
     # سیگما باید محلی بماند؛ سیگمای بزرگ رنگِ بیرونِ بالن را به داخل می‌کشد.
-    sigma = max(2.0, min(6.0, min(rows.ptp() or 1, cols.ptp() or 1) / 4.0))
+    row_ptp = int(rows.max() - rows.min()) if len(rows) else 1
+    col_ptp = int(cols.max() - cols.min()) if len(cols) else 1
+    sigma = max(2.0, min(6.0, min(row_ptp or 1, col_ptp or 1) / 4.0))
     weights = cv2.GaussianBlur(known, (0, 0), sigma)
     values = cv2.GaussianBlur(window * known[..., None], (0, 0), sigma)
     confident = weights > 0.25
@@ -460,7 +462,7 @@ def _fill_ink(cv2, np, image, result, box, background, mask_total,
                 # پس‌زمینه پر می‌شوند تا وصله «تخت» و یک‌درجه تیره‌تر نباشد.
                 confident = gaps & surface[1]
                 filled[confident] = surface[0][confident]
-        seed = (wx0 * 73856093) ^ (wy0 * 19349663) ^ (cx * 83492791) ^ (cy * 2654435761)
+        seed = int(int(wx0) * 73856093) ^ int(int(wy0) * 19349663) ^ int(int(cx) * 83492791) ^ int(int(cy) * 2654435761)
         noise = np.random.default_rng(abs(seed) % (2 ** 32)).normal(
             0.0, 1.0, size=(int(target.sum()), 1))
         # پراکندگی داخل بازهٔ رنگ‌های واقعیِ همان دور و بر می‌ماند (نه سفیدِ کامل).
@@ -815,11 +817,13 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
         quad_vertices = points.copy()
         # کادر OCR معمولاً حروف و دنباله‌ها را دقیق در بر نمی‌گیرد؛ کمی بزرگ‌ترش می‌کنیم
         # تا باقی‌ماندهٔ متن انگلیسی پس از پاک‌سازی نماند. کادرهای ترجمه‌نشده بزرگ نمی‌شوند.
-        span = float(max(points[:, 0].ptp(), points[:, 1].ptp()))
+        ptp_x = float(points[:, 0].max() - points[:, 0].min())
+        ptp_y = float(points[:, 1].max() - points[:, 1].min())
+        span = float(max(ptp_x, ptp_y))
         pad = int(min(20, max(2, round(span * PADDING_RATIO))))
         extra_grow = int((grow or {}).get(number, 0))
         # کوچک‌کردن هرگز کادر را وارونه یا خالی نمی‌کند.
-        half = int(min(points[:, 0].ptp(), points[:, 1].ptp()) // 2)
+        half = int(min(ptp_x, ptp_y) // 2)
         pad = max(-max(0, half - 2), pad + extra_grow)
         center_x, center_y = points[:, 0].mean(), points[:, 1].mean()
         points = np.array([

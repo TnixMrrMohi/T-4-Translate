@@ -91,7 +91,9 @@ def test_thought_dots_make_thought_bubble(tmp_path):
     assert result["bubbles"][0]["kind"] == "thought_bubble", result["bubbles"][0]
 
 
-def test_text_without_bubble_is_outside(tmp_path):
+def test_text_without_bubble_is_outside(tmp_path, monkeypatch):
+    from app import textdet
+    monkeypatch.setattr(textdet, "masks", lambda _image: {})
     def shapes(draw, size):
         for index in range(3):
             draw.rectangle([100, 100 + index * 40, 500, 125 + index * 40], fill=0)
