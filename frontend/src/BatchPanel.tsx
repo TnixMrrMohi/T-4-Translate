@@ -8,7 +8,10 @@ const HEADER = /^===\s*(\d+)\s*\|\s*(.+?)\s*===\s*$/;
 export type BatchPiece = {jobId: string; top: number; bottom: number};
 
 /** یک تصویر اصلی؛ فایل نهایی‌اش از چند تکه (از کارهای مختلف) زیر هم ساخته می‌شود. */
-export type BatchFile = {name: string; pieces: BatchPiece[]};
+export type BatchFile = {name: string; pieces: BatchPiece[]; order?: number};
+
+/** فایلی که خواندنش شکست خورد (مثلاً حافظهٔ کم)؛ برای «تلاش دوباره» نگه داشته می‌شود. */
+type FailedFile = {file: File; order: number; error: string};
 
 export type BatchPage = {
   page: number;
@@ -57,10 +60,69 @@ async function detail(response: Response, fallback: string): Promise<string> {
   return fallback;
 }
 
+class HttpError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function call(path: string, init: RequestInit | undefined, what: string): Promise<Response> {
   const response = await fetch(path, init);
-  if (!response.ok) throw new Error(`${what}: ${await detail(response, 'ناموفق بود')}`);
+  if (!response.ok) throw new HttpError(`${what}: ${await detail(response, 'ناموفق بود')}`, response.status);
   return response;
+}
+
+/** نام و کدِ یکتای هر مرحلهٔ پردازش دسته‌ای؛ همین نام‌ها در نوار وضعیت و راهنما دیده می‌شوند. */
+export const STAGES = {
+  upload: ['A1', 'دریافت فایل'],
+  slice: ['A2', 'برش صفحهٔ بلند'],
+  ocr: ['A3', 'خواندن متن (OCR)'],
+  seamCheck: ['A4', 'بررسی متنِ روی مرز'],
+  seamBuild: ['A5', 'ساخت نوار مرزی'],
+  seamOcr: ['A6', 'خواندن متن نوار مرزی'],
+  save: ['B1', 'ثبت ترجمه'],
+  clean: ['B2', 'پاک‌سازی متن اصلی'],
+  render: ['B3', 'درج متن فارسی'],
+  zip: ['C1', 'ساخت ZIP خروجی'],
+  wait: ['R1', 'صبر برای آزاد شدن حافظه'],
+} as const;
+
+export function stage(key: keyof typeof STAGES, detail = ''): string {
+  const [code, title] = STAGES[key];
+  return `«${code}» ${title}${detail ? ` — ${detail}` : ''}`;
+}
+
+const MEMORY_ATTEMPTS = 4;
+const MEMORY_WAITS = [10, 25, 45];   // ثانیه، پیش از تلاش دوم تا چهارم
+
+const isMemoryError = (error: unknown) => {
+  const status = (error as {status?: number} | null)?.status;
+  const message = error instanceof Error ? error.message : '';
+  return status === 507 || status === 503 || /حافظه/.test(message);
+};
+
+/** خطای کمبود حافظه را تا چند بار با صبر کردن دوباره می‌زند؛ خطاهای دیگر همان لحظه بالا می‌روند. */
+export async function withMemoryRetry<T>(
+  task: () => Promise<T>,
+  onWait: (seconds: number, attempt: number) => void,
+  stopped: () => boolean = () => false,
+  sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => window.setTimeout(resolve, ms)),
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      if (!isMemoryError(error) || attempt >= MEMORY_ATTEMPTS - 1 || stopped()) throw error;
+      const wait = MEMORY_WAITS[Math.min(attempt, MEMORY_WAITS.length - 1)];
+      for (let left = wait; left > 0; left -= 1) {
+        onWait(left, attempt);
+        await sleep(1000);
+      }
+    }
+  }
 }
 
 function saveBlob(blob: Blob, name: string) {
@@ -92,6 +154,7 @@ export function BatchPanel({onClose, prompt, visible = true}: {
   const [pages, setPages] = useState<BatchPage[]>([]);
   const [outFiles, setOutFiles] = useState<BatchFile[]>([]);
   const [translated, setTranslated] = useState('');
+  const [failedFiles, setFailedFiles] = useState<FailedFile[]>([]);
   const [busy, setBusy] = useState<null | 'extract' | 'apply' | 'export'>(null);
   const [message, setMessage] = useState('');
   const [progress, setProgress] = useState('');
@@ -160,62 +223,62 @@ export function BatchPanel({onClose, prompt, visible = true}: {
 
   const combined = buildBatchText(pages);
   const doneCount = pages.filter(p => p.state === 'done').length;
+  const failedPages = pages.filter(p => p.state === 'failed');
 
   function update(index: number, patch: Partial<BatchPage>) {
     setPages(old => old.map((p, i) => (i === index ? {...p, ...patch} : p)));
   }
 
-  async function extract() {
-    if (!files.length || busy) return;
-    cancel.current = false;
-    setBusy('extract');
-    setPages([]);
-    setTranslated('');
-    const found: BatchPage[] = [];
-    const fileList: BatchFile[] = [];
-    const errors: string[] = [];
-    const toText = (items: {number: number; text: string; tone?: string}[]) =>
-      items.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
-    const loadPage = async (jobId: string, name: string, height: number): Promise<BatchPage> => {
-      const source = await (await call(
-        `/api/jobs/${jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
-      const text = toText(source.items);
-      return {page: 0, name, jobId, revision: source.revision, text, state: 'extracted', height, noText: text.trim() === ''};
-    };
-    for (let index = 0; index < files.length; index += 1) {
-      if (cancel.current) break;
-      const file = files[index];
-      setProgress(`استخراج متن ${index + 1} از ${files.length}: ${file.name}`);
-      try {
-        const form = new FormData();
-        form.append('file', file);
-        const job = await (await call('/api/jobs', {method: 'POST', body: form}, 'بارگذاری')).json();
-        // صفحه‌ای که برای حافظهٔ این دستگاه بزرگ است، خودکار به برش‌های کوچک‌تر شکسته می‌شود؛
-        // خروجی نهایی دوباره از همان برش‌ها یک فایل می‌سازد و متنِ روی برش‌ها در مرز یک‌تکه پردازش می‌شود.
-        const slice = await (await call('/api/batch/slice', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({jobId: job.jobId}),
-        }, 'برش صفحهٔ بلند')).json();
-        const units: {jobId: string; height: number}[] = slice.sliced
-          ? slice.slices : [{jobId: job.jobId, height: job.height}];
-        if (slice.sliced) void fetch(`/api/jobs/${job.jobId}`, {method: 'DELETE'}).catch(() => undefined);
-        const pieces: BatchPiece[] = [];
-        for (let part = 0; part < units.length; part += 1) {
-          const unit = units[part];
-          setProgress(`استخراج متن ${index + 1} از ${files.length}: ${file.name}`
-            + (units.length > 1 ? ` (برش ${part + 1} از ${units.length})` : ''));
-          await call(`/api/jobs/${unit.jobId}/ocr`, {method: 'POST'}, 'OCR');
-          const label = units.length > 1 ? `${file.name} [${part + 1}]` : file.name;
-          found.push(await loadPage(unit.jobId, label, unit.height));
-          pieces.push({jobId: unit.jobId, top: 0, bottom: unit.height});
-        }
-        fileList.push({name: file.name, pieces});
-      } catch (error) {
-        errors.push(`${file.name}: ${error instanceof Error ? error.message : 'خطا'}`);
-      }
+  const toText = (items: {number: number; text: string; tone?: string}[]) =>
+    items.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
+
+  const loadPage = async (jobId: string, name: string, height: number): Promise<BatchPage> => {
+    const source = await (await call(
+      `/api/jobs/${jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
+    const text = toText(source.items);
+    return {page: 0, name, jobId, revision: source.revision, text, state: 'extracted', height, noText: text.trim() === ''};
+  };
+
+  /** اگر حافظهٔ دستگاه پر باشد، کمی صبر می‌کند و همان کار را دوباره می‌زند (به‌جای رد کردن صفحه). */
+  const retrying = <T,>(what: string, task: () => Promise<T>) =>
+    withMemoryRetry(task, (seconds, attempt) =>
+      setProgress(stage('wait', `${what} — ${seconds} ثانیه صبر، تلاش ${attempt + 1} از ${MEMORY_ATTEMPTS}`)),
+    () => cancel.current);
+
+  /** یک فایل: بارگذاری ← (در صورت بزرگی) برش ← OCR ← متن. نتیجه به found/fileList اضافه می‌شود. */
+  async function extractOne(file: File, order: number, found: BatchPage[], fileList: BatchFile[], tag: string) {
+    const form = new FormData();
+    form.append('file', file);
+    setProgress(stage('upload', `${tag} ${file.name}`));
+    const job = await (await call('/api/jobs', {method: 'POST', body: form}, 'بارگذاری')).json();
+    // صفحه‌ای که برای حافظهٔ این دستگاه بزرگ است، خودکار به برش‌های کوچک‌تر شکسته می‌شود؛
+    // خروجی نهایی دوباره از همان برش‌ها یک فایل می‌سازد و متنِ روی برش‌ها در مرز یک‌تکه پردازش می‌شود.
+    setProgress(stage('slice', `${tag} ${file.name}`));
+    const slice = await (await call('/api/batch/slice', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({jobId: job.jobId}),
+    }, 'برش صفحهٔ بلند')).json();
+    const units: {jobId: string; height: number}[] = slice.sliced
+      ? slice.slices : [{jobId: job.jobId, height: job.height}];
+    if (slice.sliced) void fetch(`/api/jobs/${job.jobId}`, {method: 'DELETE'}).catch(() => undefined);
+    const pieces: BatchPiece[] = [];
+    const added: BatchPage[] = [];
+    for (let part = 0; part < units.length; part += 1) {
+      const unit = units[part];
+      const where = `${tag} ${file.name}` + (units.length > 1 ? ` · برش ${part + 1} از ${units.length}` : '');
+      setProgress(stage('ocr', where));
+      await retrying('OCR', () => call(`/api/jobs/${unit.jobId}/ocr`, {method: 'POST'}, 'OCR'));
+      const label = units.length > 1 ? `${file.name} [${part + 1}]` : file.name;
+      added.push(await loadPage(unit.jobId, label, unit.height));
+      pieces.push({jobId: unit.jobId, top: 0, bottom: unit.height});
     }
-    // متنی که از مرز دو کار پشت‌سرهم (دو صفحه یا دو برش) بریده شده، فقط در یک «نوار مرزی» کامل
-    // پاک و درج می‌شود.
+    // فقط وقتی همهٔ برش‌های این فایل خوانده شد، به فصل اضافه می‌شود؛ فایل نیمه‌کاره نمی‌ماند.
+    found.push(...added);
+    fileList.push({name: file.name, order, pieces});
+  }
+
+  /** متنی که از مرز دو کار پشت‌سرهم (دو صفحه یا دو برش) بریده شده، در یک «نوار مرزی» کامل پردازش می‌شود. */
+  async function seamPass(found: BatchPage[], fileList: BatchFile[], errors: string[]): Promise<number> {
     let joinedCount = 0;
     const ownerOf = (jobId: string) => {
       for (const file of fileList) {
@@ -227,7 +290,16 @@ export function BatchPanel({onClose, prompt, visible = true}: {
     for (let at = 0; !cancel.current && at < found.length - 1;) {
       const upperPage = found[at];
       const lowerPage = found[at + 1];
-      setProgress(`بررسی مرز ${upperPage.name} و ${lowerPage.name}…`);
+      const upperOwner = ownerOf(upperPage.jobId);
+      const lowerOwner = ownerOf(lowerPage.jobId);
+      // فایلی که خواندنش شکست خورده «شکاف» است؛ دو صفحهٔ دو طرفش همسایهٔ واقعی نیستند.
+      const gap = upperOwner && lowerOwner && upperOwner.file !== lowerOwner.file
+        && (lowerOwner.file.order ?? 0) !== (upperOwner.file.order ?? 0) + 1;
+      if (gap) {
+        at += 1;
+        continue;
+      }
+      setProgress(stage('seamCheck', `${upperPage.name} ↔ ${lowerPage.name}`));
       try {
         const seam = await (await call('/api/batch/seam', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -237,15 +309,14 @@ export function BatchPanel({onClose, prompt, visible = true}: {
           at += 1;
           continue;
         }
-        const upperOwner = ownerOf(upperPage.jobId);
-        const lowerOwner = ownerOf(lowerPage.jobId);
         if (!upperOwner || !lowerOwner) throw Error('ترتیب صفحه‌ها پیدا نشد.');
-        setProgress(`ساخت نوار مرزی ${upperPage.name} و ${lowerPage.name} (متن روی مرز)…`);
+        setProgress(stage('seamBuild', `${upperPage.name} ↔ ${lowerPage.name}`));
         const cut = await (await call('/api/batch/stitch', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({upper: upperPage.jobId, lower: lowerPage.jobId}),
         }, 'ساخت نوار مرزی')).json();
-        await call(`/api/jobs/${cut.seam.jobId}/ocr`, {method: 'POST'}, 'OCR نوار مرزی');
+        setProgress(stage('seamOcr', `${upperPage.name} ↔ ${lowerPage.name}`));
+        await retrying('OCR نوار مرزی', () => call(`/api/jobs/${cut.seam.jobId}/ocr`, {method: 'POST'}, 'OCR نوار مرزی'));
         const upperNew = await loadPage(cut.upper.jobId, upperPage.name, cut.upper.height);
         const seamNew = await loadPage(cut.seam.jobId, `${upperPage.name} ↔ ${lowerPage.name} (مرز)`, cut.seam.height);
         const lowerNew = await loadPage(cut.lower.jobId, lowerPage.name, cut.lower.height);
@@ -270,55 +341,136 @@ export function BatchPanel({onClose, prompt, visible = true}: {
         at += 1;
       }
     }
+    return joinedCount;
+  }
+
+  function finishExtract(found: BatchPage[], fileList: BatchFile[], failed: FailedFile[], errors: string[], joined: number) {
     found.forEach((entry, index) => {entry.page = index + 1;});
     setOutFiles(fileList);
     setPages(found);   // فقط وقتی همهٔ تصویرها خوانده شدند نشان داده می‌شود
+    setFailedFiles(failed);
     setBusy(null);
     setProgress('');
-    setMessage(errors.length
-      ? `${found.length} صفحه آماده شد؛ ${errors.length} خطا: ${errors.join(' | ')}`
-      : `متن ${found.length} صفحه استخراج شد${joinedCount ? ` (${joinedCount} مرز با متنِ بریده جدا و یک‌تکه پردازش می‌شود)` : ''}. «کپی با پرامپت» را بزنید، ترجمه کنید و در کادر پایین بگذارید.`);
+    const parts = [`متن ${found.length} صفحه آماده است`];
+    if (joined) parts.push(`${joined} مرز با متنِ بریده جدا و یک‌تکه پردازش می‌شود`);
+    if (failed.length) parts.push(`${failed.length} فایل خوانده نشد (دکمهٔ «تلاش دوباره برای فایل‌های ناموفق» را بزنید؛ بقیه دست‌نخورده می‌مانند)`);
+    if (errors.length) parts.push(`خطاها: ${errors.join(' | ')}`);
+    setMessage(parts.join('؛ ') + '.');
   }
 
-  async function run() {
+  async function extract() {
+    if (!files.length || busy) return;
+    cancel.current = false;
+    setBusy('extract');
+    setPages([]);
+    setTranslated('');
+    const found: BatchPage[] = [];
+    const fileList: BatchFile[] = [];
+    const failed: FailedFile[] = [];
+    const errors: string[] = [];
+    for (let index = 0; index < files.length; index += 1) {
+      if (cancel.current) break;
+      try {
+        await extractOne(files[index], index, found, fileList, `فایل ${index + 1} از ${files.length} ·`);
+      } catch (error) {
+        failed.push({file: files[index], order: index, error: error instanceof Error ? error.message : 'خطا'});
+      }
+    }
+    const joined = await seamPass(found, fileList, errors);
+    finishExtract(found, fileList, failed, errors, joined);
+  }
+
+  /** فقط فایل‌هایی که خوانده نشدند (مثلاً حافظهٔ کم) دوباره خوانده و سر جای خودشان در فصل گذاشته می‌شوند. */
+  async function retryFailedFiles() {
+    if (!failedFiles.length || busy) return;
+    cancel.current = false;
+    setBusy('extract');
+    const found = [...pages];
+    const fileList = outFiles.map(file => ({...file, pieces: [...file.pieces]}));
+    const stillFailed: FailedFile[] = [];
+    const errors: string[] = [];
+    for (let at = 0; at < failedFiles.length; at += 1) {
+      const item = failedFiles[at];
+      if (cancel.current) {
+        stillFailed.push(item);
+        continue;
+      }
+      const fresh: BatchPage[] = [];
+      const freshFiles: BatchFile[] = [];
+      try {
+        await extractOne(item.file, item.order, fresh, freshFiles, `تلاش دوباره ${at + 1} از ${failedFiles.length} ·`);
+      } catch (error) {
+        stillFailed.push({...item, error: error instanceof Error ? error.message : 'خطا'});
+        continue;
+      }
+      // سر جای درست: بعد از آخرین صفحهٔ نزدیک‌ترین فایلِ قبلی‌اش.
+      const before = fileList.filter(file => (file.order ?? 0) < item.order)
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).pop();
+      let position = 0;
+      if (before) {
+        const lastJob = before.pieces[before.pieces.length - 1].jobId;
+        position = found.findIndex(entry => entry.jobId === lastJob) + 1;
+      }
+      found.splice(position, 0, ...fresh);
+      fileList.push(...freshFiles);
+    }
+    fileList.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const joined = await seamPass(found, fileList, errors);
+    finishExtract(found, fileList, stillFailed, errors, joined);
+  }
+
+  /** اجرای دسته‌ای: همهٔ صفحه‌ها یا فقط صفحه‌های داده‌شده (تلاش دوباره). */
+  async function run(only?: string[]) {
     if (busy || !pages.length) return;
     const parts = splitBatchText(translated);
     cancel.current = false;
     setBusy('apply');
-    for (let index = 0; index < pages.length; index += 1) {
+    const targets = pages.filter(page => !only || only.includes(page.jobId));
+    let ok = 0;
+    let bad = 0;
+    for (let at = 0; at < targets.length; at += 1) {
       if (cancel.current) break;
-      const page = pages[index];
-      setProgress(`ساخت صفحه ${index + 1} از ${pages.length}: ${page.name}`);
+      const page = targets[at];
+      const index = pages.findIndex(entry => entry.jobId === page.jobId);
+      const tag = `${at + 1} از ${targets.length} · ${page.name}`;
       if (isPlainPage(page)) {
         // بدون متن: چیزی برای ترجمه/پاک‌سازی نیست؛ همان تصویر اصلی در خروجی می‌ماند.
         update(index, {state: 'done', error: undefined});
+        ok += 1;
         continue;
       }
       update(index, {state: 'running', error: undefined});
       try {
         const text = parts.get(page.page);
         if (!text) throw new Error('ترجمهٔ این صفحه در متن نیست (تیتر === ... === را نگه دارید).');
-        const json = {'Content-Type': 'application/json'};
+        setProgress(stage('save', tag));
         await call(`/api/jobs/${page.jobId}/translations`, {
-          method: 'POST', headers: json,
+          method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({sourceRevision: page.revision, text, promo: 'replace'}),
         }, 'ذخیرهٔ ترجمه');
-        await call(`/api/jobs/${page.jobId}/clean`, {method: 'POST'}, 'پاک‌سازی');
-        await call(`/api/jobs/${page.jobId}/render`, {method: 'POST'}, 'درج ترجمه');
+        setProgress(stage('clean', tag));
+        await retrying('پاک‌سازی', () => call(`/api/jobs/${page.jobId}/clean`, {method: 'POST'}, 'پاک‌سازی'));
+        setProgress(stage('render', tag));
+        await retrying('درج ترجمه', () => call(`/api/jobs/${page.jobId}/render`, {method: 'POST'}, 'درج ترجمه'));
         update(index, {state: 'done'});
+        ok += 1;
       } catch (error) {
         update(index, {state: 'failed', error: error instanceof Error ? error.message : 'خطا'});
+        bad += 1;
       }
     }
     setBusy(null);
     setProgress('');
-    setMessage('پردازش دسته‌ای تمام شد؛ حالا خروجی WebP را دانلود کنید.');
+    setMessage(bad
+      ? `${ok} صفحه ساخته شد و ${bad} صفحه ناموفق ماند؛ کنارِ هر صفحهٔ ناموفق دکمهٔ «تلاش دوباره» هست (بقیه دست‌نخورده می‌مانند).`
+      : 'پردازش دسته‌ای تمام شد؛ حالا خروجی WebP را دانلود کنید.');
   }
 
   async function exportZip() {
     const ready = pages.filter(p => p.state === 'done');
     if (!ready.length || busy) return;
     setBusy('export');
+    setProgress(stage('zip', `${outFiles.length} فایل`));
     try {
       const response = await call('/api/batch/export', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -344,7 +496,11 @@ export function BatchPanel({onClose, prompt, visible = true}: {
         }),
       }, 'ساخت ZIP');
       saveBlob(await response.blob(), 't4-batch-webp.zip');
-      setMessage(`ZIP با ${outFiles.length} تصویر WebP ساخته و دانلود شد.`);
+      const stateOf = (jobId: string) => pages.find(p => p.jobId === jobId)?.state;
+      const skipped = outFiles.filter(file => !file.pieces.every(piece => stateOf(piece.jobId) === 'done'));
+      setMessage(skipped.length
+        ? `ZIP با ${outFiles.length - skipped.length} تصویر ساخته شد؛ ${skipped.length} فایل به‌خاطر صفحهٔ ناموفق در ZIP نیست: ${skipped.map(file => file.name).join('، ')}. ابتدا «تلاش دوباره» را بزنید.`
+        : `ZIP با ${outFiles.length} تصویر WebP ساخته و دانلود شد.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'دانلود ناموفق بود.');
     } finally {
@@ -401,7 +557,23 @@ export function BatchPanel({onClose, prompt, visible = true}: {
         <button type="button" className="ocr" disabled={!files.length || busy !== null} onClick={() => void extract()}>
           استخراج متن همهٔ تصویرها
         </button>
+        {failedFiles.length > 0 && (
+          <button type="button" className="ghost" disabled={busy !== null} onClick={() => void retryFailedFiles()}>
+            تلاش دوباره برای فایل‌های ناموفق ({failedFiles.length})
+          </button>
+        )}
       </div>
+
+      {failedFiles.length > 0 && (
+        <ul className="batch-list" aria-label="فایل‌های خوانده‌نشده">
+          {failedFiles.map(item => (
+            <li key={`${item.order}-${item.file.name}`} className="batch-row is-failed">
+              <span dir="ltr">{item.file.name}</span>
+              <span>خوانده نشد: {item.error}</span>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {pages.length > 0 && (
         <>
@@ -426,6 +598,12 @@ export function BatchPanel({onClose, prompt, visible = true}: {
             <button type="button" className="ocr" disabled={busy !== null || !translated.trim()} onClick={() => void run()}>
               اجرای دسته‌ای (پاک‌سازی و درج ترجمه)
             </button>
+            {failedPages.length > 0 && (
+              <button type="button" className="ghost" disabled={busy !== null || !translated.trim()}
+                onClick={() => void run(failedPages.map(page => page.jobId))}>
+                تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
+              </button>
+            )}
             <button type="button" className="ocr" disabled={busy !== null || doneCount === 0} onClick={() => void exportZip()}>
               دانلود خروجی WebP (ZIP)
             </button>
@@ -435,9 +613,13 @@ export function BatchPanel({onClose, prompt, visible = true}: {
             {pages.map(page => (
               <li key={page.jobId} className={`batch-row is-${page.state}`}>
                 <span>{page.page}. {page.name}</span>
-                <span>
+                <span className="batch-row-state">
                   {page.state === 'done' ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده') : page.state === 'running' ? 'در حال ساخت…'
                     : page.state === 'failed' ? `ناموفق: ${page.error}` : 'متن استخراج شد'}
+                  {page.state === 'failed' && (
+                    <button type="button" className="ghost small" disabled={busy !== null || !translated.trim()}
+                      onClick={() => void run([page.jobId])}>تلاش دوباره</button>
+                  )}
                 </span>
               </li>
             ))}
@@ -462,13 +644,22 @@ export function BatchPanel({onClose, prompt, visible = true}: {
 
       {busy && (
         <div className="wizard-nav start">
-          <span className="wizard-note" role="status">{progress || 'در حال کار…'}</span>
+          <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
           {busy !== 'export' && (
             <button type="button" className="ghost" onClick={() => {cancel.current = true;}}>توقف پس از صفحهٔ جاری</button>
           )}
         </div>
       )}
       {message && <p className="wizard-note" role="status">{message}</p>}
+
+      <details className="batch-legend">
+        <summary>راهنمای مرحله‌ها (کد و نام هر مرحله)</summary>
+        <ul>
+          {(Object.keys(STAGES) as (keyof typeof STAGES)[]).map(key => (
+            <li key={key}><b dir="ltr">{STAGES[key][0]}</b> {STAGES[key][1]}</li>
+          ))}
+        </ul>
+      </details>
     </section>
   );
 }
