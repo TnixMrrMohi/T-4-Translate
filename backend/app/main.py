@@ -1266,6 +1266,73 @@ class SeamInput(BaseModel):
     lower: str
 
 
+SLICE_SHARE = 0.55       # سهم سقف پیکسلِ پروفایل که هر برش مجاز است (OCR و پاک‌سازی جا داشته باشند)
+SLICE_WINDOW = 0.3       # برش را تا این سهم از ارتفاع هدف بالاتر برای یافتن ردیف خالی می‌گردد
+
+
+def _slice_cuts(gray, max_rows: int) -> list[int]:
+    """مرز برش‌های یک صفحهٔ بسیار بلند، در ردیف‌های تقریباً یکدست (فاصلهٔ بین صحنه‌ها و متن‌ها).
+
+    برش از وسط متن هم اگر افتاد، بعداً مثل مرز دو صفحه با «نوار مرزی» کامل پردازش می‌شود.
+    """
+    import numpy as np
+
+    height = gray.shape[0]
+    cuts: list[int] = []
+    start = 0
+    while height - start > max_rows * 1.15:
+        target = start + max_rows
+        low = max(start + int(max_rows * (1 - SLICE_WINDOW)), start + 1)
+        band = gray[low:target].astype(np.float32)
+        std = band.std(axis=1)
+        # میانگین چند ردیف پشت‌سرهم، تا یک ردیف تنهای یکدست میان متن فریب ندهد.
+        smooth = np.convolve(std, np.ones(8, dtype=np.float32) / 8, mode="same")
+        # بین ردیف‌های همان‌قدر یکدست، نزدیک‌ترِ به هدف انتخاب می‌شود (برش‌ها هم‌اندازه‌تر می‌مانند).
+        penalty = smooth + (target - (low + np.arange(len(smooth)))) * 0.002
+        cut = low + int(np.argmin(penalty))
+        cuts.append(cut)
+        start = cut
+    return cuts
+
+
+class SliceInput(BaseModel):
+    jobId: str
+
+
+@app.post("/api/batch/slice")
+def batch_slice(body: SliceInput) -> dict:
+    """صفحهٔ بیش‌ازحد بزرگ برای حافظهٔ این دستگاه را به چند برشِ کارِ جدا می‌شکند.
+
+    صفحه‌های وب‌تونِ ۱۶۰۰×۱۰٬۰۰۰ از سقف پروفایل «کم‌حافظه» رد می‌شدند و OCR‌شان خطا می‌داد؛ حالا
+    خودکار برش می‌خورند. اگر لازم نباشد ``sliced`` نادرست است و کار همان می‌ماند.
+    """
+    import numpy as np
+
+    info = get_job(body.jobId)
+    width, height = int(info["width"]), int(info["height"])
+    profile = hardware.current_profile()
+    limit = int(profile.get("maxPixels", 6_000_000) * SLICE_SHARE)
+    if width * height <= limit:
+        return {"sliced": False, "slices": []}
+    max_rows = max(400, limit // max(1, width))
+    with Image.open(workspace_for(body.jobId) / "source.img") as opened:
+        rgb = opened.convert("RGB")
+    try:
+        gray = np.asarray(rgb.convert("L"))
+        edges = [0, *_slice_cuts(gray, max_rows), height]
+        slices = []
+        for top, bottom in zip(edges, edges[1:]):
+            part = rgb.crop((0, top, width, bottom))
+            try:
+                created = _new_job(part, None, None)
+            finally:
+                part.close()
+            slices.append({"jobId": created["jobId"], "height": created["height"], "top": top})
+    finally:
+        rgb.close()
+    return {"sliced": True, "slices": slices}
+
+
 def _touches(lines: list, height: int, bottom: bool) -> bool:
     """آیا خطِ واقعی (نه نویز) به لبهٔ پایین/بالای تصویر می‌چسبد؟"""
     for line in lines:

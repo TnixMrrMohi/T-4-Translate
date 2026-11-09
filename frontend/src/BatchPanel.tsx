@@ -174,6 +174,14 @@ export function BatchPanel({onClose, prompt, visible = true}: {
     const found: BatchPage[] = [];
     const fileList: BatchFile[] = [];
     const errors: string[] = [];
+    const toText = (items: {number: number; text: string; tone?: string}[]) =>
+      items.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
+    const loadPage = async (jobId: string, name: string, height: number): Promise<BatchPage> => {
+      const source = await (await call(
+        `/api/jobs/${jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
+      const text = toText(source.items);
+      return {page: 0, name, jobId, revision: source.revision, text, state: 'extracted', height, noText: text.trim() === ''};
+    };
     for (let index = 0; index < files.length; index += 1) {
       if (cancel.current) break;
       const file = files[index];
@@ -182,66 +190,84 @@ export function BatchPanel({onClose, prompt, visible = true}: {
         const form = new FormData();
         form.append('file', file);
         const job = await (await call('/api/jobs', {method: 'POST', body: form}, 'بارگذاری')).json();
-        await call(`/api/jobs/${job.jobId}/ocr`, {method: 'POST'}, 'OCR');
-        const source = await (await call(
-          `/api/jobs/${job.jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
-        // لحن هر بالن کنار شمارهٔ خودش می‌آید (مثل حالت تک‌تصویر)؛ سرور هنگام ذخیره آن را کنار می‌گذارد.
-        const text = (source.items as {number: number; text: string; tone?: string}[])
-          .map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
-        found.push({page: found.length + 1, name: file.name, jobId: job.jobId,
-          revision: source.revision, text, state: 'extracted', height: job.height, noText: text.trim() === ''});
-        fileList.push({name: file.name, pieces: [{jobId: job.jobId, top: 0, bottom: job.height}]});
+        // صفحه‌ای که برای حافظهٔ این دستگاه بزرگ است، خودکار به برش‌های کوچک‌تر شکسته می‌شود؛
+        // خروجی نهایی دوباره از همان برش‌ها یک فایل می‌سازد و متنِ روی برش‌ها در مرز یک‌تکه پردازش می‌شود.
+        const slice = await (await call('/api/batch/slice', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({jobId: job.jobId}),
+        }, 'برش صفحهٔ بلند')).json();
+        const units: {jobId: string; height: number}[] = slice.sliced
+          ? slice.slices : [{jobId: job.jobId, height: job.height}];
+        if (slice.sliced) void fetch(`/api/jobs/${job.jobId}`, {method: 'DELETE'}).catch(() => undefined);
+        const pieces: BatchPiece[] = [];
+        for (let part = 0; part < units.length; part += 1) {
+          const unit = units[part];
+          setProgress(`استخراج متن ${index + 1} از ${files.length}: ${file.name}`
+            + (units.length > 1 ? ` (برش ${part + 1} از ${units.length})` : ''));
+          await call(`/api/jobs/${unit.jobId}/ocr`, {method: 'POST'}, 'OCR');
+          const label = units.length > 1 ? `${file.name} [${part + 1}]` : file.name;
+          found.push(await loadPage(unit.jobId, label, unit.height));
+          pieces.push({jobId: unit.jobId, top: 0, bottom: unit.height});
+        }
+        fileList.push({name: file.name, pieces});
       } catch (error) {
         errors.push(`${file.name}: ${error instanceof Error ? error.message : 'خطا'}`);
       }
     }
-    // متنی که از مرز دو صفحه بریده شده، فقط در یک «نوار مرزی» کامل پاک و درج می‌شود.
+    // متنی که از مرز دو کار پشت‌سرهم (دو صفحه یا دو برش) بریده شده، فقط در یک «نوار مرزی» کامل
+    // پاک و درج می‌شود.
     let joinedCount = 0;
-    const loadPage = async (jobId: string, name: string, height: number): Promise<BatchPage> => {
-      const source = await (await call(
-        `/api/jobs/${jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
-      const text = (source.items as {number: number; text: string; tone?: string}[])
-        .map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
-      return {page: 0, name, jobId, revision: source.revision, text, state: 'extracted', height, noText: text.trim() === ''};
+    const ownerOf = (jobId: string) => {
+      for (const file of fileList) {
+        const at = file.pieces.findIndex(piece => piece.jobId === jobId);
+        if (at >= 0) return {file, at};
+      }
+      return null;
     };
-    for (let at = 0; !cancel.current && at < fileList.length - 1; at += 1) {
-      const upperFile = fileList[at];
-      const lowerFile = fileList[at + 1];
-      const upperPiece = upperFile.pieces[upperFile.pieces.length - 1];
-      const lowerPiece = lowerFile.pieces[0];
-      setProgress(`بررسی مرز ${upperFile.name} و ${lowerFile.name}…`);
+    for (let at = 0; !cancel.current && at < found.length - 1;) {
+      const upperPage = found[at];
+      const lowerPage = found[at + 1];
+      setProgress(`بررسی مرز ${upperPage.name} و ${lowerPage.name}…`);
       try {
         const seam = await (await call('/api/batch/seam', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({upper: upperPiece.jobId, lower: lowerPiece.jobId}),
+          body: JSON.stringify({upper: upperPage.jobId, lower: lowerPage.jobId}),
         }, 'بررسی مرز')).json();
-        if (!seam.join) continue;
-        setProgress(`ساخت نوار مرزی ${upperFile.name} و ${lowerFile.name} (متن روی مرز)…`);
+        if (!seam.join) {
+          at += 1;
+          continue;
+        }
+        const upperOwner = ownerOf(upperPage.jobId);
+        const lowerOwner = ownerOf(lowerPage.jobId);
+        if (!upperOwner || !lowerOwner) throw Error('ترتیب صفحه‌ها پیدا نشد.');
+        setProgress(`ساخت نوار مرزی ${upperPage.name} و ${lowerPage.name} (متن روی مرز)…`);
         const cut = await (await call('/api/batch/stitch', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({upper: upperPiece.jobId, lower: lowerPiece.jobId}),
+          body: JSON.stringify({upper: upperPage.jobId, lower: lowerPage.jobId}),
         }, 'ساخت نوار مرزی')).json();
         await call(`/api/jobs/${cut.seam.jobId}/ocr`, {method: 'POST'}, 'OCR نوار مرزی');
-        const upperPage = await loadPage(cut.upper.jobId, upperFile.name, cut.upper.height);
-        const seamPage = await loadPage(cut.seam.jobId, `${upperFile.name} ↔ ${lowerFile.name} (مرز)`, cut.seam.height);
-        const lowerPage = await loadPage(cut.lower.jobId, lowerFile.name, cut.lower.height);
-        const first = found.findIndex(entry => entry.jobId === upperPiece.jobId);
-        const second = found.findIndex(entry => entry.jobId === lowerPiece.jobId);
-        if (first < 0 || second < 0) throw Error('ترتیب صفحه‌ها پیدا نشد.');
-        found.splice(second, 1, lowerPage);
-        found.splice(first, 1, upperPage, seamPage);
-        upperFile.pieces.splice(upperFile.pieces.length - 1, 1,
+        const upperNew = await loadPage(cut.upper.jobId, upperPage.name, cut.upper.height);
+        const seamNew = await loadPage(cut.seam.jobId, `${upperPage.name} ↔ ${lowerPage.name} (مرز)`, cut.seam.height);
+        const lowerNew = await loadPage(cut.lower.jobId, lowerPage.name, cut.lower.height);
+        found.splice(at, 2, upperNew, seamNew, lowerNew);
+        upperOwner.file.pieces.splice(upperOwner.at, 1,
           {jobId: cut.upper.jobId, top: 0, bottom: cut.upper.height},
           {jobId: cut.seam.jobId, top: cut.seam.upperPart[0], bottom: cut.seam.upperPart[1]});
-        lowerFile.pieces.splice(0, 1,
+        const lowerNow = ownerOf(lowerPage.jobId);   // پس از برش بالایی ممکن است جایش جابه‌جا شده باشد
+        if (!lowerNow) throw Error('ترتیب صفحه‌ها پیدا نشد.');
+        lowerNow.file.pieces.splice(lowerNow.at, 1,
           {jobId: cut.seam.jobId, top: cut.seam.lowerPart[0], bottom: cut.seam.lowerPart[1]},
           {jobId: cut.lower.jobId, top: 0, bottom: cut.lower.height});
         joinedCount += 1;
         // دو کار اصلیِ قبلی دیگر لازم نیستند.
-        void fetch(`/api/jobs/${upperPiece.jobId}`, {method: 'DELETE'}).catch(() => undefined);
-        void fetch(`/api/jobs/${lowerPiece.jobId}`, {method: 'DELETE'}).catch(() => undefined);
+        void fetch(`/api/jobs/${upperPage.jobId}`, {method: 'DELETE'}).catch(() => undefined);
+        void fetch(`/api/jobs/${lowerPage.jobId}`, {method: 'DELETE'}).catch(() => undefined);
+        at += 2;   // نوار مرزی را رد کن؛ مرز بعدی از برشِ پایینی شروع می‌شود
       } catch (error) {
-        errors.push(`مرز ${upperFile.name}: ${error instanceof Error ? error.message : 'خطا'}`);
+        const reason = error instanceof Error ? error.message : 'خطا';
+        // صفحه‌هایی با عرض متفاوت (مثل جلد) هیچ‌وقت متن مرزی ندارند؛ خطایشان بی‌صدا رد می‌شود.
+        if (!reason.includes('عرض دو صفحه')) errors.push(`مرز ${upperPage.name}: ${reason}`);
+        at += 1;
       }
     }
     found.forEach((entry, index) => {entry.page = index + 1;});

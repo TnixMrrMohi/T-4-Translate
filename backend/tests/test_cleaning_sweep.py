@@ -196,3 +196,16 @@ def test_export_uses_original_image_for_pages_without_text(tmp_path, monkeypatch
     assert sorted(archive.namelist()) == ['a.webp', 'b.webp']
     assert Image.open(io.BytesIO(archive.read('a.webp'))).size == (60, 40)
     assert Image.open(io.BytesIO(archive.read('b.webp'))).size == (60, 60)   # ۴۰ + ۲۰
+
+
+def test_slice_cuts_tall_page_in_quiet_rows_and_keeps_all_rows():
+    import numpy as np
+    from app.main import _slice_cuts
+    rng = np.random.default_rng(1)
+    gray = rng.integers(0, 255, (6000, 40)).astype(np.uint8)     # شلوغ
+    gray[2380:2420] = 255                                        # نوار خالی نزدیک هدف
+    cuts = _slice_cuts(gray, 2500)
+    assert cuts and all(0 < c < 6000 for c in cuts)
+    assert 2380 <= cuts[0] <= 2420
+    edges = [0, *cuts, 6000]
+    assert all(b - a <= 2500 * 1.15 for a, b in zip(edges, edges[1:]))
