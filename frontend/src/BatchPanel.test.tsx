@@ -54,3 +54,32 @@ describe('صفحه‌های بدون متن', () => {
     expect(text).toContain('=== 002 | b.png ===');
   });
 });
+
+import {STAGES, stage, withMemoryRetry} from './BatchPanel';
+
+describe('مرحله‌های دسته‌ای و تلاش دوباره', () => {
+  it('هر مرحله کد و نام یکتا دارد', () => {
+    const codes = Object.values(STAGES).map(item => item[0]);
+    const titles = Object.values(STAGES).map(item => item[1]);
+    expect(new Set(codes).size).toBe(codes.length);
+    expect(new Set(titles).size).toBe(titles.length);
+    expect(stage('clean', '3 از 40 · a.webp')).toBe('«B2» پاک‌سازی متن اصلی — 3 از 40 · a.webp');
+  });
+
+  it('خطای کمبود حافظه با صبر دوباره زده می‌شود و خطای دیگر نه', async () => {
+    class Mem extends Error {status = 507;}
+    let calls = 0;
+    const waits: number[] = [];
+    const ok = await withMemoryRetry(async () => {
+      calls += 1;
+      if (calls < 3) throw Object.assign(new Error('حافظه کم'), {status: 507});
+      return 'done';
+    }, seconds => waits.push(seconds), () => false, async () => undefined);
+    expect(ok).toBe('done');
+    expect(calls).toBe(3);
+    expect(waits.length).toBeGreaterThan(0);
+    void Mem;
+    await expect(withMemoryRetry(async () => {throw new Error('ترجمه نیست');}, () => undefined,
+      () => false, async () => undefined)).rejects.toThrow('ترجمه نیست');
+  });
+});
