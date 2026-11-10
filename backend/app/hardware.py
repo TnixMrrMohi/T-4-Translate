@@ -262,7 +262,7 @@ def choose_profile(info: dict) -> dict:
             'cpuThreads': 1 if name == 'Low' else max(1, cores // 2),
             'workers': 2 if name == 'High' else 1,
             'providers': (info.get('gpuProviders') or []) + ['CPUExecutionProvider']
-                         if name == 'High' else ['CPUExecutionProvider'],
+                         if info.get('gpuUsable') else ['CPUExecutionProvider'],
             'pauseSeconds': .01 if name != 'High' else 0,
             'maxPixels': {'High': 35000000, 'Medium': 25000000, 'Low': 6000000}[name],
             'memoryBudgetMb': 2304,

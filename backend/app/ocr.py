@@ -74,9 +74,11 @@ def _engine():
     import_started = time.perf_counter()
     profile = hardware.current_profile(refresh=True)
     options = _model_options() if profile['name'] != 'Low' else {}
+    use_cuda = 'CUDAExecutionProvider' in profile['providers']
+    use_dml = 'DmlExecutionProvider' in profile['providers']
     options.update(intra_op_num_threads=profile['cpuThreads'], inter_op_num_threads=1,
-                   use_cuda=profile['name']=='High' and 'CUDAExecutionProvider' in profile['providers'],
-                   use_dml=profile['name']=='High' and 'DmlExecutionProvider' in profile['providers'])
+                   use_cuda=use_cuda,
+                   use_dml=use_dml)
     for module in ('det','cls','rec'):
         options[f'{module}_use_cuda']=options['use_cuda']
         options[f'{module}_use_dml']=options['use_dml']

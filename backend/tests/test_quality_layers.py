@@ -9,6 +9,9 @@ from app import bubbles, cleaning, inpaint, ocr, rendering, textdet
 
 
 def test_inpaint_reports_unavailable_and_returns_input(tmp_path, monkeypatch):
+    monkeypatch.setattr(inpaint, "_session_cache", {
+        "session": None, "failed": False, "inputs": [], "output": None,
+    })
     monkeypatch.setenv("T4_MODELS_DIR", str(tmp_path / "models"))
     assert inpaint.available() is False
     image = np.full((24, 24, 3), 200, np.uint8)
