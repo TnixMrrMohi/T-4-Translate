@@ -88,22 +88,44 @@ ACCELERATORS = {
 
 @lru_cache(maxsize=1)
 def gpu() -> dict:
-    """کارت گرافیک؛ اگر nvidia-smi باشد نام و حافظه‌اش را می‌دهد."""
+    """تشخیص هوشمند کارت گرافیک فیزیکی (NVIDIA ،AMD یا Intel) با فیلتر نمایشگرهای مجازی."""
+    # ۱. اولویت اول: بررسی اختصاصی انویدیا با nvidia-smi
     name = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
     if name:
         first = name.splitlines()[0]
         parts = [part.strip() for part in first.split(",")]
         return {"name": parts[0], "memory": parts[1] if len(parts) > 1 else "",
                 "vendor": "nvidia"}
+
+    # ۲. بررسی در ویندوز از طریق WMI / PowerShell
     if sys.platform.startswith("win"):
+        candidates = []
+        # بررسی با WMI
         value = _run(["wmic", "path", "win32_VideoController", "get", "name"])
-        lines = [line.strip() for line in value.splitlines() if line.strip()]
-        if len(lines) >= 2:
-            return {"name": lines[1], "memory": "", "vendor": "unknown"}
-        value = _run(['powershell','-NoProfile','-Command',
-                      'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'])
-        if value:
-            return {"name": value.splitlines()[0], "memory": "", "vendor": "unknown"}
+        lines = [line.strip() for line in value.splitlines() if line.strip() and line.strip().lower() != "name"]
+        candidates.extend(lines)
+        if not candidates:
+            ps_out = _run(['powershell', '-NoProfile', '-Command',
+                           'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'])
+            candidates.extend([line.strip() for line in ps_out.splitlines() if line.strip()])
+
+        # فیلتر کارت‌های مجازی و نامعتبر
+        virtual_keywords = ('virtual', 'usb mobile', 'basic render', 'remote display', 'vnc', 'citrix', 'spacedesk', 'rdp')
+        physical_cards = [c for c in candidates if not any(kw in c.lower() for kw in virtual_keywords)]
+        selected = physical_cards[0] if physical_cards else (candidates[0] if candidates else "")
+
+        if selected:
+            s_lower = selected.lower()
+            if any(term in s_lower for term in ('nvidia', 'geforce', 'rtx', 'gtx', 'quadro')):
+                vendor = "nvidia"
+            elif any(term in s_lower for term in ('amd', 'radeon', 'rx ', 'ati')):
+                vendor = "amd"
+            elif 'intel' in s_lower:
+                vendor = "intel"
+            else:
+                vendor = "unknown"
+            return {"name": selected, "memory": "", "vendor": vendor}
+
     return {"name": "", "memory": "", "vendor": "none"}
 
 
@@ -210,8 +232,17 @@ def resource_snapshot() -> dict:
     providers = onnx_providers()
     device = gpu()
     physical = bool(device.get('name')) and not any(
-        word in device['name'].lower() for word in ('basic render', 'remote display'))
-    accelerators = [p for p in providers if p in ('CUDAExecutionProvider', 'DmlExecutionProvider')]
+        word in device['name'].lower() for word in ('basic render', 'remote display', 'virtual'))
+    # انتخاب هوشمند شتاب‌دهنده بر اساس سازنده کارت:
+    # انویدیا اولویت با CUDA؛ ای‌ام‌دی (AMD) و اینتل در ویندوز اولویت با DirectML (DML)
+    vendor = device.get('vendor', '')
+    if vendor == 'nvidia':
+        preferred = ['CUDAExecutionProvider', 'DmlExecutionProvider']
+    elif vendor in ('amd', 'intel'):
+        preferred = ['DmlExecutionProvider', 'CUDAExecutionProvider']
+    else:
+        preferred = ['CUDAExecutionProvider', 'DmlExecutionProvider']
+    accelerators = [p for p in preferred if p in providers]
     return {'availableRamMb': available, 'totalRamMb': total, 'cores': max(1, cores),
             'cpuPercent': psutil.cpu_percent(interval=None),
             'gpuUsable': bool(physical and accelerators), 'gpuProviders': accelerators}
