@@ -190,8 +190,10 @@ _profile: dict | None = None
 def resource_snapshot() -> dict:
     import psutil
     memory = psutil.virtual_memory()
-    available = int(memory.available // 1048576)
-    total = int(memory.total // 1048576)
+    swap = psutil.swap_memory()
+    # محاسبهٔ کل حافظهٔ در دسترس فیزیکی و سواپ (Pagefile ویندوز / Swap لینوکس)
+    available = int((memory.available + swap.free) // 1048576)
+    total = int((memory.total + swap.total) // 1048576)
     # psutil may see host RAM inside a memory-limited Linux container.
     try:
         limit = int(Path('/sys/fs/cgroup/memory.max').read_text())
@@ -231,7 +233,7 @@ def choose_profile(info: dict) -> dict:
             'providers': (info.get('gpuProviders') or []) + ['CPUExecutionProvider']
                          if name == 'High' else ['CPUExecutionProvider'],
             'pauseSeconds': .01 if name != 'High' else 0,
-            'maxPixels': {'High': 16000000, 'Medium': 10000000, 'Low': 6000000}[name],
+            'maxPixels': {'High': 35000000, 'Medium': 25000000, 'Low': 6000000}[name],
             'memoryBudgetMb': 2304,
             'quality': 'classical-or-small-dynamic-model' if name == 'Low' else 'full'}
 
