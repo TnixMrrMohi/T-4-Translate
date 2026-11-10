@@ -161,9 +161,13 @@ def text_ink(draw, text: str, font) -> tuple[int, int, int, int]:
     return draw.textbbox((0, 0), shape_text(text), font=font, **_rtl_kwargs(text))
 
 
-def draw_text(draw, xy, text: str, font, fill) -> None:
-    """رسم یک خطِ منطقی (shaping/جهت داخل همین تابع انجام می‌شود)."""
-    draw.text(xy, shape_text(text), font=font, fill=fill, **_rtl_kwargs(text))
+def draw_text(draw, xy, text: str, font, fill, stroke_width: int = 0, stroke_fill=None) -> None:
+    """رسم یک خطِ منطقی با پشتیبانی از استروک، هاله و جهت راست‌به‌چپ."""
+    kwargs = _rtl_kwargs(text)
+    if stroke_width > 0 and stroke_fill is not None:
+        draw.text(xy, shape_text(text), font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill, **kwargs)
+    else:
+        draw.text(xy, shape_text(text), font=font, fill=fill, **kwargs)
 
 
 @lru_cache(maxsize=1)
@@ -556,6 +560,8 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
             "rotation": round(rotation, 2),
             "color": _contrast_color(image, (int(left_b), int(top_b),
                                              int(right_b), int(bottom_b))),
+            "stroke": block.get("stroke") or (1 if kind in ("outside", "solar", "shout") else 0),
+            "stroke_color": block.get("stroke_color") or ((0, 0, 0) if kind != "outside" else (10, 20, 30)),
             "auto": not override,
         })
     return entries
@@ -586,11 +592,14 @@ def _draw_plan(canvas: Image.Image, draw, entry: dict) -> bool:
     if not rotation:
         # بدون چرخش همان رسم مستقیم قبلی است؛ خروجی بیت‌به‌بیت پایدار می‌ماند.
         start_y = center_y - block_height / 2
+        stroke_w = int(entry.get("stroke") or 0)
+        stroke_c = tuple(entry.get("stroke_color") or (0, 0, 0))
         for index, line in enumerate(wrapped):
             ink_left, ink_top, ink_width, ink_height = metrics[index]
             target_left = center_x - ink_width / 2
             target_top = start_y + index * line_height + (line_height - ink_height) / 2
-            draw_text(draw, (target_left - ink_left, target_top - ink_top), line, font, color)
+            draw_text(draw, (target_left - ink_left, target_top - ink_top), line, font, color,
+                      stroke_width=stroke_w, stroke_fill=stroke_c)
         return True
 
     # چرخش: متن روی لایهٔ شفاف کشیده و بعد چرخانده و در مرکز چسبانده می‌شود.
