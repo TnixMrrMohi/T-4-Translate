@@ -234,3 +234,121 @@ def test_low_confidence_reread_is_ignored(monkeypatch, tmp_path):
                         batch_confidence=0.6)
     monkeypatch.setattr(ocr, "_engine", lambda: engine)
     assert ocr.recognize(page)[0]["text"] == "KW SI SIHI"
+
+
+def test_punctuation_quad_extends_for_ellipsis_and_quotes_without_catching_dust():
+    """علائم نگارشی هم‌رنگ و هم‌تراز در لبه‌های کادر جذب می‌شوند، اما ذرات نویز کنار متن نادیده گرفته می‌شوند."""
+    cv2 = pytest.importorskip("cv2")
+    canvas = np.full((120, 420, 3), (35, 25, 15), np.uint8)
+    ink = (255, 210, 80)  # آبی روشن در BGR
+    # بدنهٔ متن داخل کادر [70..200, 30..78]
+    cv2.rectangle(canvas, (76, 32), (190, 74), ink, -1)
+    # گیومهٔ باز چپِ کادر
+    cv2.rectangle(canvas, (44, 32), (58, 50), ink, -1)
+    # سه نقطهٔ راستِ کادر (نقطهٔ اول لبه‌به‌لبه و دو نقطهٔ بعدی بیرون)
+    cv2.rectangle(canvas, (195, 62), (207, 74), ink, -1)
+    cv2.rectangle(canvas, (215, 62), (227, 74), ink, -1)
+    cv2.rectangle(canvas, (235, 62), (247, 74), ink, -1)
+    # ذرات نویز کم‌رنگ یا خارج از تراز عمودی که نباید جذب شوند
+    cv2.rectangle(canvas, (254, 84), (266, 96), (160, 160, 160), -1)
+    cv2.rectangle(canvas, (256, 42), (260, 46), (220, 220, 220), -1)
+
+    quad = [[70.0, 30.0], [200.0, 30.0], [200.0, 78.0], [70.0, 78.0]]
+    extended = ocr._extend_punctuation_quads([(quad, "USED TO SAY", 0.9)], canvas)
+    out_quad = extended[0][0]
+    xs = [pt[0] for pt in out_quad]
+    ys = [pt[1] for pt in out_quad]
+    assert min(xs) <= 44.0
+    assert max(xs) >= 247.0
+    assert max(xs) < 254.0
+    assert min(ys) == pytest.approx(30.0)
+    assert max(ys) == pytest.approx(78.0)
+
+
+def test_punctuation_quad_does_not_overlap_neighboring_quad():
+    """کادر گسترش‌یافته نباید وارد محدودهٔ کادر همسایه شود."""
+    cv2 = pytest.importorskip("cv2")
+    canvas = np.full((120, 320, 3), 255, np.uint8)
+    cv2.rectangle(canvas, (24, 32), (116, 76), (10, 10, 10), -1)
+    cv2.rectangle(canvas, (144, 62), (156, 74), (10, 10, 10), -1)
+    cv2.rectangle(canvas, (162, 32), (240, 76), (10, 10, 10), -1)
+
+    quad_a = [[20.0, 30.0], [120.0, 30.0], [120.0, 78.0], [20.0, 78.0]]
+    quad_b = [[140.0, 30.0], [244.0, 30.0], [244.0, 78.0], [140.0, 78.0]]
+    extended = ocr._extend_punctuation_quads([(quad_a, "A", 0.9), (quad_b, "B", 0.9)], canvas)
+    assert max(pt[0] for pt in extended[0][0]) <= 140.0
+
+
+def test_punctuation_quad_leaves_blank_box_unchanged():
+    """کادر روی تصویر سفید یک‌دست بدون هیچ تغییری برمی‌گردد."""
+    pytest.importorskip("cv2")
+    canvas = np.full((120, 300, 3), 255, np.uint8)
+    quad = [[20.0, 30.0], [150.0, 30.0], [150.0, 78.0], [20.0, 78.0]]
+    extended = ocr._extend_punctuation_quads([(quad, "EMPTY", 0.9)], canvas)
+    assert extended[0][0] == quad
+
+
+def test_engine_disables_batch_orientation_classifier(monkeypatch):
+    """طبقه‌بند ۱۸۰درجه در گذر دسته‌ای خاموش است تا فونت‌های کمیک وارونه و حذف نشوند."""
+    import sys
+    import types
+
+    calls = []
+
+    class FakeRapid:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+    module = types.ModuleType("rapidocr_onnxruntime")
+    module.RapidOCR = FakeRapid
+    monkeypatch.setitem(sys.modules, "rapidocr_onnxruntime", module)
+    monkeypatch.setattr(ocr, "_model_options", lambda: {})
+    getattr(ocr._engine, "cache_clear", lambda: None)()
+    try:
+        ocr._engine()
+        assert calls and calls[-1]["use_cls"] is False
+    finally:
+        getattr(ocr._engine, "cache_clear", lambda: None)()
+
+
+def test_prefer_reread_preserves_spaces_and_avoids_lower_confidence():
+    """اگر بازخوانی فاصلهٔ کلمات را حذف کند یا افت اطمینان داشته باشد، متن دسته‌ای حفظ می‌شود."""
+    # افت اطمینان روی متن مطمئن
+    assert ocr._prefer_reread(("MAGTC EMPEROR WHO", 0.90), ("MAGTC EMPErOr WHO", 0.78)) is False
+    # حذف فاصلهٔ بین کلمات (چسبیدن کلمات به هم) روی متن مطمئن
+    assert ocr._prefer_reread(("WZITTEN BY THEANCIENT", 0.88), ("WZITTEN BITHEANCENT", 0.93)) is False
+    # بازخوانی موفق با حفظ یا بهبود اطمینان و ساختار کلمات
+    assert ocr._prefer_reread(("TRANSMITTEDA LEGEND", 0.93), ("TRANSMITTED A LEGEND", 0.95)) is True
+
+
+def test_collision_aware_horizontal_pad_limits_expansion_near_neighbors():
+    """قاعدهٔ شفاف: اگر کادر همسایه نزدیک بود، اصلاً گسترش انجام نمی‌شود؛ اگر آزاد بود گسترش کامل انجام می‌شود."""
+    box1 = np.array([[10.0, 10.0], [50.0, 10.0], [50.0, 30.0], [10.0, 30.0]], dtype=np.float32)
+    # جعبهٔ دوم در فاصلهٔ ۴ پیکسلی سمت راست (کمتر از ۱۶ پیکسل حاشیهٔ امن)
+    box2 = np.array([[54.0, 10.0], [100.0, 10.0], [100.0, 30.0], [54.0, 30.0]], dtype=np.float32)
+
+    pad_l, pad_r = ocr._collision_free_horizontal_pad(box1, [box1, box2], target_pad_w=0.10, safe_clearance=16.0)
+    # سمت چپ همسایه‌ای ندارد و کاملاً آزاد است: گسترش کامل (۱۰٪ از ۴۰ = ۴.۰)
+    assert pad_l == pytest.approx(4.0, abs=1e-3)
+    # سمت راست همسایه نزدیک است (۴ پیکسل): اصلاً گسترش داده نمی‌شود (۰٫۰)
+    assert pad_r == 0.0
+
+
+def test_resolve_line_collisions_separates_overlapping_stacked_boxes():
+    """اگر دو کادر متوالی در یک ستون هم‌پوشانی عمودی داشته باشند، مرز بین آنها دقیقاً نصف و جدا می‌شود."""
+    # خط اول: y از ۱۰ تا ۳۰
+    line1 = ([[10.0, 10.0], [100.0, 10.0], [100.0, 30.0], [10.0, 30.0]], "LINE 1", 0.95)
+    # خط دوم: y از ۲۶ تا ۴۶ (۴ پیکسل هم‌پوشانی عمودی با خط اول)
+    line2 = ([[10.0, 26.0], [100.0, 26.0], [100.0, 46.0], [10.0, 46.0]], "LINE 2", 0.92)
+
+    resolved = ocr._resolve_line_collisions([line1, line2])
+    q1 = np.array(resolved[0][0])
+    q2 = np.array(resolved[1][0])
+
+    y1_bot = max(q1[2, 1], q1[3, 1])
+    y2_top = min(q2[0, 1], q2[1, 1])
+    # هم‌پوشانی صفر یا منفی است (فاصله دارند):
+    assert y1_bot < y2_top
+    assert y2_top - y1_bot >= 1.0
+
+

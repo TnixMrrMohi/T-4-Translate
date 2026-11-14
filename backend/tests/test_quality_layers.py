@@ -220,4 +220,72 @@ def test_ocr_engine_uses_detailed_model_and_falls_back(tmp_path, monkeypatch):
     assert 'det_model_path' not in calls[1] and 'rec_model_path' not in calls[1]
     assert calls[1]['intra_op_num_threads']==4
     assert calls[1]['inter_op_num_threads']==1
+    assert calls[1]['use_cls'] is False
     getattr(ocr._engine, "cache_clear", lambda: None)()
+
+
+def test_textdet_is_disabled_on_cpu_only_profiles(monkeypatch):
+    """مدل سنگین ComicTextDetector روی پروفایل بدون GPU (CPU) غیرفعال می‌شود تا رابط قفل نکند."""
+    from app import hardware, models
+
+    monkeypatch.setattr(models, "is_installed", lambda model_id: model_id == textdet.MODEL_ID)
+    cpu_medium = hardware.choose_profile({
+        "availableRamMb": 8192, "totalRamMb": 16384, "cores": 8,
+        "cpuPercent": 15, "gpuUsable": False, "gpuProviders": [],
+    })
+    assert cpu_medium["name"] == "Medium"
+    monkeypatch.setattr(hardware, "current_profile", lambda refresh=False: dict(cpu_medium))
+    assert textdet.available() is False
+
+
+def test_ocr_engine_skips_server_model_on_cpu_medium_without_gpu(monkeypatch):
+    """مدل سنگین ocr-server روی CPU (حتی Medium) بارگذاری نمی‌شود تا پردازنده قفل نکند و خطوط به تکه‌های ریز خرد نشوند."""
+    import rapidocr_onnxruntime
+    from app import hardware
+
+    calls: list[dict] = []
+
+    class FakeRapidOCR:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+    fake_paths = {
+        "det_model_path": "det_server.onnx",
+        "rec_model_path": "rec_server.onnx",
+        "rec_keys_path": "ch_dict.txt",
+    }
+    monkeypatch.setattr(ocr, "_model_options", lambda: dict(fake_paths))
+    monkeypatch.setattr(rapidocr_onnxruntime, "RapidOCR", FakeRapidOCR)
+
+    cpu_medium = hardware.choose_profile({
+        "availableRamMb": 8192, "totalRamMb": 16384, "cores": 8,
+        "cpuPercent": 20, "gpuUsable": False, "gpuProviders": [],
+    })
+    gpu_high = hardware.choose_profile({
+        "availableRamMb": 8192, "totalRamMb": 16384, "cores": 8,
+        "cpuPercent": 20, "gpuUsable": True, "gpuProviders": ["CUDAExecutionProvider"],
+    })
+    assert cpu_medium["name"] == "Medium"
+    assert gpu_high["name"] == "High"
+
+    ocr._engine.cache_clear()
+    try:
+        # روی CPU Medium: از مدل سرور صرف‌نظر می‌شود و مدل سبکِ همراه بسته استفاده می‌شود
+        monkeypatch.setattr(hardware, "current_profile", lambda refresh=False: dict(cpu_medium))
+        ocr._engine()
+        assert len(calls) == 1
+        assert "det_model_path" not in calls[-1]
+        assert calls[-1]["det_limit_side_len"] == 960
+
+        # روی GPU High: مدل دقیق سرور فعال می‌شود
+        ocr._engine.cache_clear()
+        monkeypatch.setattr(hardware, "current_profile", lambda refresh=False: dict(gpu_high))
+        ocr._engine()
+        assert len(calls) == 2
+        assert calls[-1]["det_model_path"] == "det_server.onnx"
+        assert calls[-1]["rec_model_path"] == "rec_server.onnx"
+        assert calls[-1]["use_cuda"] is True
+        assert calls[-1]["det_limit_side_len"] == 1536
+    finally:
+        ocr._engine.cache_clear()
+

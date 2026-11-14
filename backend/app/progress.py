@@ -44,7 +44,10 @@ def begin(job_id: str, stage: str = 'start', fraction: float = 0.0) -> None:
         }
 
 
-def update(job_id: str, fraction: float, stage: str | None = None) -> None:
+_eta_anchors: dict[str, tuple[int, float, float, float]] = {}
+
+
+def update(job_id: str, fraction: float, stage: str | None = None, **kwargs) -> None:
     """به‌روزرسانی پیشرفت؛ مقدارها هرگز عقب نمی‌روند (نوار یکنواخت پر می‌شود)."""
     with _lock:
         run = _runs.get(job_id)
@@ -53,12 +56,38 @@ def update(job_id: str, fraction: float, stage: str | None = None) -> None:
         run['fraction'] = max(run['fraction'], min(1.0, max(0.0, float(fraction))))
         if stage:
             run['stage'] = str(stage)
+        for k, v in kwargs.items():
+            if v is not None:
+                run[k] = v
         now = time.time()
+        anchor_started = run.pop('etaStartedAt', None)
+        anchor_base = run.pop('etaBaseFraction', None)
+        if anchor_started is not None or anchor_base is not None:
+            prev = _eta_anchors.get(job_id)
+            same_run = bool(prev and prev[0] == id(run) and prev[1] == run['startedAt'])
+            prev_at, prev_frac = (prev[2], prev[3]) if same_run else (run['startedAt'], 0.0)
+            _eta_anchors[job_id] = (
+                id(run),
+                run['startedAt'],
+                float(anchor_started) if anchor_started is not None else prev_at,
+                max(0.0, min(0.99, float(anchor_base))) if anchor_base is not None else prev_frac,
+            )
         elapsed = now - run['startedAt']
         run['updatedAt'] = now
         fraction = run['fraction']
-        run['etaSeconds'] = (round(elapsed * (1 - fraction) / fraction, 1)
-                             if .08 <= fraction < 1 and elapsed >= .25 else None)
+        anchor = _eta_anchors.get(job_id)
+        if anchor and anchor[0] == id(run) and anchor[1] == run['startedAt']:
+            base_at, base_fraction = anchor[2], anchor[3]
+        else:
+            base_at, base_fraction = run['startedAt'], 0.0
+        eta_elapsed = max(0.0, now - base_at)
+        eta_done = fraction - base_fraction
+        eta_warmup = run.get('stage') in ('start', 'ocr_start', 'model', 'ocr_model', 'clean_prepare', 'clean_model')
+        run['etaSeconds'] = (
+            round(eta_elapsed * (1 - fraction) / eta_done, 1)
+            if not eta_warmup and .08 <= fraction < 1 and eta_elapsed >= .25 and eta_done >= .005
+            else None
+        )
 
 
 def finish(job_id: str, stage: str = 'done') -> None:
@@ -79,11 +108,11 @@ def fail(job_id: str, error: str, stage: str = 'error') -> None:
                     'finishedAt': time.time()})
 
 
-def callback(job_id: str) -> Callable[[float, str | None], None]:
-    """تابع گزارش‌دهنده برای پاس‌دادن به لایهٔ OCR (از نخ کارگر صدا زده می‌شود)."""
-    def report(fraction: float, stage: str | None = None) -> None:
+def callback(job_id: str):
+    """تابع گزارش‌دهنده برای پاس‌دادن به لایهٔ پردازش (از نخ کارگر صدا زده می‌شود)."""
+    def report(fraction: float, stage: str | None = None, **extra) -> None:
         check_cancelled(job_id)
-        update(job_id, fraction, stage)
+        update(job_id, fraction, stage, **extra)
     return report
 
 

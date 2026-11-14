@@ -17,6 +17,7 @@ export type LayoutBlock = {
   center: [number, number];
   rotation: number;
   font: string | null;
+  defaultFont?: string | null;
   auto: boolean;
 };
 
@@ -64,9 +65,10 @@ const MIN_SIZE = 6;
 const MAX_SIZE = 400;
 
 /** نام CSS فونتی که برای پیش‌نمایش ثبت شده است. */
-function fontFamily(fontId: string | null | undefined) {
-  if (!fontId) return 'Vazirmatn, Tahoma, sans-serif';
-  return `"t4-font-${fontId}", Vazirmatn, Tahoma, sans-serif`;
+function fontFamily(fontId: string | null | undefined, defaultFontId?: string | null) {
+  const effective = fontId || defaultFontId;
+  if (!effective) return 'Vazirmatn, Tahoma, sans-serif';
+  return `"t4-font-${effective}", Vazirmatn, Tahoma, sans-serif`;
 }
 
 /**
@@ -305,7 +307,11 @@ export function TextLayoutEditor({
             }}
             aria-label="فونت این متن"
           >
-            <option value="">خودکار (فونت نوع بالن)</option>
+            <option value="">
+              {selectedBlock?.defaultFont
+                ? `خودکار (${fonts.find(f => f.id === selectedBlock.defaultFont)?.name || selectedBlock.defaultFont})`
+                : 'خودکار (فونت نوع بالن)'}
+            </option>
             {fonts.map(font => <option key={font.id} value={font.id}>{font.name}</option>)}
           </select>
         </label>
@@ -457,7 +463,7 @@ export function TextLayoutEditor({
                 className="layout-text"
                 style={{
                   fontSize: `${Math.max(5, state.size * scale)}px`,
-                  fontFamily: fontFamily(state.font),
+                  fontFamily: fontFamily(state.font, block.defaultFont),
                   lineHeight: 1.2,
                   whiteSpace: 'pre-line',
                   ...(ghost ? {color: 'transparent', textShadow: 'none'} : {}),

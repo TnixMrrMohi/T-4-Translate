@@ -557,6 +557,18 @@ describe('کپی متن و پرامپت در مرحلهٔ ترجمه', () => {
     });
   });
 
+  it('پرامپت صریح استفاده از گیومه و علامت نقل‌قول در ترجمه را منع می‌کند', async () => {
+    const user = await openTranslationStep();
+    await user.click(screen.getByRole('button', {name: 'کپی با پرامپت'}));
+
+    await waitFor(async () => {
+      const copied = await navigator.clipboard.readText();
+      expect(copied).toContain('گیومه');
+      expect(copied).toContain('نقل‌قول');
+      expect(copied).toContain('بدون گیومه بنویس');
+    });
+  });
+
 });
 
 describe('تشخیص نوع بالن‌ها در مرحلهٔ ترجمه', () => {
@@ -790,17 +802,12 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
     return user;
   }
 
-  it('کلیک روی تصویر زوم را پله‌پله بالا می‌برد و اولین پله ۵۰٪ است', async () => {
+  it('پیش‌نمایش با زوم ۵۰٪ باز می‌شود و کلیک روی تصویر زوم را پله‌پله بالا می‌برد', async () => {
     const user = await openPreview();
 
-    const imageButton = screen.getByRole('button', {name: 'تصویر: زوم پله‌پله از ۵۰٪'});
+    const imageButton = screen.getByRole('button', {name: 'تصویر: پلهٔ بعدی زوم'});
     const image = within(imageButton).getByRole('img', {name: ALT});
-    // پیش‌فرض: تناسب صفحه (بدون عرض ثابت).
-    expect(image).not.toHaveStyle({width: '50%'});
-    expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
-
-    // پلهٔ اول ۵۰٪ است، نه پرش مستقیم به ۱۰۰٪.
-    await user.click(imageButton);
+    // پیش‌فرض هنگام باز شدن: زوم ۵۰٪.
     expect(image).toHaveStyle({width: '50%'});
     expect(screen.getByText('50٪')).toBeInTheDocument();
 
@@ -821,7 +828,10 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
   it('دکمهٔ «−» یک پله پایین و از پلهٔ اول به تناسب صفحه برمی‌گردد', async () => {
     const user = await openPreview();
     const smaller = screen.getByRole('button', {name: 'کوچک‌تر'});
-    // در تناسب صفحه، پله‌ای برای برگشت نیست.
+    // شروع در پلهٔ اول (۵۰٪) است؛ با یک کلیک به تناسب صفحه برمی‌گردد.
+    expect(smaller).toBeEnabled();
+    await user.click(smaller);
+    expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
     expect(smaller).toBeDisabled();
 
     await user.click(screen.getByRole('button', {name: 'بزرگ‌تر'}));
@@ -838,7 +848,7 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
 
   it('از بالاترین پله (۴۰۰٪) کلیک بعدی به تناسب صفحه برمی‌گردد', async () => {
     const user = await openPreview();
-    for (let step = 0; step < 15; step += 1) {
+    for (let step = 0; step < 14; step += 1) {
       await user.click(screen.getByRole('button', {name: /تصویر: (زوم پله‌پله از ۵۰٪|پلهٔ بعدی زوم)/}));
     }
     expect(screen.getByText('400٪')).toBeInTheDocument();
@@ -918,12 +928,12 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
 
   it('با صفحه‌کلید (Enter) هم یک پله زوم می‌شود', async () => {
     const user = await openPreview();
-    const imageButton = screen.getByRole('button', {name: 'تصویر: زوم پله‌پله از ۵۰٪'});
+    const imageButton = screen.getByRole('button', {name: 'تصویر: پلهٔ بعدی زوم'});
     imageButton.focus();
     await user.keyboard('{Enter}');
-    expect(screen.getByText('50٪')).toBeInTheDocument();
-    await user.keyboard('{Enter}');
     expect(screen.getByText('75٪')).toBeInTheDocument();
+    await user.keyboard('{Enter}');
+    expect(screen.getByText('100٪')).toBeInTheDocument();
   });
 });
 
@@ -1212,7 +1222,7 @@ describe('نوار پیشرفت تشخیص خودکار متن', () => {
     await waitFor(() => expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(62));
     expect(screen.queryByText('در حال پردازش…')).not.toBeInTheDocument();
     expect(screen.queryByText('انتخاب فایل یا رهاکردن تصویر')).not.toBeInTheDocument();
-    expect(screen.getByText('خواندن متن، نوار به نوار…')).toBeInTheDocument();
+    expect(screen.getByText('مرحله ۳ از ۴: استخراج و خواندن خطوط متن…')).toBeInTheDocument();
     expect(document.querySelector('.progress-fill')).toBeTruthy();
 
     hold.resolve();
@@ -1751,6 +1761,12 @@ describe('نوار به‌روزرسانی برنامه', () => {
     return api;
   }
 
+  async function openUpdateTab(user = userEvent.setup()) {
+    await user.click(screen.getByRole('button', {name: /تنظیمات/}));
+    await user.click(await screen.findByRole('tab', {name: /به‌روزرسانی برنامه/}));
+    return user;
+  }
+
   it('نسخهٔ تازه را خودش و فقط یک بار دانلود می‌کند', async () => {
     let pending: unknown = null;
     const {calls} = renderApp({
@@ -1763,7 +1779,8 @@ describe('نوار به‌روزرسانی برنامه', () => {
       },
     });
 
-    // کاربر دکمه‌ای نمی‌زند؛ نوار خودش بستهٔ تغییرات را می‌گیرد.
+    await openUpdateTab();
+    // کاربر دکمه‌ای نمی‌زند؛ پنل خودش بستهٔ تغییرات را می‌گیرد.
     expect(await screen.findByRole('button', {name: 'اعمال و راه‌اندازی مجدد'})).toBeInTheDocument();
     expect(screen.getByText(/آپدیت 1\.4\.0 دانلود شد/)).toBeInTheDocument();
     expect(screen.getByText(/2 فایل، 3\.0 مگابایت/)).toBeInTheDocument();
@@ -1775,6 +1792,7 @@ describe('نوار به‌روزرسانی برنامه', () => {
     renderApp({
       update: () => ({...withUpdate, autoDownload: false}),
     });
+    await openUpdateTab();
     expect(await screen.findByText(/نسخهٔ 1\.4\.0 منتشر شده است/)).toBeInTheDocument();
     expect(screen.getByText(/دانلود فقط 4\.0 مگابایت/)).toBeInTheDocument();
   });
@@ -1783,7 +1801,7 @@ describe('نوار به‌روزرسانی برنامه', () => {
     const {calls} = renderApp({
       update: () => ({...withUpdate, autoDownload: false}),
     });
-    const user = userEvent.setup();
+    const user = await openUpdateTab();
     expect(await screen.findByText(/نسخهٔ 1\.4\.0 منتشر شده است/)).toBeInTheDocument();
     expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/update/download'))).toBe(false);
     await user.click(screen.getByRole('button', {name: 'دریافت آپدیت'}));
@@ -1801,6 +1819,7 @@ describe('نوار به‌روزرسانی برنامه', () => {
     }) as unknown as typeof window.setInterval);
     try {
       const {calls} = renderApp({update: () => ({...baseStatus, pollSeconds: 5})});
+      await openUpdateTab();
       await screen.findByText(/برنامه به‌روز است/);
       const count = () => calls.filter(call => call.url.endsWith('/api/update/status')).length;
       const first = count();
@@ -1818,7 +1837,7 @@ describe('نوار به‌روزرسانی برنامه', () => {
     const {calls} = renderApp({
       update: () => ({...baseStatus, pending: {version: '1.4.0', files: 2, bytes: 1024, ready: true}}),
     });
-    const user = userEvent.setup();
+    const user = await openUpdateTab();
     expect(await screen.findByText(/آپدیت 1\.4\.0 آماده است/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', {name: 'اعمال و راه‌اندازی مجدد'}));
     await waitFor(() => expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/update/apply'))).toBe(true));
@@ -1831,6 +1850,7 @@ describe('نوار به‌روزرسانی برنامه', () => {
                       download: {running: true, received: 2 * 1024 * 1024, total: 4 * 1024 * 1024,
                                  message: 'در حال دانلود بستهٔ تغییرات…'}}),
     });
+    await openUpdateTab();
     const bar = await screen.findByRole('progressbar', {name: 'پیشرفت دانلود آپدیت'});
     expect(bar).toHaveAttribute('aria-valuenow', '50');
     expect(screen.getByText('در حال دانلود بستهٔ تغییرات…')).toBeInTheDocument();
@@ -1838,7 +1858,7 @@ describe('نوار به‌روزرسانی برنامه', () => {
 
   it('تنظیمات آپدیت (مخزن و توکن) ذخیره می‌شود', async () => {
     const {calls} = renderApp({});
-    const user = userEvent.setup();
+    const user = await openUpdateTab();
     await user.click(await screen.findByRole('button', {name: 'تنظیمات آپدیت'}));
     const repo = await screen.findByLabelText('مخزن (کاربر/مخزن)');
     await user.clear(repo);
@@ -1857,6 +1877,7 @@ describe('نوار به‌روزرسانی برنامه', () => {
     renderApp({
       update: () => ({...baseStatus, error: 'سهمیهٔ درخواست گیت‌هاب تمام شده است؛ کمی بعد دوباره بررسی می‌شود.'}),
     });
+    await openUpdateTab();
     expect(await screen.findByText(/سهمیهٔ درخواست گیت‌هاب تمام شده است/)).toBeInTheDocument();
   });
 });
@@ -1973,5 +1994,64 @@ describe('اندازهٔ ناحیهٔ پاک‌سازی', () => {
     await user.click(within(move).getByRole('button', {name: 'راست'}));
     await user.click(screen.getByRole('button', {name: 'پاک‌سازی مجدد این ناحیه'}));
     expect(calls).toEqual([[[2], {grow: {2: 4}, shift: {2: [8, 4]}}]]);
+  });
+});
+
+describe('بهبود رفتار نوار پیشرفت مراحل ۳ تا ۵', () => {
+  it('پیشرفت پاک‌سازی در مرحلهٔ آماده‌سازی مدل ناگهان به ۹۴٪ نمی‌جهد و سپس با LaMa پیش می‌رود', () => {
+    const start = {fraction: 0.02, at: 0, perSecond: 0};
+    const fastModel = advanceProgress(start, 0.14, 200, 'clean_model');
+    expect(fastModel.pace.perSecond).toBe(0);
+    const stalledLoad = advanceProgress(fastModel.pace, 0.14, 10_000, 'clean_model');
+    expect(stalledLoad.fraction).toBeLessThan(0.25);
+
+    const tile1 = advanceProgress(stalledLoad.pace, 0.40, 12_000, 'clean_inpaint');
+    const tile2 = advanceProgress(tile1.pace, 0.60, 14_000, 'clean_inpaint');
+    expect(tile2.pace.perSecond).toBeGreaterThan(0);
+    const interpolated = advanceProgress(tile2.pace, 0.60, 16_000, 'clean_inpaint');
+    expect(interpolated.fraction).toBeGreaterThan(0.6);
+    expect(interpolated.fraction).toBeLessThanOrEqual(PROGRESS_CEILING);
+  });
+
+  it('مرحلهٔ ۳ در پاک‌سازی بخش‌بندی‌شده شمارش بخش‌ها را روی نوار پیشرفت نمایش می‌دهد', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const hold = deferred();
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+      holdClean: () => hold.promise,
+      cleanProgress: {fraction: 0.45, stage: 'clean_inpaint', running: true, stripIndex: 2, totalStrips: 4},
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', {name: 'اجرای پاک‌سازی'}));
+    const bar = await screen.findByRole('progressbar', {name: 'پیشرفت پاک‌سازی و Inpaint'});
+    expect(bar).toHaveAttribute('aria-valuetext', expect.stringContaining('بخش ۲ از ۴'));
+    expect(screen.queryByText('در حال پاک‌سازی…')).not.toBeInTheDocument();
+    hold.resolve();
+    await screen.findByText(/پاک‌سازی انجام شد/);
+  });
+
+  it('دکمهٔ «درج دوبارهٔ ترجمه» در مرحلهٔ ۵ نوار پیشرفت را نمایش می‌دهد', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    const hold = deferred();
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+      clean: true,
+      render: true,
+      holdRender: () => hold.promise,
+      renderProgress: {fraction: 0.55, stage: 'render_text', running: true, etaSeconds: 7},
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۵: مقایسهٔ ورودی و خروجی'});
+    await user.click(screen.getByRole('button', {name: 'درج دوبارهٔ ترجمه'}));
+    expect(await screen.findByRole('progressbar', {name: 'پیشرفت درج ترجمه'})).toBeInTheDocument();
+    expect(screen.getByText(/زمان تقریبی باقی‌مانده:/)).toHaveTextContent('۷');
+    hold.resolve();
+    await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument());
   });
 });

@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+Image.MAX_IMAGE_PIXELS = 250_000_000
 
 MAX_PREVIEW_SIDE = 2400     # سقف عرض پیش‌نمایش
 MAX_PREVIEW_HEIGHT = 6000   # سقف ارتفاع؛ صفحهٔ بلند وب‌تون به یک نوار ناخوانا تبدیل نشود

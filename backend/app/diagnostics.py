@@ -12,6 +12,7 @@ import os
 import platform
 import sys
 import threading
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -108,3 +109,117 @@ def log_exception(event: str, **fields: Any) -> None:
     except Exception:  # pragma: no cover
         message = json.dumps({"event": event})
     _LOGGER.exception(message)
+
+
+def system_metrics() -> dict[str, Any]:
+    """Capture snapshot of process and system memory and CPU."""
+    try:
+        import psutil
+
+        proc = psutil.Process()
+        proc_mem = proc.memory_info()
+        vm = psutil.virtual_memory()
+        return {
+            "processRssMb": round(proc_mem.rss / (1024 * 1024), 2),
+            "processCpuPercent": proc.cpu_percent(interval=None),
+            "systemAvailableRamMb": round(vm.available / (1024 * 1024), 2),
+            "systemTotalRamMb": round(vm.total / (1024 * 1024), 2),
+            "systemUsedRamPercent": vm.percent,
+            "systemCpuPercent": psutil.cpu_percent(interval=None),
+        }
+    except Exception:
+        return {}
+
+
+STAGE_BY_OPERATION: dict[str, str] = {
+    "ocr": "STAGE_1",
+    "clean": "STAGE_3",
+    "render": "STAGE_4",
+    "layout": "STAGE_4",
+}
+
+
+def log_stage(stage: str, step: str, summary: str, level: int = logging.INFO, **fields: Any) -> None:
+    """Record high-signal, non-spammy diagnostic milestone with live resource metrics."""
+    prefix = stage.lower().replace("_", "")
+    log_event(
+        f"{prefix}.{step.lower()}",
+        level=level,
+        stage=stage,
+        step=step,
+        summary=summary,
+        systemMetrics=system_metrics(),
+        **fields,
+    )
+
+
+def log_stage1(step: str, summary: str, **fields: Any) -> None:
+    """Record high-signal, non-spammy diagnostic milestone for Stage 1."""
+    log_stage("STAGE_1", step, summary, **fields)
+
+
+class ProgressLogger:
+    """Throttle sub-step progress logs on stage transitions, percent steps, or wall time."""
+
+    def __init__(
+        self,
+        event: str,
+        job_id: str | None = None,
+        *,
+        min_percent_step: int = 10,
+        min_seconds: float = 10.0,
+    ) -> None:
+        self.event = event
+        self.job_id = job_id
+        self.min_percent_step = min_percent_step
+        self.min_seconds = min_seconds
+        self.started = time.perf_counter()
+        self.last_stage: str | None = None
+        self.last_percent = -1
+        self.last_at = time.monotonic()
+
+    def record(self, fraction: float, stage: str | None = None, **extra: Any) -> None:
+        percent = int(max(0.0, min(1.0, fraction)) * 100)
+        now = time.monotonic()
+        if (
+            stage != self.last_stage
+            or percent >= self.last_percent + self.min_percent_step
+            or now - self.last_at >= self.min_seconds
+        ):
+            payload: dict[str, Any] = {
+                "stage": stage,
+                "percent": percent,
+                "elapsedMs": round((time.perf_counter() - self.started) * 1000, 1),
+                "sinceLastMs": round((now - self.last_at) * 1000, 1),
+            }
+            if self.job_id is not None:
+                payload["jobId"] = self.job_id
+            for key, value in extra.items():
+                if value is not None:
+                    payload[key] = value
+            log_event(self.event, **payload)
+            self.last_stage = stage
+            self.last_percent = percent
+            self.last_at = now
+
+
+def clear_log() -> bool:
+    """Clear active diagnostics log files to begin a fresh test session."""
+    global _CONFIGURED, _LOGGER
+    cleared = False
+    with _LOCK:
+        for handler in list(_LOGGER.handlers):
+            try:
+                handler.close()
+                _LOGGER.removeHandler(handler)
+            except Exception:
+                pass
+        _CONFIGURED = False
+    for path in (_primary_path(), _fallback_path()):
+        try:
+            if path.is_file():
+                path.unlink()
+                cleared = True
+        except Exception:
+            pass
+    return cleared

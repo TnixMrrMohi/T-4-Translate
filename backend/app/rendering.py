@@ -10,10 +10,12 @@
 from __future__ import annotations
 
 import math
+import time
 from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageStat
+Image.MAX_IMAGE_PIXELS = 250_000_000
 
 from . import diagnostics
 
@@ -430,9 +432,19 @@ def _shape_box(block: dict, text_box, canvas_width: int, canvas_height: int):
     return (max(0, left), max(0, top), min(canvas_width, right), min(canvas_height, bottom))
 
 
+def emit_progress(on_progress, fraction: float, stage: str) -> None:
+    """پیشرفت رندر را با حفظ سازگاری فراخوان‌های تک‌آرگومانی گزارش می‌دهد."""
+    if not on_progress:
+        return
+    try:
+        on_progress(fraction, stage)
+    except TypeError:
+        on_progress(fraction)
+
+
 def plan_blocks(image: Image.Image, blocks: list, translations: dict,
                 fonts: dict | None = None, layout: dict | None = None,
-                font_files: dict | None = None) -> list[dict]:
+                font_files: dict | None = None, on_progress=None) -> list[dict]:
     """برای هر بلوک، کادر، اندازهٔ قلم، مرکز، رنگ و چرخش نهایی را حساب می‌کند.
 
     همان محاسبه‌ای که رسم استفاده می‌کند، برای ویرایشگر هم در دسترس است؛ پس
@@ -441,6 +453,7 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
     ``layout`` تنظیم‌های دستی هر بلوک است (فونت، اندازه، مرکز و چرخش) و
     ``font_files`` نگاشتِ شناسهٔ فونت به مسیر فایل.
     """
+    started = time.perf_counter()
     fonts = fonts or {}
     font_files = font_files or {}
     layout = layout or {}
@@ -448,7 +461,8 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
         image = image.convert("RGB")
     canvas_width, canvas_height = image.size
     entries: list[dict] = []
-    for block in blocks:
+    total_blocks = len(blocks)
+    for index, block in enumerate(blocks):
         if not isinstance(block, dict):
             continue
         number = block.get("number")
@@ -560,10 +574,24 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
             "rotation": round(rotation, 2),
             "color": _contrast_color(image, (int(left_b), int(top_b),
                                              int(right_b), int(bottom_b))),
-            "stroke": block.get("stroke") or (1 if kind in ("outside", "solar", "shout") else 0),
-            "stroke_color": block.get("stroke_color") or ((0, 0, 0) if kind != "outside" else (10, 20, 30)),
+            "stroke": block.get("stroke") if block.get("stroke") is not None else (1 if kind in ("solar", "shout") else 0),
+            "stroke_color": block.get("stroke_color") or ((255, 255, 255) if _contrast_color(image, (int(left_b), int(top_b), int(right_b), int(bottom_b)))[0] < 128 else (0, 0, 0)),
             "auto": not override,
         })
+        if on_progress and total_blocks:
+            on_progress((index + 1) / total_blocks)
+    if on_progress:
+        on_progress(1.0)
+    diagnostics.log_event(
+        "rendering.plan.done",
+        inputBlocks=len(blocks),
+        plannedBlocks=len(entries),
+        overrides=len(layout),
+        width=canvas_width,
+        height=canvas_height,
+        raqm=has_raqm(),
+        elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+    )
     return entries
 
 
@@ -631,19 +659,47 @@ def render_blocks(image: Image.Image, blocks: list, translations: dict,
     استفاده می‌شود. `layout` تنظیم دستی هر بلوک (فونت، اندازه، مرکز، چرخش) و
     `font_files` نگاشتِ شناسهٔ فونت به مسیر فایل است.
     """
+    started = time.perf_counter()
     if image.mode != "RGB":
         image = image.convert("RGB")
     canvas = image.copy()
     draw = ImageDraw.Draw(canvas)
     drawn = 0
-    plan=plan_blocks(canvas, blocks, translations, fonts, layout, font_files)
-    for index,entry in enumerate(plan):
+    plan_started = time.perf_counter()
+    plan = plan_blocks(
+        canvas, blocks, translations, fonts, layout, font_files,
+        on_progress=(lambda f: emit_progress(on_progress, 0.08 + 0.42 * f, "render_plan")) if on_progress else None,
+    )
+    plan_ms = round((time.perf_counter() - plan_started) * 1000, 1)
+    draw_started = time.perf_counter()
+    total_plan = max(1, len(plan))
+    for index, entry in enumerate(plan):
         if _draw_plan(canvas, draw, entry):
             drawn += 1
-        if on_progress:
-            on_progress(.45 + .5 * (index+1)/len(plan))
+        emit_progress(on_progress, 0.50 + 0.40 * (index + 1) / total_plan, "render_text")
+    draw_ms = round((time.perf_counter() - draw_started) * 1000, 1)
     if not drawn:
+        diagnostics.log_event(
+            "rendering.blocks.empty",
+            level=30,
+            inputBlocks=len(blocks),
+            plannedBlocks=len(plan),
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+        )
         raise RenderError("هیچ ترجمه‌ای برای نمایش روی تصویر وجود ندارد.")
+    diagnostics.log_event(
+        "rendering.blocks.done",
+        inputBlocks=len(blocks),
+        plannedBlocks=len(plan),
+        drawn=drawn,
+        width=canvas.width,
+        height=canvas.height,
+        raqm=has_raqm(),
+        planMs=plan_ms,
+        drawMs=draw_ms,
+        elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+        systemMetrics=diagnostics.system_metrics(),
+    )
     return canvas, drawn
 
 

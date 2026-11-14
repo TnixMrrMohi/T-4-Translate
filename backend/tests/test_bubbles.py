@@ -351,3 +351,16 @@ def test_outside_columns_do_not_merge_into_one_page_centered_block():
     result = bubbles.blocks({"bubbles":[{"kind":"outside","lines":[1,2,3,4]}]},lines)
     assert [block["lines"] for block in result] == [[1,3],[2,4]]
     assert result[0]["bbox"][2] < result[1]["bbox"][0]
+
+
+def test_chunked_webtoon_bubble_analysis_preserves_page_coordinates(tmp_path):
+    """تصویر بلند وب‌تون باید نواربه‌نوار تحلیل شود و مختصات صفحه‌ای را حفظ کند."""
+    def shapes(draw, size):
+        draw.ellipse([150, 300, 450, 600], outline=0, width=4)
+        draw.rectangle([120, 6100, 480, 6400], outline=0, width=4)
+    page = _page(tmp_path / "webtoon.png", shapes, size=(600, 7000))
+    lines = _text_lines(300, 450, count=2) + _text_lines(300, 6250, count=1)
+    result = bubbles.analyze(page, lines)
+    found = [b for b in result["bubbles"] if b["kind"] != "outside"]
+    assert [(b["kind"], b["lines"]) for b in found] == [("speech", [1, 2]), ("square", [3])]
+    assert found[0]["bbox"][1] < 450 and found[1]["bbox"][1] > 6000

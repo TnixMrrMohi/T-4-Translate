@@ -29,10 +29,13 @@ _cache: dict = {"session": None, "failed": False, "input": None, "shape": [], "o
 
 
 def available() -> bool:
-    """آیا مدل نصب است و onnxruntime قابل استفاده است؟"""
+    """آیا مدل نصب است و سخت‌افزارِ شتاب‌یافته برای اجرایش در دسترس است؟"""
     from . import models
 
-    if hardware.current_profile(refresh=True)['name']=='Low' or not models.is_installed(MODEL_ID):
+    profile = hardware.current_profile(refresh=True)
+    # اجرای ComicTextDetector با ورودی ثابت ۱۰۲۴×۱۰۲۴ روی CPU (پروفایل Low یا Medium بدون GPU)
+    # برای هر صفحه بیش از دو دقیقه زمان می‌برد و رابط را متوقف می‌کند.
+    if profile['name'] == 'Low' or not profile.get('gpuUsable', False) or not models.is_installed(MODEL_ID):
         return False
     try:
         import numpy  # noqa: F401

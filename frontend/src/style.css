@@ -85,8 +85,14 @@
   .app-header .header-tools{left:8px;gap:6px}
   .app-header .header-tools button{padding:5px 8px;font-size:11px}
 }
-/* --- پنل سخت‌افزار و مدل‌ها (کنار ریست) --- */
-.system-dialog{max-width:560px;max-height:86vh;overflow:auto}
+/* --- پنل تنظیمات، سخت‌افزار و مدل‌ها (کنار ریست) --- */
+.system-dialog{max-width:580px;max-height:86vh;overflow:auto}
+.settings-tabs{display:flex;gap:8px;border-bottom:1px solid #ffffff1a;margin:0 0 16px;padding-bottom:10px}
+.settings-tab{background:transparent;border:1px solid transparent;color:#8fb0ac;font-size:13px;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all .15s ease}
+.settings-tab:hover{color:#eef9f4;background:#ffffff0a}
+.settings-tab.is-active{color:#00ffcc;background:#00ffcc15;border-color:#00ffcc44;font-weight:700}
+.settings-badge{display:inline-block;width:7px;height:7px;border-radius:50%;background:#00ffcc;box-shadow:0 0 6px #00ffcc;margin-inline-start:6px;vertical-align:middle}
+.update-bar.is-dialog-section{border:1px solid #ffffff1f;border-radius:10px;padding:12px;background:#081014;margin:10px 0}
 .system-block{border-top:1px solid #ffffff1a;margin-top:14px;padding-top:12px}
 .system-block:first-of-type{border-top:0;margin-top:6px;padding-top:0}
 .system-block h4{margin:0 0 8px;font-size:14px;color:#00ffcc;font-weight:700}

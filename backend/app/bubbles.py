@@ -25,6 +25,7 @@ import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+Image.MAX_IMAGE_PIXELS = 250_000_000
 
 # نام فونت‌ها همان نام‌های PDF است؛ حتی اگر فونت نصب نباشد نگه داشته می‌شود تا
 # رابط بتواند «پیشنهاد» را نشان دهد و در مرحلهٔ بعد با فونت‌های موجود جایگزین شود.
@@ -96,14 +97,14 @@ BUBBLE_TYPES: dict[str, dict] = {
         "tone": "متن توضیحی، زمزمه یا سیستم",
         "label": "متن بیرون بالن",
         "description": "توضیحی، زمزمه، متن سیستم یا متن تکنیک — بالنی ندارد و روی تصویر یا فضای سفید می‌نشیند.",
-        "fonts": ["Beirut", "Farnaz", "Narm", "Liner", "Jadid", "Mehr", "Dast Nevis", "Kamran",
+        "fonts": ["Vazirmatn", "Beirut", "Farnaz", "Narm", "Liner", "Jadid", "Mehr", "Dast Nevis", "Kamran",
                   "Amin", "Esfehan", "Kaghaz", "Sina", "Yekan", "Dima Abdi", "Mj_Moshfegh"],
-        "style": {"bold": False, "italic": False, "stroke": "white", "shadow": False},
+        "style": {"bold": False, "italic": False, "stroke": "none", "shadow": False},
         "variants": {
-            "outside_narration": {"label": "توضیحی", "fonts": ["Beirut", "Farnaz", "Narm", "Liner", "Jadid", "Mehr"]},
+            "outside_narration": {"label": "توضیحی", "fonts": ["Vazirmatn", "Beirut", "Farnaz", "Narm", "Liner", "Jadid", "Mehr"]},
             "outside_whisper": {"label": "زمزمه", "fonts": ["Dast Nevis", "Mehr", "Kamran", "Mj_Parand"],
                                 "style": {"stroke": "white", "shadow": True}},
-            "system": {"label": "متن سیستم", "fonts": ["Amin", "Esfehan", "Farnaz", "Beirut", "Liner", "Kaghaz", "Sina", "Yekan"]},
+            "system": {"label": "متن سیستم", "fonts": ["Vazirmatn", "Amin", "Esfehan", "Farnaz", "Beirut", "Liner", "Kaghaz", "Sina", "Yekan"]},
             "technique": {"label": "متن تکنیک", "fonts": ["Kaghaz", "Farnaz", "Dima Abdi", "Mj_Moshfegh", "Sina", "Afsaneh"]},
         },
     },
@@ -167,6 +168,12 @@ def is_promotional(text: str) -> bool:
 MIN_AREA_RATIO = 0.00015       # ناحیه‌های کوچک‌تر از این نسبت، نویز شمرده می‌شوند
 COMPANION_MAX_RATIO = 0.06     # حباب همراه کوچک‌تر از این نسبت از بالن اصلی است
 BRIGHT_THRESHOLD = 185         # آستانهٔ روشنایی داخل بالن
+BUBBLE_MAX_PIXELS = 150_000_000
+BUBBLE_CHUNK_TRIGGER_PIXELS = 12_000_000
+BUBBLE_CHUNK_TRIGGER_HEIGHT = 3600
+BUBBLE_CLUSTER_PAD = 450
+BUBBLE_MAX_SPAN = 2800
+BUBBLE_BAND_MARGIN = 600
 
 
 class BubbleError(Exception):
@@ -544,29 +551,8 @@ def _split_bubbles(mask, line_boxes: dict, origin: tuple[int, int] = (0, 0)):
     return parts
 
 
-def analyze(path: Path, lines: list) -> dict:
-    """بالن هر خط OCR را پیدا و دسته‌بندی می‌کند.
-
-    برای هر خط، ناحیهٔ روشنِ پیرامونش رشد داده می‌شود؛ اگر این ناحیه در پنجرهٔ
-    جست‌وجو محصور بماند یعنی داخل بالن است و اگر تا سقف رشد به پس‌زمینه برسد یعنی
-    متن بیرون بالن است. ناحیه‌های هم‌پوشان یک بالن شمرده می‌شوند.
-    """
-    try:
-        import cv2
-        import numpy as np
-    except (ImportError, OSError) as exc:
-        raise BubbleError("ابزار پردازش تصویر برای تشخیص بالن نصب نشده است.") from exc
-
-    try:
-        with Image.open(path) as source:
-            if source.width * source.height > 40_000_000:
-                raise BubbleError("تصویر برای تشخیص بالن بیش از حد بزرگ است.")
-            if source.getexif().get(274, 1) != 1:
-                raise BubbleError("تصاویر دارای چرخش EXIF در تشخیص بالن پشتیبانی نمی‌شوند.")
-            gray = np.array(source.convert("L"))
-    except (OSError, ValueError) as exc:
-        raise BubbleError("خواندن تصویر منبع ناموفق بود.") from exc
-
+def _analyze_crop(gray, lines: list, image_source, np, cv2) -> tuple[list[dict], list[int]]:
+    """تحلیل بالن‌ها روی یک ناحیهٔ (تک‌صفحه یا یک نوار برش‌خورده از وب‌تون)."""
     height, width = gray.shape[:2]
     total = float(height * width)
     bright = (gray >= BRIGHT_THRESHOLD).astype(np.uint8)
@@ -695,7 +681,100 @@ def analyze(path: Path, lines: list) -> dict:
 
     # خط‌هایی که با رشد ناحیهٔ روشن در حباب نیفتادند، اگر مدل تشخیص حباب نصب باشد
     # با ماسک خودِ مدل جای‌گذاری می‌شوند (بالن‌های تیره، رنگی و پرنقش).
-    outside_lines = _detector_place(lines, bubbles, outside_lines, path, np, cv2)
+    outside_lines = _detector_place(lines, bubbles, outside_lines, image_source, np, cv2)
+    return bubbles, outside_lines
+
+
+def _cluster_line_bands(items: list[tuple[int, list[int]]]) -> list[tuple[int, int, list[int]]]:
+    """خطوط OCR معتبر را بر اساس هم‌جواری عمودی در خوشه‌های جدا گروه‌بندی می‌کند."""
+    if not items:
+        return []
+    ordered = sorted(items, key=lambda entry: (entry[1][1], entry[1][3]))
+    clusters: list[tuple[int, int, list[int]]] = []
+    cur_y0, cur_y1, cur_nums = ordered[0][1][1], ordered[0][1][3], [ordered[0][0]]
+    for number, bbox in ordered[1:]:
+        y0, y1 = bbox[1], bbox[3]
+        gap = y0 - cur_y1
+        proposed_y0 = min(cur_y0, y0)
+        proposed_y1 = max(cur_y1, y1)
+        if gap <= BUBBLE_CLUSTER_PAD and (proposed_y1 - proposed_y0 <= BUBBLE_MAX_SPAN or gap < 120):
+            cur_y0, cur_y1 = proposed_y0, proposed_y1
+            cur_nums.append(number)
+        else:
+            clusters.append((cur_y0, cur_y1, cur_nums))
+            cur_y0, cur_y1, cur_nums = y0, y1, [number]
+    clusters.append((cur_y0, cur_y1, cur_nums))
+    return clusters
+
+
+def analyze(path: Path, lines: list) -> dict:
+    """بالن هر خط OCR را پیدا و دسته‌بندی می‌کند.
+
+    برای هر خط، ناحیهٔ روشنِ پیرامونش رشد داده می‌شود؛ اگر این ناحیه در پنجرهٔ
+    جست‌وجو محصور بماند یعنی داخل بالن است و اگر تا سقف رشد به پس‌زمینه برسد یعنی
+    متن بیرون بالن است. ناحیه‌های هم‌پوشان یک بالن شمرده می‌شوند.
+    برای تصاویر بلند یا بزرگ وب‌تون (تا ۱۲۰ میلیون پیکسل)، صفحه در نوارهای عمودی
+    مجزا بدون بارگذاری کل تصویر در حافظه تحلیل و با هم ترکیب می‌شود.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except (ImportError, OSError) as exc:
+        raise BubbleError("ابزار پردازش تصویر برای تشخیص بالن نصب نشده است.") from exc
+
+    try:
+        with Image.open(path) as source:
+            if source.width * source.height > BUBBLE_MAX_PIXELS:
+                raise BubbleError("تصویر برای تشخیص بالن بیش از حد بزرگ است.")
+            if source.getexif().get(274, 1) != 1:
+                raise BubbleError("تصاویر دارای چرخش EXIF در تشخیص بالن پشتیبانی نمی‌شوند.")
+            width, height = source.size
+            if width * height <= BUBBLE_CHUNK_TRIGGER_PIXELS and height <= BUBBLE_CHUNK_TRIGGER_HEIGHT:
+                gray = np.array(source.convert("L"))
+                bubbles, outside_lines = _analyze_crop(gray, lines, path, np, cv2)
+            else:
+                bubbles = []
+                outside_lines = []
+                valid_items: list[tuple[int, list[int]]] = []
+                for number, line in enumerate(lines, 1):
+                    quad = line.get("quad") if isinstance(line, dict) else None
+                    bbox = _line_bbox(quad, width, height)
+                    if bbox is None:
+                        outside_lines.append(number)
+                    else:
+                        valid_items.append((number, bbox))
+                for band_y0, band_y1, orig_numbers in _cluster_line_bands(valid_items):
+                    cy0 = max(0, band_y0 - BUBBLE_BAND_MARGIN)
+                    cy1 = min(height, band_y1 + BUBBLE_BAND_MARGIN)
+                    with source.crop((0, cy0, width, cy1)) as gray_crop:
+                        gray_band = np.array(gray_crop.convert("L"))
+                    local_lines = []
+                    for orig_num in orig_numbers:
+                        src_line = lines[orig_num - 1]
+                        shifted_quad = [[float(p[0]), float(p[1]) - cy0] for p in src_line["quad"]]
+                        local_lines.append({**src_line, "quad": shifted_quad})
+
+                    def load_rgb_band(y0: int = cy0, y1: int = cy1):
+                        with source.crop((0, y0, width, y1)) as rgb_crop:
+                            return np.array(rgb_crop.convert("RGB"))
+
+                    band_bubbles, band_outside = _analyze_crop(
+                        gray_band, local_lines, load_rgb_band, np, cv2,
+                    )
+                    for bubble in band_bubbles:
+                        bx, by, bw, bh = bubble["bbox"]
+                        bubble["bbox"] = [bx, by + cy0, bw, bh]
+                        bubble["lines"] = sorted(orig_numbers[idx - 1] for idx in bubble["lines"])
+                        bubbles.append(bubble)
+                    outside_lines.extend(orig_numbers[idx - 1] for idx in band_outside)
+
+                bubbles.sort(key=lambda item: (item["bbox"][1], item["bbox"][0]))
+                for index, bubble in enumerate(bubbles, 1):
+                    bubble["id"] = index
+    except BubbleError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise BubbleError("خواندن تصویر منبع ناموفق بود.") from exc
 
     if outside_lines:
         meta = BUBBLE_TYPES["outside"]
@@ -736,8 +815,13 @@ def _detector_place(lines: list, bubbles: list, outside_lines: list, path: Path,
 
         if not textdet.available():
             return outside_lines
-        with Image.open(path) as source:
-            array = np.array(source.convert("RGB"))
+        if callable(path):
+            array = path()
+        elif isinstance(path, np.ndarray):
+            array = path
+        else:
+            with Image.open(path) as source:
+                array = np.array(source.convert("RGB"))
         found = textdet.masks(array)
     except Exception:  # noqa: BLE001 - مدل نباید تشخیص حباب را بشکند
         return outside_lines

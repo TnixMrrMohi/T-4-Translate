@@ -290,3 +290,84 @@ def test_low_real_spawn_on_five_megapixel_webtoon(tmp_path,monkeypatch):
         r=client.post(api+'/clean');assert r.status_code==200,r.text
         r=client.post(api+'/render');assert r.status_code==200,r.text
         assert client.get(api+'/render').status_code==200
+
+
+def test_transient_cpu_spike_does_not_downgrade_medium_mid_job(monkeypatch):
+    clock=[100.0]
+    monkeypatch.setattr(hardware.time,'monotonic',lambda:clock[0])
+    hardware.set_profile(hardware.choose_profile(info()))
+    monkeypatch.setattr(hardware,'resource_snapshot',lambda:info(cpuPercent=95))
+
+    # جهش‌های کوتاه زیر ۵ ثانیه نباید پروفایل Medium را به Low بیندازند.
+    for t in (100.0,101.0,102.0,103.5):
+        clock[0]=t
+        assert hardware.current_profile(refresh=True)['name']=='Medium'
+
+    # اگر مصرف CPU پایین بیاید، شمارندهٔ هشدار صفر می‌شود.
+    clock[0]=104.0
+    monkeypatch.setattr(hardware,'resource_snapshot',lambda:info(cpuPercent=45))
+    assert hardware.current_profile(refresh=True)['name']=='Medium'
+
+    # تنها اشباع پایدار (>= ۴ نمونه در دست‌کم ۵ ثانیه) باید به Low افت دهد.
+    monkeypatch.setattr(hardware,'resource_snapshot',lambda:info(cpuPercent=95))
+    for t in (110.0,112.0,114.0):
+        clock[0]=t
+        assert hardware.current_profile(refresh=True)['name']=='Medium'
+    clock[0]=115.2
+    assert hardware.current_profile(refresh=True)['name']=='Low'
+
+
+def test_cpu_session_is_not_reloaded_when_only_cpu_threads_drop(monkeypatch):
+    class FakeCpuSession:
+        def get_providers(self):
+            return ['CPUExecutionProvider']
+
+    sentinel=FakeCpuSession()
+    medium=hardware.choose_profile(info())
+    low=hardware.choose_profile(info(availableRamMb=2000))
+    assert medium['cpuThreads']>low['cpuThreads']==1
+
+    monkeypatch.setattr(inpaint,'_session_cache',{
+        'session':sentinel,'failed':False,'inputs':['image','mask'],'output':'out',
+        'profile':tuple(medium['providers']),
+    })
+    monkeypatch.setattr(hardware,'current_profile',lambda refresh=False:dict(low))
+    assert inpaint._session() is sentinel
+
+
+def test_fresh_profile_and_begin_job_profile_clear_stale_low(monkeypatch):
+    hardware.set_profile(hardware.choose_profile(info(availableRamMb=2000)))
+    assert hardware.current_profile()['name']=='Low'
+    monkeypatch.setattr(hardware,'resource_snapshot',lambda:info())
+    fresh=hardware.fresh_profile()
+    assert fresh['name']=='Medium' and fresh['maxPixels']==120_000_000
+    assert hardware.current_profile()['name']=='Low'
+    assert hardware.begin_job_profile()['name']=='Medium'
+
+
+def test_fresh_profile_and_begin_job_profile_ignore_transient_cpu_spike(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(hardware.time, 'sleep', lambda s: sleeps.append(s))
+
+    transient = iter([info(cpuPercent=95), info(cpuPercent=35)])
+    monkeypatch.setattr(hardware, 'resource_snapshot', lambda: next(transient))
+    fresh = hardware.fresh_profile()
+    assert fresh['name'] == 'Medium' and fresh['maxPixels'] == 120_000_000
+    assert len(sleeps) == 1
+
+    sustained = iter([info(cpuPercent=95), info(cpuPercent=95)])
+    monkeypatch.setattr(hardware, 'resource_snapshot', lambda: next(sustained))
+    assert hardware.fresh_profile()['name'] == 'Low'
+    assert len(sleeps) == 2
+
+    low_ram = iter([info(availableRamMb=2000, cpuPercent=95)])
+    monkeypatch.setattr(hardware, 'resource_snapshot', lambda: next(low_ram))
+    assert hardware.fresh_profile()['name'] == 'Low'
+    assert len(sleeps) == 2
+
+    job_spike = iter([info(cpuPercent=92), info(cpuPercent=40)])
+    monkeypatch.setattr(hardware, 'resource_snapshot', lambda: next(job_spike))
+    assert hardware.begin_job_profile()['name'] == 'Medium'
+    assert hardware.current_profile()['name'] == 'Medium'
+    assert len(sleeps) == 3
+

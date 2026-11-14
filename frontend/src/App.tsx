@@ -2,7 +2,6 @@ import React, {useEffect, useRef, useState} from 'react';
 import {createPortal} from 'react-dom';
 import {CompareSlider} from './CompareSlider';
 import {TextLayoutEditor} from './TextLayoutEditor';
-import {UpdatePanel} from './UpdatePanel';
 import SystemPanel from './SystemPanel';
 import {BatchPanel} from './BatchPanel';
 import type {LayoutDoc, TextOverrides} from './TextLayoutEditor';
@@ -104,6 +103,7 @@ const TRANSLATION_PROMPT = [
   '- لحن ترجمه باید کاملاً خودمانی و گفتاری روزمره باشد.',
   '- کنار هر شماره، لحن همان بالن داخل پرانتز آمده است (مثلاً «فریاد و عصبانیت»، «فکر کردن، بی\u200cصدا»، «زمزمه»، «ناز و عشوه»).',
   '  ترجمه را با همان لحن بنویس: انتخاب واژه، شدت جمله و نشانه\u200cگذاری (!، …، ؟) باید با آن لحن بخواند.',
+  '- از گیومه (« و ») و علامت نقل\u200cقول (" "، \u201c \u201d، \'\') در متن ترجمه استفاده نکن؛ حتی اگر متن انگلیسی داخل گیومه یا نقل\u200cقول باشد، این علامت\u200cها را حذف کن و فقط خود متن را بدون گیومه بنویس.',
   '- پرانتز لحن را در پاسخ تکرار نکن؛ فقط [شماره] و ترجمهٔ فارسی.',
   '- اگر چند بالن پشت سر هم مکالمه\u200cاند، لحن هرکدام جدا رعایت شود و دیالوگ بین آن\u200cها طبیعی بماند.',
   '- فارسیِ امروزی بنویس؛ از حروف و شکل\u200cهای عربی — «ي»، «ى»، «ك»، «ة»، «ۀ»، «أ»، «إ»، «ؤ»، «ئ» — استفاده نکن',
@@ -161,7 +161,7 @@ type PreviewProps = {
   jobId: string;
   kind: PreviewKind;
   version: number;      // با هر بار بازسازی پیش‌نمایش زیاد می‌شود تا کش دور زده شود
-  caption: React.ReactNode;
+  caption?: React.ReactNode;
   alt: string;
   downloadName?: string;
   /** نسبت ارتفاع به عرض صفحه؛ برای صفحات بلند (وب‌تون) حالت پیش‌فرض تغییر می‌کند. */
@@ -173,6 +173,13 @@ type PreviewProps = {
   focusRequest?: AreaFocus | null;
   /** تصویر با عرض کامل کارت و پیمایش عمودی خودش نمایش داده می‌شود (نه فشرده در یک قاب ثابت). */
   scroll?: boolean;
+  /** باز بودن مودال به صورت کنترل‌شده از خارج کامپوننت */
+  isOpen?: boolean;
+  onClose?: () => void;
+  /** عدم رندر بندانگشتی در ستون */
+  hideThumbnail?: boolean;
+  defaultZoom?: number;
+  defaultFit?: boolean;
 };
 
 /** درخواست تمرکز روی یک ناحیهٔ صفحه (مثلاً یک ناحیهٔ پاک‌سازی). */
@@ -240,17 +247,24 @@ const PROGRESS_STAGES: Record<string, string> = {
   clean_done: 'پایان پاک‌سازی',
   clean_error: 'پاک‌سازی ناموفق بود',
   idle: 'در انتظار شروع…',
-  start: 'آماده‌سازی صفحه…',
-  model: 'بارگذاری موتور تشخیص متن…',
-  strips: 'خواندن متن، نوار به نوار…',
-  merge: 'یکسان‌سازی خطوط هم‌پوشان…',
-  save: 'ذخیرهٔ نتیجهٔ تشخیص…',
-  done: 'پایان تشخیص متن',
+  start: 'مرحله ۱ از ۴: آماده‌سازی و تحلیل ابعاد تصویر…',
+  model: 'مرحله ۱ از ۴: بارگذاری موتور تشخیص متن…',
+  strips: 'مرحله ۳ از ۴: استخراج و خواندن خطوط متن…',
+  merge: 'مرحله ۴ از ۴: یکسان‌سازی خطوط هم‌پوشان…',
+  save: 'مرحله ۴ از ۴: ذخیرهٔ نتایج تشخیص…',
+  done: 'پایان تشخیص متن با موفقیت',
+  ocr_start: 'مرحله ۱ از ۴: آماده‌سازی و تحلیل ابعاد تصویر…',
+  ocr_model: 'مرحله ۱ از ۴: بارگذاری موتور تشخیص متن…',
+  ocr_detect: 'مرحله ۲ از ۴: اسکن تصویر و کشف کادرهای متن…',
+  ocr_read: 'مرحله ۳ از ۴: استخراج و خواندن خطوط متن…',
+  ocr_merge: 'مرحله ۴ از ۴: یکسان‌سازی خطوط هم‌پوشان…',
+  ocr_save: 'مرحله ۴ از ۴: ذخیره‌سازی داده‌های استخراج‌شده…',
+  ocr_done: 'پایان تشخیص متن با موفقیت',
   error: 'تشخیص متن ناموفق بود',
 };
 
 /** پیشرفت یک کار؛ کسر ۰ تا ۱ و نام مرحله (همان چیزی که سرور می‌دهد). */
-type Progress = {fraction: number; stage: string; running?: boolean; finished?: boolean; error?: string | null; etaSeconds?: number | null; elapsedSeconds?: number; resourceProfile?: string};
+type Progress = {fraction: number; stage: string; running?: boolean; finished?: boolean; error?: string | null; etaSeconds?: number | null; elapsedSeconds?: number; resourceProfile?: string; stripIndex?: number; totalStrips?: number};
 
 /** سقف پیش‌بینی بین دو پاسخ سرور؛ پیش از پایانِ واقعی هرگز ۹۹٪ نشان داده نمی‌شود. */
 export const PROGRESS_CEILING = 0.94;
@@ -269,23 +283,36 @@ export type ProgressPace = {fraction: number; at: number; perSecond: number};
  *   - بین دو گزارش سرور، نوار با همان سرعتی که تا حالا واقعاً جلو رفته پر می‌شود؛
  *   - تا وقتی سرور خودش نزدیک پایان را نگفته، نوار از ۹۴٪ جلوتر نمی‌رود.
  */
-export function advanceProgress(pace: ProgressPace, serverFraction: number, now: number):
+const WARMUP_STAGES = new Set([
+  'start', 'ocr_start', 'model', 'ocr_model',
+  'clean_prepare', 'clean_classical', 'clean_model',
+  'render_plan',
+]);
+
+export function advanceProgress(pace: ProgressPace, serverFraction: number, now: number, stage?: string):
   {pace: ProgressPace; fraction: number} {
   const next: ProgressPace = {...pace};
+  const isWarmup = Boolean(stage && WARMUP_STAGES.has(stage));
   if (serverFraction > next.fraction + 1e-6) {
-    const seconds = Math.max(0.3, (now - next.at) / 1000);
-    const speed = (serverFraction - next.fraction) / seconds;
-    // میانگین وزنی با سرعت قبلی: یک نوار کند یا تند، نوار را پرشی نمی‌کند.
-    next.perSecond = next.perSecond > 0 ? next.perSecond * 0.4 + speed * 0.6 : speed;
+    if (!isWarmup) {
+      const seconds = Math.max(0.3, (now - next.at) / 1000);
+      const speed = (serverFraction - next.fraction) / seconds;
+      // میانگین وزنی با سرعت قبلی: یک نوار کند یا تند، نوار را پرشی نمی‌کند.
+      next.perSecond = next.perSecond > 0 ? next.perSecond * 0.4 + speed * 0.6 : speed;
+    }
     next.fraction = serverFraction;
     next.at = now;
   }
   // فاصلهٔ بی‌خبری حداکثر ۱۲ ثانیه با همان سرعت پر می‌شود؛ بعد از آن متوقف می‌ماند
   // تا نوار جلوتر از واقعیت نرود.
   const idle = Math.min(Math.max(0, (now - next.at) / 1000), 12);
-  const warming = next.perSecond <= 0;  // هنوز هیچ نوار کاملی خوانده نشده است
+  const warming = next.perSecond <= 0;  // هنوز هیچ مرحلهٔ خطی پیشرفت نکرده است
   const rate = warming ? WARMUP_PACE : next.perSecond;
-  const ceiling = warming ? WARMUP_CEILING : PROGRESS_CEILING;
+  const ceiling = warming
+    ? Math.min(PROGRESS_CEILING, Math.max(WARMUP_CEILING, next.fraction + 0.06))
+    : isWarmup
+      ? Math.min(PROGRESS_CEILING, next.fraction + 0.04)
+      : PROGRESS_CEILING;
   const projected = Math.min(ceiling, next.fraction + rate * idle * 0.8);
   const fraction = Math.min(0.99, Math.max(next.fraction, serverFraction, projected));
   return {pace: next, fraction};
@@ -294,7 +321,19 @@ export function advanceProgress(pace: ProgressPace, serverFraction: number, now:
 /** نوار پیشرفتِ تشخیص خودکار متن؛ جای متن ساده را می‌گیرد و تا ۱۰۰٪ پر می‌شود. */
 function ProgressBar({progress, onCancel, cancelPending}: {progress: Progress; onCancel?: () => void; cancelPending?: boolean}) {
   const percent = Math.max(0, Math.min(100, Math.round(progress.fraction * 100)));
-  const label = PROGRESS_STAGES[progress.stage] ?? 'در حال تشخیص خودکار متن…';
+  const defaultLabel = progress.stage.startsWith('render_')
+    ? 'در حال درج ترجمه روی تصویر…'
+    : progress.stage.startsWith('clean_')
+      ? 'در حال پاک‌سازی تصویر…'
+      : 'در حال تشخیص خودکار متن…';
+  let label = PROGRESS_STAGES[progress.stage] ?? defaultLabel;
+  if (progress.stripIndex && progress.totalStrips && progress.totalStrips > 1) {
+    if (progress.stage === 'strips' || progress.stage === 'ocr_read') {
+      label = `در حال اسکن و خواندن بخش ${progress.stripIndex.toLocaleString('fa-IR')} از ${progress.totalStrips.toLocaleString('fa-IR')}…`;
+    } else if (progress.stage.startsWith('clean_') && progress.stage !== 'clean_done' && progress.stage !== 'clean_error') {
+      label = `بخش ${progress.stripIndex.toLocaleString('fa-IR')} از ${progress.totalStrips.toLocaleString('fa-IR')}: ${label}`;
+    }
+  }
   return (
     <div className="progress-panel" data-stage={progress.stage}>
       <div className="progress-head">
@@ -554,10 +593,18 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
 }
 
 function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect = 1,
-                        pageWidth = 0, pageHeight = 0, focusRequest = null, scroll = false}: PreviewProps) {
-  const [open, setOpen] = useState(false);
-  const [fit, setFit] = useState(true);
-  const [zoom, setZoom] = useState(1);
+                        pageWidth = 0, pageHeight = 0, focusRequest = null, scroll = false,
+                        isOpen, onClose, hideThumbnail = false,
+                        defaultZoom = 0.5, defaultFit = false}: PreviewProps) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = typeof isOpen === 'boolean';
+  const open = isControlled ? isOpen : internalOpen;
+  const setOpen = (val: boolean) => {
+    if (!val && isControlled) onClose?.();
+    if (!isControlled) setInternalOpen(val);
+  };
+  const [fit, setFit] = useState(defaultFit);
+  const [zoom, setZoom] = useState(defaultZoom);
   // نام ناحیه‌ای که همین حالا در حال نمایش است (تا وقتی کاربر خودش زوم را عوض کند).
   const [focusedLabel, setFocusedLabel] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -566,7 +613,11 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   // فوکوس پس از بسته‌شدن لایه برمی‌گردد؛ کمی بعد، چون تا برداشتن inert از ریشه
   // فوکوس روی محتوای پشتِ لایه نادیده گرفته می‌شود.
   const close = () => {
-    setOpen(false);
+    if (isControlled) {
+      onClose?.();
+    } else {
+      setInternalOpen(false);
+    }
     setFocusedLabel(null);
     scrollTarget.current = null;
     window.setTimeout(() => thumbRef.current?.focus(), 0);
@@ -574,7 +625,22 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
   // پیش‌نمایش همیشه کل صفحه را نشان می‌دهد (حتی صفحهٔ ۱۵۰۰۰ پیکسلی که باریک می‌شود)
   // و برای دیدن جزئیات، مودال با زوم و «عرض کامل» باز می‌شود.
   const tall = aspect > 2.5;
-  const openModal = () => {setOpen(true); setFit(true); setZoom(1); setFocusedLabel(null); scrollTarget.current = null;};
+  const openModal = () => {
+    if (!isControlled) setInternalOpen(true);
+    setFit(defaultFit);
+    setZoom(defaultZoom);
+    setFocusedLabel(null);
+    scrollTarget.current = null;
+  };
+
+  useEffect(() => {
+    if (isControlled && isOpen) {
+      setFit(defaultFit);
+      setZoom(defaultZoom);
+      setFocusedLabel(null);
+      scrollTarget.current = null;
+    }
+  }, [isControlled, isOpen, defaultFit, defaultZoom]);
 
   // «برو سراغ این ناحیه»: با هر کلیک روی یک ناحیه، مودال باز می‌شود و بلافاصله
   // روی همان ناحیه زوم و پیمایش می‌شود تا معلوم باشد کدام ناحیه است.
@@ -695,21 +761,49 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
 
   return (
     <>
-      <figure
-        className="preview-card"
-        style={{'--preview-ratio': PREVIEW_RATIO} as React.CSSProperties}
-        data-preview-ratio={PREVIEW_RATIO}
-      >
-        {scroll ? (
-          <div className="preview-thumb is-scroll" data-testid="preview-scroll">
+      {!hideThumbnail && (
+        <figure
+          className="preview-card"
+          style={{'--preview-ratio': PREVIEW_RATIO} as React.CSSProperties}
+          data-preview-ratio={PREVIEW_RATIO}
+        >
+          {scroll ? (
+            <div className="preview-thumb is-scroll" data-testid="preview-scroll">
+              {thumbFailed ? (
+                <span className="preview-missing" role="img" aria-label={`${alt} — پیش‌نمایش آماده نشد`}>
+                  <span className="preview-missing-icon" aria-hidden="true">🖼</span>
+                  <span>پیش‌نمایش آماده نشد</span>
+                </span>
+              ) : (
+                <img
+                  src={scrollUrl}
+                  alt={alt}
+                  loading="lazy"
+                  onLoad={() => setThumbFailed(false)}
+                  onError={() => {
+                    if (thumbRetry < 2) retryThumb();
+                    else setThumbFailed(true);
+                  }}
+                />
+              )}
+            </div>
+          ) : (
+          <button
+            type="button"
+            ref={thumbRef}
+            className="preview-thumb"
+            onClick={openModal}
+            aria-label={`بزرگ‌نمایی: ${alt}`}
+            title="برای بزرگ‌نمایی کلیک کنید"
+          >
             {thumbFailed ? (
               <span className="preview-missing" role="img" aria-label={`${alt} — پیش‌نمایش آماده نشد`}>
                 <span className="preview-missing-icon" aria-hidden="true">🖼</span>
-                <span>پیش‌نمایش آماده نشد</span>
+                <span>پیش‌نمایش آماده نشد؛ برای ساخت دوباره کلیک کنید</span>
               </span>
             ) : (
               <img
-                src={scrollUrl}
+                src={thumbUrl}
                 alt={alt}
                 loading="lazy"
                 onLoad={() => setThumbFailed(false)}
@@ -719,41 +813,17 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
                 }}
               />
             )}
-          </div>
-        ) : (
-        <button
-          type="button"
-          ref={thumbRef}
-          className="preview-thumb"
-          onClick={openModal}
-          aria-label={`بزرگ‌نمایی: ${alt}`}
-          title="برای بزرگ‌نمایی کلیک کنید"
-        >
-          {thumbFailed ? (
-            <span className="preview-missing" role="img" aria-label={`${alt} — پیش‌نمایش آماده نشد`}>
-              <span className="preview-missing-icon" aria-hidden="true">🖼</span>
-              <span>پیش‌نمایش آماده نشد؛ برای ساخت دوباره کلیک کنید</span>
-            </span>
-          ) : (
-            <img
-              src={thumbUrl}
-              alt={alt}
-              loading="lazy"
-              onLoad={() => setThumbFailed(false)}
-              onError={() => {
-                if (thumbRetry < 2) retryThumb();
-                else setThumbFailed(true);
-              }}
-            />
+            <span className="zoom-hint">{tall ? 'صفحهٔ بلند — بزرگ‌نمایی' : 'بزرگ‌نمایی'}</span>
+          </button>
           )}
-          <span className="zoom-hint">{tall ? 'صفحهٔ بلند — بزرگ‌نمایی' : 'بزرگ‌نمایی'}</span>
-        </button>
-        )}
-        <figcaption>
-          {caption}
-          {scroll && <button type="button" ref={thumbRef} className="ghost small" onClick={openModal} aria-label={`بزرگ‌نمایی: ${alt}`}>بزرگ‌نمایی</button>}
-        </figcaption>
-      </figure>
+          {caption && (
+            <figcaption>
+              {caption}
+              {scroll && <button type="button" ref={thumbRef} className="ghost small" onClick={openModal} aria-label={`بزرگ‌نمایی: ${alt}`}>بزرگ‌نمایی</button>}
+            </figcaption>
+          )}
+        </figure>
+      )}
 
       {open && (
         <Overlay label={alt} onBackdropClick={close}>
@@ -920,6 +990,7 @@ export function App() {
   const [layoutModal, setLayoutModal] = useState(false);
   const layoutRenderTimer = useRef<number | null>(null);
   const [sourceVersion, setSourceVersion] = useState(0);
+  const [sourceModalOpen, setSourceModalOpen] = useState(false);
   const [ocrVersion, setOcrVersion] = useState(0);
   const [bubbles, setBubbles] = useState<BubbleDoc | null>(null);
   const [bubbleVersion, setBubbleVersion] = useState(0);
@@ -1237,7 +1308,7 @@ export function App() {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({text: translation, sourceRevision: source.revision, promo: promoAction}),
       });
-      const result = await response.json();
+      const result = await response.json().catch(() => ({}));
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'ذخیرهٔ ترجمه ناموفق بود.');
       const parts = [
         result.missing.length ? `ترجمه‌نشده: ${result.missing.join('، ')}` : '',
@@ -1248,7 +1319,7 @@ export function App() {
       setHasSaved(true);
       setMessage('ترجمه ذخیره شد. مرحلهٔ بعد: پاک‌سازی متن اصلی.');
       setStep(3);
-      await cleanImage();
+      await executeClean(job.jobId);
     } catch (error) {fail(error instanceof Error ? error.message : 'ذخیرهٔ ترجمه ناموفق بود.');}
     finally {setBusy(false);}
   }
@@ -1468,13 +1539,12 @@ export function App() {
     }
   }
 
-  async function cleanImage() {
-    if (!job || busy || loadingData) return;
-    setBusy(true); setMessage('در حال پاک‌سازی آزمایشی…'); setCleanVersion(0); setRenderVersion(0);
-    startProgress(job.jobId, 'clean');
+  async function executeClean(jobId: string) {
+    setMessage('در حال پاک‌سازی آزمایشی…'); setCleanVersion(0); setRenderVersion(0);
+    startProgress(jobId, 'clean');
     try {
-      const response = await fetch(`/api/jobs/${job.jobId}/clean`, {method: 'POST'});
-      const result = await response.json();
+      const response = await fetch(`/api/jobs/${jobId}/clean`, {method: 'POST'});
+      const result = await response.json().catch(() => ({}));
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'پاک‌سازی ناموفق بود.');
       finishProgress('clean');
       setCleanVersion(Date.now());
@@ -1482,9 +1552,16 @@ export function App() {
       setAreaPick([]);
       setMessage('پاک‌سازی انجام شد. با «ادامه» ترجمه روی تصویر درج می‌شود.');
       setStep(3);
-      await loadCleanAreas(job.jobId);
+      await loadCleanAreas(jobId);
     } catch (error) {abortProgress(); fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');}
-    finally {setBusy(false);}
+  }
+
+  async function cleanImage() {
+    if (!job || busy || loadingData) return;
+    setBusy(true);
+    try {
+      await executeClean(job.jobId);
+    } finally {setBusy(false);}
   }
 
   async function upload(file: File | undefined) {
@@ -1512,7 +1589,7 @@ export function App() {
       setSourceVersion(Date.now());
       setHasSaved(false);
       setStep(1);
-      setMessage('تصویر ذخیره شد. با «ادامه» متن‌ها خودکار تشخیص داده می‌شوند.');
+      setMessage('');
       void loadJobs();
     } catch (error) {
       if (error instanceof Error && error.name !== 'AbortError') fail(error.message);
@@ -1634,8 +1711,10 @@ export function App() {
     activeOperation.current = operation;
     setCancelPending(false);
     const epoch = progressEpoch.current;
+    const initialStage = operation === 'render' ? 'render_plan' : operation === 'clean' ? 'clean_prepare' : 'start';
+    let lastStage = initialStage;
     progressPace.current = {fraction: 0.02, at: Date.now(), perSecond: 0};
-    setOcrProgress({fraction: 0.02, stage: operation === 'render' ? 'render_plan' : operation === 'clean' ? 'clean_prepare' : 'start', running: true});
+    setOcrProgress({fraction: 0.02, stage: initialStage, running: true});
     const poll = async () => {
       let server: Progress | null = null;
       try {
@@ -1648,16 +1727,26 @@ export function App() {
         // سرور جواب نداد؛ نوار روی همان مقدار (با حرکت آرام مرحلهٔ اول) می‌ماند.
       }
       if (epoch !== progressEpoch.current || !progressActive.current) return;
+      const nextStage = server?.stage && server.stage !== 'idle' ? server.stage : lastStage;
+      lastStage = nextStage;
       // عدد سرور ملاک است؛ بین دو گزارش، نوار با سرعتِ واقعیِ مشاهده‌شده پر می‌شود
       // (نه با تخمین زمانیِ کور که زودتر از موعد به ۹۹٪ می‌رسید).
-      const advanced = advanceProgress(progressPace.current, server?.fraction ?? 0, Date.now());
+      const advanced = advanceProgress(progressPace.current, server?.fraction ?? 0, Date.now(), nextStage);
       progressPace.current = advanced.pace;
       setOcrProgress(previous => {
         if (!previous) return previous;
         const fraction = Math.min(0.99, Math.max(previous.fraction, advanced.fraction));
         const stage = server?.stage && server.stage !== 'idle' ? server.stage : previous.stage;
-        return {fraction, stage, running: true, etaSeconds: server?.etaSeconds,
-                elapsedSeconds: server?.elapsedSeconds, resourceProfile: server?.resourceProfile};
+        return {
+          fraction,
+          stage,
+          running: true,
+          etaSeconds: server ? server.etaSeconds : previous.etaSeconds,
+          elapsedSeconds: server ? server.elapsedSeconds : previous.elapsedSeconds,
+          resourceProfile: server ? server.resourceProfile : previous.resourceProfile,
+          stripIndex: server ? server.stripIndex : previous.stripIndex,
+          totalStrips: server ? server.totalStrips : previous.totalStrips,
+        };
       });
     };
     void poll();
@@ -1729,6 +1818,7 @@ export function App() {
       const response = await fetch(`/api/jobs/${job.jobId}/ocr`, {method: 'POST'});
       const result = await response.json();
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'OCR ناموفق بود.');
+      setMessage('در حال دسته‌بندی حباب‌ها و آماده‌سازی منبع ترجمه…');
       const next = await fetch(`/api/jobs/${job.jobId}/translation-source?promo=${promoAction}`);
       if (!next.ok) throw Error('دریافت متن OCR ناموفق بود.');
       const updated: Source = await next.json();
@@ -1763,13 +1853,11 @@ export function App() {
             {batchOpen ? 'تک‌تصویر' : 'پردازش دسته‌ای'}
           </button>
           <button className="ocr reset" disabled={busy} onClick={resetApp}>ریست</button>
-          <SystemPanel />
+          <SystemPanel buttonLabel="تنظیمات" />
         </div>
         <span className="brand" dir="ltr">T-4 TRANSLATE</span>
         <span className="status" role="status">{status}</span>
       </header>
-
-      <UpdatePanel />
 
       {batchSeen && (
         <BatchPanel onClose={() => setBatchOpen(false)} prompt={translationPrompt}
@@ -1802,17 +1890,10 @@ export function App() {
         </ol>
 
         <div className="sidebar-previews" aria-label="پیش‌نمایش مرحلهٔ جاری">
-          {job && sourceVersion > 0 && step === 1 && (
-            <ImagePreview
-              jobId={job.jobId}
-              kind="source"
-              version={sourceVersion}
-              aspect={job.height / job.width}
-              alt="نمایش تصویر اصلی"
-              scroll
-              downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
-              caption={<span>تصویر اصلی — برای بزرگ‌نمایی کلیک کنید</span>}
-            />
+          {step === 1 && (
+            <p className="sidebar-empty">
+              پیش‌نمایش مرحلهٔ ۱ با دکمهٔ «بزرگ‌نمایی تصویر» در اندازهٔ کامل باز می‌شود.
+            </p>
           )}
           {step === 2 && source && ocrVersion > 0 && job && (
             <ImagePreview
@@ -1860,7 +1941,6 @@ export function App() {
           {step === 1 && (
             <>
               <h2 className="wizard-title">مرحله ۱: انتخاب تصویر</h2>
-              <p className="wizard-help">تصویر مانگا یا وب‌تون را انتخاب یا اینجا رها کنید. در مرحلهٔ بعد متن‌ها تشخیص داده می‌شوند.</p>
 
               {ocrEngine && !ocrEngine.ready && (
                 <p className="wizard-warning" role="alert">
@@ -1924,7 +2004,6 @@ export function App() {
                 <>
                   <p className="wizard-note">
                     تصویر فعلی: <span dir="ltr">{job.width} × {job.height} · {job.format}</span>
-                    {' '}— پیش‌نمایش در ستون راست است.
                   </p>
                   <div className="wizard-nav">
                     <button
@@ -1936,7 +2015,27 @@ export function App() {
                     >
                       {source ? 'ادامه به ترجمه' : 'ادامه (تشخیص خودکار متن)'}
                     </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => setSourceModalOpen(true)}
+                    >
+                      بزرگ‌نمایی تصویر
+                    </button>
                   </div>
+                  <ImagePreview
+                    jobId={job.jobId}
+                    kind="source"
+                    version={sourceVersion}
+                    aspect={job.height / job.width}
+                    alt="نمایش تصویر اصلی"
+                    downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
+                    isOpen={sourceModalOpen}
+                    onClose={() => setSourceModalOpen(false)}
+                    hideThumbnail
+                    defaultZoom={0.5}
+                    defaultFit={false}
+                  />
                 </>
               )}
 
@@ -2120,7 +2219,7 @@ export function App() {
                     )}
                   </div>
 
-                  {cleanVersion === 0 && (
+                  {cleanVersion === 0 && !ocrProgress && (
                     <p className="wizard-note">{busy ? 'در حال پاک‌سازی…' : 'هنوز پاک‌سازی اجرا نشده است.'}</p>
                   )}
 
@@ -2298,6 +2397,7 @@ export function App() {
                   <p className="wizard-help">
                     نسخهٔ ورودی و خروجی با «پردهٔ مقایسه» روی هم قرار می‌گیرند؛ دستگیره را بکشید تا تفاوت را ببینید.
                   </p>
+                  {ocrProgress?.stage.startsWith('render_') && <ProgressBar progress={ocrProgress} onCancel={() => void cancelProcessing()} cancelPending={cancelPending} />}
 
                   <CompareSlider
                     jobId={job.jobId}

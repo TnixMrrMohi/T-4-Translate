@@ -55,8 +55,9 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="T-4 Translate", version="0.1.0", lifespan=_lifespan)
-MAX_UPLOAD_BYTES = 64 * 1024 * 1024
-MAX_PIXELS = 80_000_000
+Image.MAX_IMAGE_PIXELS = 250_000_000
+MAX_UPLOAD_BYTES = 128 * 1024 * 1024
+MAX_PIXELS = 150_000_000
 FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
 _ocr_lock = asyncio.Lock()
 # Allow a small multipart envelope in addition to the image limit.
@@ -152,17 +153,24 @@ async def _read_image(file: UploadFile, save: bool = False) -> dict:
     size = 0
     diagnostics.log_event("image.upload.start", filename=file.filename, contentType=file.content_type,
                           save=save)
+    diagnostics.log_stage1(
+        "IMAGE_UPLOAD_STARTED",
+        "Image upload initiated",
+        filename=file.filename,
+        contentType=file.content_type,
+        save=save,
+    )
     try:
         with SpooledTemporaryFile(max_size=1024 * 1024) as temp:
             while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
                 if size > MAX_UPLOAD_BYTES:
-                    raise HTTPException(413, "حجم تصویر بیش از ۶۴ مگابایت است.")
+                    raise HTTPException(413, "حجم تصویر بیش از ۱۲۸ مگابایت است.")
                 temp.write(chunk)
             temp.seek(0)
             try:
                 with warnings.catch_warnings():
-                    warnings.simplefilter("error", Image.DecompressionBombWarning)
+                    warnings.simplefilter("ignore", Image.DecompressionBombWarning)
                     with Image.open(temp) as image:
                         width, height = image.size
                         if image.format not in FORMATS or width * height > MAX_PIXELS:
@@ -194,6 +202,22 @@ async def _read_image(file: UploadFile, save: bool = False) -> dict:
                 "image.upload.accepted", jobId=info.get("jobId"), filename=file.filename,
                 imageFormat=image_format, width=width, height=height, sizeBytes=size,
                 elapsedMs=round((time.perf_counter() - started) * 1000, 1), saved=save,
+            )
+            profile = hardware.fresh_profile()
+            diagnostics.log_stage1(
+                "IMAGE_VALIDATED",
+                "Image format, dimensions and security checks passed",
+                jobId=info.get("jobId"),
+                filename=file.filename,
+                format=image_format,
+                width=width,
+                height=height,
+                megapixels=round((width * height) / 1_000_000, 2),
+                sizeBytes=size,
+                sizeKb=round(size / 1024, 1),
+                profileAssigned=profile["name"],
+                maxAllowedPixels=profile.get("maxPixels"),
+                elapsedMs=round((time.perf_counter() - started) * 1000, 1),
             )
             return info
     except HTTPException as exc:
@@ -474,6 +498,17 @@ async def run_ocr(job_id: str) -> dict:
         except OSError:
             image_bytes = None
         diagnostics.log_event("ocr.job.start", jobId=job_id, imageBytes=image_bytes)
+        profile = hardware.begin_job_profile()
+        diagnostics.log_stage1(
+            "OCR_PIPELINE_START",
+            "Stage 1 OCR pipeline started",
+            jobId=job_id,
+            profile=profile["name"],
+            cpuThreads=profile["cpuThreads"],
+            gpuUsable=profile.get("gpuUsable"),
+            gpuProviders=profile.get("gpuProviders", []),
+            workerMode=os.environ.get("T4_WORKER_MODE", "process"),
+        )
         progress.begin(job_id)
         report_progress = progress.callback(job_id)
         last_log = {"stage": None, "percent": -1, "at": time.monotonic()}
@@ -533,6 +568,13 @@ async def run_ocr(job_id: str) -> dict:
             "ocr.job.done", jobId=job_id, lineCount=len(lines),
             elapsedMs=round((time.perf_counter() - started) * 1000, 1),
             saveMs=round((time.perf_counter() - save_started) * 1000, 1),
+        )
+        diagnostics.log_stage1(
+            "OCR_PIPELINE_DONE",
+            "Stage 1 OCR pipeline finished and saved to workspace",
+            jobId=job_id,
+            linesExtracted=len(lines),
+            totalDurationMs=round((time.perf_counter() - started) * 1000, 1),
         )
         return result
 
@@ -724,11 +766,21 @@ def translation_source(job_id: str, promo: str = "replace") -> dict:
 
 @app.post("/api/jobs/{job_id}/translations")
 async def save_translation(job_id: str, body: TranslationInput) -> dict:
+    started = time.perf_counter()
     async with _ocr_lock:
         source = translation_source(job_id, _check_promo(body.promo))
         if body.sourceRevision != source["revision"]:
+            diagnostics.log_event(
+                "translations.save.rejected",
+                level=30,
+                jobId=job_id,
+                reason="stale_revision",
+                expectedRevision=source["revision"],
+                gotRevision=body.sourceRevision,
+            )
             raise HTTPException(409, "متن OCR تغییر کرده است؛ ابتدا منبع را دوباره بارگذاری کنید.")
         if not source["items"]:
+            diagnostics.log_event("translations.save.rejected", level=30, jobId=job_id, reason="empty_items")
             raise HTTPException(409, "متنی برای ترجمه وجود ندارد.")
         parsed = parse_translation(body.text, {item["number"] for item in source["items"]})
         # هر بلوک (بالن) یک متن دارد؛ برای پاک‌سازی، همان متن به همهٔ خطوط بلوک نسبت داده می‌شود.
@@ -762,6 +814,22 @@ async def save_translation(job_id: str, body: TranslationInput) -> dict:
         tmp = workspace / "translations.json.tmp"
         tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, workspace / "translations.json")
+        diagnostics.log_stage(
+            "STAGE_2",
+            "TRANSLATIONS_SAVED",
+            "Stage 2 translations parsed and saved to workspace",
+            jobId=job_id,
+            promo=source["promo"],
+            itemCount=len(source["items"]),
+            translatedCount=len(parsed.translations),
+            lineTranslationCount=len(line_translations),
+            missingCount=len(parsed.missing),
+            missingNumbers=parsed.missing[:20],
+            duplicateCount=len(parsed.duplicates),
+            unknownCount=len(parsed.unknown),
+            cleanLineCount=len(result["cleanLines"]),
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+        )
         return result
 
 
@@ -825,13 +893,23 @@ def get_clean_progress(job_id: str) -> dict:
 def _clean_run(job_id: str):
     key = f"{job_id}:clean"
     progress.begin(key, "clean_prepare")
+    raw_report = progress.callback(key)
+    tracker = diagnostics.ProgressLogger("cleaning.job.progress", job_id, min_percent_step=10, min_seconds=8.0)
+
+    def report_clean(fraction: float, stage: str | None = None, **extra) -> None:
+        raw_report(fraction, stage, **extra)
+        tracker.record(fraction, stage)
+
     try:
-        yield progress.callback(key)
+        yield report_clean
     except progress.OperationCancelled:
         progress.cancelled(key)
+        diagnostics.log_event("cleaning.job.cancelled", level=30, jobId=job_id)
         raise HTTPException(409,'پردازش لغو شد.') from None
     except execution.ResourceLimitError as exc:
         progress.fail(key,str(exc),'clean_error')
+        diagnostics.log_event("cleaning.job.resource_limit", level=40, jobId=job_id, error=str(exc),
+                              systemMetrics=diagnostics.system_metrics())
         raise HTTPException(507,str(exc)) from None
     except BaseException as exc:
         progress.fail(key, "پاک‌سازی ناموفق بود.", "clean_error")
@@ -896,7 +974,28 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
             if not existing.is_file():
                 raise HTTPException(409, "ابتدا یک‌بار پاک‌سازی کامل را اجرا کنید.")
             base = existing
+        started = time.perf_counter()
+        state = get_job(job_id)
+        worker_mode = os.environ.get("T4_WORKER_MODE", "process")
+        profile = hardware.begin_job_profile()
+        diagnostics.log_stage(
+            "STAGE_3",
+            "CLEAN_PIPELINE_START",
+            "Stage 3 cleaning pipeline started",
+            jobId=job_id,
+            mode="partial_areas" if areas is not None else "full",
+            areaCount=len(areas) if areas is not None else len(block_list),
+            lineCount=len(source["lines"]),
+            outsideLineCount=len(outside_lines),
+            extraLineCount=len(translation.get("cleanLines") or []),
+            width=state.get("width"),
+            height=state.get("height"),
+            workerMode=worker_mode,
+            profile=profile["name"],
+            cpuThreads=profile["cpuThreads"],
+        )
         with _clean_run(job_id) as report:
+            clean_started = time.perf_counter()
             try:
                 if os.environ.get('T4_WORKER_MODE') == 'inline':
                     clean, mask = await run_native_safely(
@@ -912,7 +1011,12 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
                         'extra':translation.get('cleanLines') or []},workspace,f'{job_id}:clean')
                 progress.check_cancelled(f'{job_id}:clean')
             except cleaning.CleaningError as exc:
+                diagnostics.log_event("cleaning.job.rejected", level=30, jobId=job_id, detail=str(exc),
+                                      elapsedMs=round((time.perf_counter() - started) * 1000, 1))
                 raise HTTPException(400, str(exc)) from None
+            clean_ms = round((time.perf_counter() - clean_started) * 1000, 1)
+            save_started = time.perf_counter()
+            report(0.99, "clean_save")
             try:
                 clean.save(workspace / "clean.png.tmp", format="PNG")
                 mask.save(workspace / "mask.png.tmp", format="PNG")
@@ -931,6 +1035,23 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
                 (workspace / "clean-preview.png").unlink()
             except FileNotFoundError:
                 pass
+            save_ms = round((time.perf_counter() - save_started) * 1000, 1)
+            clean_bytes = (workspace / "clean.png").stat().st_size if (workspace / "clean.png").is_file() else None
+            mask_bytes = (workspace / "mask.png").stat().st_size if (workspace / "mask.png").is_file() else None
+            diagnostics.log_stage(
+                "STAGE_3",
+                "CLEAN_PIPELINE_DONE",
+                "Stage 3 cleaning pipeline finished and saved to workspace",
+                jobId=job_id,
+                mode="partial_areas" if areas is not None else "full",
+                areaCount=len(areas) if areas is not None else len(block_list),
+                workerMode=worker_mode,
+                cleanMs=clean_ms,
+                saveMs=save_ms,
+                totalDurationMs=round((time.perf_counter() - started) * 1000, 1),
+                cleanPngBytes=clean_bytes,
+                maskPngBytes=mask_bytes,
+            )
             if areas is not None:
                 return {"jobId": job_id, "areas": areas,
                         "message": f"پاک‌سازی {len(areas)} ناحیهٔ انتخاب‌شده دوباره انجام شد."}
@@ -992,10 +1113,14 @@ def _render_files(clean_path: Path, translation: dict, blocks: list,
     کادر بلوک‌ها تازه از نتیجهٔ تشخیص بالن خوانده می‌شود (نه از نسخهٔ ذخیره‌شده در
     translations.json) تا اصلاح هندسه روی کارهای قبلی هم اثر بگذارد.
     """
+    started = time.perf_counter()
     font_paths = _font_paths()
     with Image.open(clean_path) as base:
         rendered, drawn = rendering.render_blocks(base, blocks, translation["translations"],
                                                  font_paths, layout, _font_files(), on_progress=on_progress)
+    render_ms = round((time.perf_counter() - started) * 1000, 1)
+    save_started = time.perf_counter()
+    rendering.emit_progress(on_progress, 0.92, "render_save")
     tmp = image_path.with_name(image_path.name + ".tmp")
     try:
         rendered.save(tmp, format="PNG")
@@ -1009,6 +1134,16 @@ def _render_files(clean_path: Path, translation: dict, blocks: list,
                                     "layout": layouts.signature(layout or {})},
                                    ensure_ascii=False), encoding="utf-8")
     os.replace(meta_tmp, meta_path)
+    rendering.emit_progress(on_progress, 0.98, "render_save")
+    save_ms = round((time.perf_counter() - save_started) * 1000, 1)
+    diagnostics.log_event(
+        "rendering.files.done",
+        drawn=drawn,
+        blockCount=len(blocks),
+        renderMs=render_ms,
+        saveMs=save_ms,
+        elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+    )
     return drawn
 
 
@@ -1046,36 +1181,99 @@ async def render_job(job_id: str) -> dict:
         if not (workspace / "clean.png").is_file() or not _clean_stamp_matches(workspace, translation):
             raise HTTPException(409, "ابتدا پاک‌سازی را با همین ترجمه اجرا کنید.")
         source = get_ocr(job_id)
+        state = get_job(job_id)
+        started = time.perf_counter()
         key=f'{job_id}:render'
+        worker_mode = os.environ.get("T4_WORKER_MODE", "process")
+        profile = hardware.begin_job_profile()
+        layout_data = layouts.read(workspace)
         progress.begin(key,'render_plan')
+        raw_report = progress.callback(key)
+        tracker = diagnostics.ProgressLogger("rendering.job.progress", job_id, min_percent_step=15, min_seconds=8.0)
+
+        def report_render(fraction: float, stage: str | None = None, **extra) -> None:
+            raw_report(fraction, stage, **extra)
+            tracker.record(fraction, stage)
+
         try:
             blocks = saved_translation_blocks(job_id, source["lines"], translation)
+            diagnostics.log_stage(
+                "STAGE_4",
+                "RENDER_PIPELINE_START",
+                "Stage 4 rendering pipeline started",
+                jobId=job_id,
+                blockCount=len(blocks),
+                layoutOverrides=len(layout_data),
+                width=state.get("width"),
+                height=state.get("height"),
+                workerMode=worker_mode,
+                profile=profile["name"],
+                raqm=rendering.has_raqm(),
+            )
             if os.environ.get('T4_WORKER_MODE') == 'inline':
                 drawn = await run_native_safely(
-                    _render_files, workspace / "clean.png", translation, blocks,
-                    workspace / "render.png", workspace / "render-meta.json", layouts.read(workspace))
+                    partial(
+                        _render_files,
+                        workspace / "clean.png",
+                        translation,
+                        blocks,
+                        workspace / "render.png",
+                        workspace / "render-meta.json",
+                        layout_data,
+                        on_progress=report_render,
+                    )
+                )
             else:
                 result=await execution.run('render',{'path':str(workspace/'clean.png'),
-                    'translation':translation,'blocks':blocks,'layout':layouts.read(workspace)},
+                    'translation':translation,'blocks':blocks,'layout':layout_data},
                     workspace,key)
                 drawn=result['drawn']
             progress.check_cancelled(key)
         except progress.OperationCancelled:
             progress.cancelled(key)
+            diagnostics.log_event("rendering.job.cancelled", level=30, jobId=job_id,
+                                  elapsedMs=round((time.perf_counter() - started) * 1000, 1))
             raise HTTPException(409,'پردازش لغو شد.') from None
         except execution.ResourceLimitError as exc:
             progress.fail(key,str(exc),'render_error')
+            diagnostics.log_event("rendering.job.resource_limit", level=40, jobId=job_id, error=str(exc),
+                                  elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+                                  systemMetrics=diagnostics.system_metrics())
             raise HTTPException(507,str(exc)) from None
         except rendering.RenderError as exc:
             progress.fail(key,str(exc),'render_error')
+            diagnostics.log_event("rendering.job.rejected", level=30, jobId=job_id, detail=str(exc),
+                                  elapsedMs=round((time.perf_counter() - started) * 1000, 1))
             raise HTTPException(400, str(exc)) from None
-        except Exception:
+        except Exception as exc:
             progress.fail(key,'رندر ناموفق بود.','render_error')
+            diagnostics.log_exception(
+                "rendering.job.failed",
+                jobId=job_id,
+                errorType=type(exc).__name__,
+                error=str(exc),
+                elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+            )
             raise HTTPException(500, "نمایش ترجمه روی تصویر ناموفق بود.") from None
         progress.finish(key,'render_done')
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        render_bytes = (workspace / "render.png").stat().st_size if (workspace / "render.png").is_file() else None
         diagnostics.log_event("rendering.done", jobId=job_id, drawn=drawn,
                               blockCount=len(blocks), raqm=rendering.has_raqm(),
-                              layoutOverrides=len(layouts.read(workspace)))
+                              layoutOverrides=len(layout_data),
+                              renderPngBytes=render_bytes, elapsedMs=elapsed_ms)
+        diagnostics.log_stage(
+            "STAGE_4",
+            "RENDER_PIPELINE_DONE",
+            "Stage 4 rendering pipeline finished and saved to workspace",
+            jobId=job_id,
+            drawn=drawn,
+            blockCount=len(blocks),
+            layoutOverrides=len(layout_data),
+            workerMode=worker_mode,
+            renderPngBytes=render_bytes,
+            totalDurationMs=elapsed_ms,
+        )
         return {"jobId": job_id, "drawn": drawn,
                 "message": "ترجمهٔ فارسی روی پیش‌نمایش قرار گرفت؛ این خروجی هنوز آزمایشی است."}
 
@@ -1137,13 +1335,23 @@ async def download_render_webp(job_id: str, quality: int = WEBP_QUALITY_DEFAULT)
     except (FileNotFoundError, json.JSONDecodeError):
         cached = None
     if cached != stamp or not image_path.is_file():
+        started = time.perf_counter()
         try:
             await run_native_safely(_write_webp, path, image_path, quality)
-        except Exception:
+        except Exception as exc:
+            diagnostics.log_exception("render.webp.failed", jobId=job_id, quality=quality,
+                                      errorType=type(exc).__name__, error=str(exc))
             raise HTTPException(500, "تبدیل خروجی به WebP ناموفق بود.") from None
         meta_tmp = meta_path.with_name(meta_path.name + ".tmp")
         meta_tmp.write_text(json.dumps(stamp), encoding="utf-8")
         os.replace(meta_tmp, meta_path)
+        diagnostics.log_event(
+            "render.webp.done",
+            jobId=job_id,
+            quality=quality,
+            outputBytes=image_path.stat().st_size if image_path.is_file() else None,
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+        )
     return FileResponse(
         image_path, media_type="image/webp",
         headers={"Cache-Control": "no-store",
@@ -1310,7 +1518,7 @@ def batch_slice(body: SliceInput) -> dict:
 
     info = get_job(body.jobId)
     width, height = int(info["width"]), int(info["height"])
-    profile = hardware.current_profile()
+    profile = hardware.fresh_profile()
     limit = int(profile.get("maxPixels", 6_000_000) * SLICE_SHARE)
     if width * height <= limit:
         return {"sliced": False, "slices": []}
@@ -1478,9 +1686,12 @@ def _layout_blocks(job_id: str, workspace: Path, translation: dict, blocks: list
                    layout: dict) -> list[dict]:
     entries = _layout_worker(workspace / "clean.png", translation["translations"],
                              blocks, layout)
+    path_to_id = {v: k for k, v in _font_files().items()}
     result = []
     for entry in entries:
         override = layout.get(str(entry["number"])) or {}
+        entry_path = entry.get("path")
+        default_font_id = path_to_id.get(entry_path) if entry_path else None
         result.append({
             "number": entry["number"],
             "kind": entry["kind"],
@@ -1494,6 +1705,7 @@ def _layout_blocks(job_id: str, workspace: Path, translation: dict, blocks: list
             "center": entry["center"],
             "rotation": entry["rotation"],
             "font": override.get("font"),
+            "defaultFont": default_font_id,
             "auto": entry["auto"],
         })
     return result
@@ -1512,6 +1724,7 @@ async def read_layout(job_id: str) -> dict:
         source = get_ocr(job_id)
         state = get_job(job_id)
         layout = layouts.read(workspace)
+        started = time.perf_counter()
         try:
             blocks = saved_translation_blocks(job_id, source["lines"], translation)
             if os.environ.get('T4_WORKER_MODE') == 'inline':
@@ -1521,13 +1734,18 @@ async def read_layout(job_id: str) -> dict:
                     'workspace':str(workspace),'jobId':job_id,'translation':translation,
                     'blocks':blocks,'layout':layout},workspace)
         except execution.ResourceLimitError as exc:
+            diagnostics.log_event("layout.read.resource_limit", level=40, jobId=job_id, error=str(exc))
             raise HTTPException(507,str(exc)) from None
         except rendering.RenderError as exc:
+            diagnostics.log_event("layout.read.rejected", level=30, jobId=job_id, detail=str(exc))
             raise HTTPException(400, str(exc)) from None
         except HTTPException:
             raise
-        except Exception:
+        except Exception as exc:
+            diagnostics.log_exception("layout.read.failed", jobId=job_id, errorType=type(exc).__name__, error=str(exc))
             raise HTTPException(500, "محاسبهٔ چیدمان متن ناموفق بود.") from None
+        diagnostics.log_event("layout.read.done", jobId=job_id, blockCount=len(items),
+                              overrideCount=len(layout), elapsedMs=round((time.perf_counter() - started) * 1000, 1))
         return {
             "jobId": job_id,
             "width": state.get("width"),
@@ -1556,6 +1774,7 @@ def write_layout(job_id: str, body: LayoutInput) -> dict:
         if isinstance(chosen, str) and chosen and chosen not in known_fonts:
             raise HTTPException(400, "فونت انتخاب‌شده نصب نیست.")
     saved = layouts.write(workspace, body.blocks)
+    diagnostics.log_event("layout.write.done", jobId=job_id, overrideCount=len(saved))
     return {"jobId": job_id, "layout": saved, "blocks": len(saved),
             "message": "چیدمان متن‌ها ذخیره شد؛ برای دیدن نتیجه دوباره درج کنید."}
 
@@ -1620,7 +1839,8 @@ async def _ensure_ocr_preview(job_id: str) -> Path:
                 await run_native_safely(_write_overlay, workspace, result["lines"])
             except preview.PreviewError as exc:
                 raise HTTPException(400, str(exc)) from None
-            except Exception:
+            except Exception as exc:
+                diagnostics.log_exception("preview.ocr.failed", jobId=job_id, errorType=type(exc).__name__, error=str(exc))
                 raise HTTPException(500, "ساخت پیش‌نمایش OCR ناموفق بود.") from None
     return path
 
@@ -1654,7 +1874,8 @@ async def _ensure_bubble_preview(job_id: str) -> Path:
             os.replace(tmp, path)
         except bubbles.BubbleError as exc:
             raise HTTPException(400, str(exc)) from None
-        except Exception:
+        except Exception as exc:
+            diagnostics.log_exception("preview.bubble.failed", jobId=job_id, errorType=type(exc).__name__, error=str(exc))
             raise HTTPException(500, "ساخت پیش‌نمایش بالن ناموفق بود.") from None
         finally:
             if tmp.exists():
@@ -1687,12 +1908,21 @@ async def _ensure_clean_preview(job_id: str) -> Path:
     source = get_ocr(job_id)
     block_list = saved_translation_blocks(job_id, source["lines"], translation)
     texts = translation.get("translations") or {}
+    started = time.perf_counter()
     try:
         await run_native_safely(_write_clean_preview, workspace, block_list, texts)
     except preview.PreviewError as exc:
         raise HTTPException(400, str(exc)) from None
-    except Exception:
+    except Exception as exc:
+        diagnostics.log_exception("preview.clean.failed", jobId=job_id, errorType=type(exc).__name__, error=str(exc))
         raise HTTPException(500, "ساخت پیش‌نمایش ناحیه‌های پاک‌سازی ناموفق بود.") from None
+    diagnostics.log_event(
+        "preview.clean.done",
+        jobId=job_id,
+        blockCount=len(block_list),
+        outputBytes=path.stat().st_size if path.is_file() else None,
+        elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+    )
     return path
 
 
@@ -1764,12 +1994,22 @@ async def get_thumb(job_id: str, kind: str):
     except (FileNotFoundError, json.JSONDecodeError):
         cached = None
     if cached != stamp or not image_path.is_file():
+        started = time.perf_counter()
         try:
             await run_native_safely(_write_thumb, workspace, kind, source, image_path, meta_path)
         except preview.PreviewError as exc:
             raise HTTPException(400, str(exc)) from None
-        except Exception:
+        except Exception as exc:
+            diagnostics.log_exception("preview.thumb.failed", jobId=job_id, kind=kind,
+                                      errorType=type(exc).__name__, error=str(exc))
             raise HTTPException(500, "ساخت بندانگشتی ناموفق بود.") from None
+        diagnostics.log_event(
+            "preview.thumb.done",
+            jobId=job_id,
+            kind=kind,
+            outputBytes=image_path.stat().st_size if image_path.is_file() else None,
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+        )
     return FileResponse(image_path, media_type="image/png",
                         headers={"Cache-Control": "no-store"})
 
@@ -1783,7 +2023,7 @@ def _write_display(source: Path, width: int, image_path: Path, meta_path: Path) 
     image = preview.scaled_width(source, width)
     tmp = image_path.with_name(image_path.name + ".tmp")
     try:
-        image.save(tmp, format="WEBP", quality=92, method=4)
+        image.save(tmp, format="WEBP", quality=96, method=6)
         os.replace(tmp, image_path)
     finally:
         image.close()
@@ -1813,12 +2053,23 @@ async def get_display(job_id: str, kind: str, width: int = 1000):
     except (FileNotFoundError, json.JSONDecodeError):
         cached = None
     if cached != stamp or not image_path.is_file():
+        started = time.perf_counter()
         try:
             await run_native_safely(_write_display, source, width, image_path, meta_path)
         except preview.PreviewError as exc:
             raise HTTPException(400, str(exc)) from None
-        except Exception:
+        except Exception as exc:
+            diagnostics.log_exception("preview.display.failed", jobId=job_id, kind=kind, width=width,
+                                      errorType=type(exc).__name__, error=str(exc))
             raise HTTPException(500, "ساخت نسخهٔ نمایشی ناموفق بود.") from None
+        diagnostics.log_event(
+            "preview.display.done",
+            jobId=job_id,
+            kind=kind,
+            width=width,
+            outputBytes=image_path.stat().st_size if image_path.is_file() else None,
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+        )
     # اعتبار فایل با size/mtime مبدأ بررسی می‌شود؛ کش کوتاه مرورگر از ساخت مکرر جلوگیری می‌کند.
     return FileResponse(image_path, media_type="image/webp",
                         headers={"Cache-Control": "private, max-age=60"})
@@ -1854,6 +2105,18 @@ async def detect_bubbles(job_id: str) -> dict:
     tmp = workspace / "bubbles.json.tmp"
     tmp.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, workspace / "bubbles.json")
+    counts = {}
+    for b in document.get("bubbles", []):
+        k = b.get("kind", "unknown")
+        counts[k] = counts.get(k, 0) + 1
+    diagnostics.log_stage1(
+        "BUBBLES_ANALYZED",
+        "Dialog bubbles, tone and contour geometry analyzed",
+        jobId=job_id,
+        totalBubbles=len(document.get("bubbles", [])),
+        categories=counts,
+        provider=document.get("provider", "geometry"),
+    )
     return document
 
 

@@ -72,12 +72,23 @@ Write-Step "بررسی پیش‌نیازها"
 
 $pythonExe  = $null
 $pythonArgs = @()
-if (Get-Command py -ErrorAction SilentlyContinue) {
+if (Test-Path $venvPy) {
+    $pythonExe = $venvPy
+} elseif (Get-Command py -ErrorAction SilentlyContinue) {
     # «py» مطمئن‌ترین راه روی ویندوز است و نسخهٔ نصب‌شده را انتخاب می‌کند.
     $pythonExe = 'py'
     $pythonArgs = @('-3')
 } elseif (Get-Command python -ErrorAction SilentlyContinue) {
     $pythonExe = 'python'
+} else {
+    $known = @(
+        "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\python\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe"
+    )
+    foreach ($cand in $known) {
+        if (Test-Path $cand) { $pythonExe = $cand; break }
+    }
 }
 if (-not $pythonExe) {
     Fail "Python پیدا نشد. Python 3.11 یا جدیدتر را از https://www.python.org/downloads/windows/ نصب کنید و گزینهٔ Add to PATH را بزنید."
@@ -143,7 +154,7 @@ if (-not (Test-Path (Join-Path $frontend 'node_modules'))) {
     Write-Step "نصب بسته‌های فرانت‌اند (npm ci)"
     Push-Location $frontend
     try {
-        & npm ci --no-audit --no-fund
+        & cmd.exe /c "npm ci --no-audit --no-fund"
         if ($LASTEXITCODE -ne 0) { Fail "npm ci ناموفق بود." }
     } finally {
         Pop-Location

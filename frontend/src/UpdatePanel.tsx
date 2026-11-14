@@ -85,7 +85,7 @@ const DEFAULT_POLL_SECONDS = 10;
  * هر ۱۰ ثانیه به API را نمی‌دهد؛ خود سرور با فاصلهٔ ایمن و ETag گیت‌هاب را
  * می‌پرسد (توضیح کامل در docs/updates.md).
  */
-export function UpdatePanel({compact = false}: {compact?: boolean}) {
+export function useUpdateController() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [busy, setBusy] = useState<'' | 'check' | 'download' | 'apply' | 'settings'>('');
   const [error, setError] = useState('');
@@ -269,8 +269,33 @@ export function UpdatePanel({compact = false}: {compact?: boolean}) {
           : state === 'error' ? (status?.error ?? '')
             : 'برنامه به‌روز است';
 
+  return {
+    status, busy, error, notice, open, setOpen, form, setForm, minCheck,
+    pending, latest, deltaBytes, percent, state, label,
+    checkNow, downloadNow, applyNow, openSettings, saveSettings,
+  };
+}
+
+export function UpdatePanelContent({
+  controller,
+  compact = false,
+  inDialog = false,
+}: {
+  controller: ReturnType<typeof useUpdateController>;
+  compact?: boolean;
+  inDialog?: boolean;
+}) {
+  const {
+    status, busy, error, notice, open, setOpen, form, setForm, minCheck,
+    pending, deltaBytes, percent, state, label,
+    checkNow, downloadNow, applyNow, openSettings, saveSettings,
+  } = controller;
+
   return (
-    <section className={`update-bar is-${state}${compact ? ' is-compact' : ''}`} aria-label="به‌روزرسانی برنامه">
+    <section
+      className={`update-bar is-${state}${compact ? ' is-compact' : ''}${inDialog ? ' is-dialog-section' : ''}`}
+      aria-label="به‌روزرسانی برنامه"
+    >
       <span className="update-version" dir="ltr">v{status?.current?.version ?? '…'}</span>
       <span className="update-label" role="status" aria-live="polite">{label}</span>
       {state === 'ready' && pending && (
@@ -366,6 +391,26 @@ export function UpdatePanel({compact = false}: {compact?: boolean}) {
       )}
     </section>
   );
+}
+
+export function UpdatePanel({
+  compact = false,
+  inDialog = false,
+  visible = true,
+  onStatusChange,
+}: {
+  compact?: boolean;
+  inDialog?: boolean;
+  visible?: boolean;
+  onStatusChange?: (status: UpdateStatus | null) => void;
+}) {
+  const controller = useUpdateController();
+  useEffect(() => {
+    onStatusChange?.(controller.status);
+  }, [controller.status, onStatusChange]);
+
+  if (!visible) return null;
+  return <UpdatePanelContent controller={controller} compact={compact} inDialog={inDialog} />;
 }
 
 export default UpdatePanel;

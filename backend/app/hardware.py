@@ -11,6 +11,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -260,12 +261,12 @@ def choose_profile(info: dict) -> dict:
         name = 'Medium'
     return {**info, 'name': name, 'tile': {'High': 512, 'Medium': 384, 'Low': 256}[name],
             'cpuThreads': 1 if name == 'Low' else max(1, cores // 2),
-            'workers': 2 if name == 'High' else 1,
+            'workers': 1,
             'providers': (info.get('gpuProviders') or []) + ['CPUExecutionProvider']
                          if info.get('gpuUsable') else ['CPUExecutionProvider'],
             'pauseSeconds': .01 if name != 'High' else 0,
-            'maxPixels': {'High': 35000000, 'Medium': 25000000, 'Low': 6000000}[name],
-            'memoryBudgetMb': 2304,
+            'maxPixels': {'High': 150000000, 'Medium': 120000000, 'Low': 6000000}[name],
+            'memoryBudgetMb': 2560 if name != 'Low' else 1536,
             'quality': 'classical-or-small-dynamic-model' if name == 'Low' else 'full'}
 
 
@@ -275,10 +276,40 @@ def set_profile(profile: dict) -> None:
         _profile = dict(profile)
 
 
+_CPU_DOWNGRADE_SAMPLES = 4
+_CPU_DOWNGRADE_SECONDS = 5.0
+_cpu_pressure: dict = {'profile_obj': None, 'count': 0, 'since': 0.0}
+
+
+def _sample_profile() -> dict:
+    """Read live telemetry and re-sample once if only a short CPU burst forced Low."""
+    try:
+        info = resource_snapshot()
+        policy = choose_profile(info)
+        free = info.get('availableRamMb')
+        cores = max(1, int(info.get('cores') or 1))
+        load = info.get('cpuPercent')
+        if (policy['name'] == 'Low' and free is not None and free >= 3072
+                and cores >= 4 and load is not None and load >= 80):
+            # Upload/spawn spikes can trip one psutil(interval=None) read; confirm over 150ms before capping to Low.
+            time.sleep(0.15)
+            return choose_profile(resource_snapshot())
+        return policy
+    except Exception:
+        return choose_profile({'cores': 1})
+
+
+def fresh_profile() -> dict:
+    """Compute a live hardware profile from current telemetry without mutating active job state."""
+    return _sample_profile()
+
+
 def current_profile(refresh: bool = False) -> dict:
-    global _profile
+    global _profile, _cpu_pressure
     candidate = None
-    if _profile is None or refresh:
+    if _profile is None:
+        candidate = _sample_profile()
+    elif refresh:
         try:
             candidate = choose_profile(resource_snapshot())
         except Exception:
@@ -286,11 +317,45 @@ def current_profile(refresh: bool = False) -> dict:
     with _profile_lock:
         if _profile is None:
             _profile = candidate
-        elif candidate and {'Low': 0, 'Medium': 1, 'High': 2}[candidate['name']] < {'Low': 0, 'Medium': 1, 'High': 2}[_profile['name']]:
-            _profile = candidate
-        elif candidate:
-            for key in ('availableRamMb','totalRamMb','cpuPercent','cores','gpuUsable','gpuProviders'):
-                _profile[key] = candidate.get(key)
+            _cpu_pressure = {'profile_obj': _profile, 'count': 0, 'since': 0.0}
+        else:
+            if _cpu_pressure['profile_obj'] is not _profile:
+                _cpu_pressure = {'profile_obj': _profile, 'count': 0, 'since': 0.0}
+            rank = {'Low': 0, 'Medium': 1, 'High': 2}
+            if candidate and rank[candidate['name']] < rank[_profile['name']]:
+                free = candidate.get('availableRamMb')
+                cores = int(candidate.get('cores') or 1)
+                load = candidate.get('cpuPercent')
+                gpu_lost = (_profile['name'] == 'High' and not candidate.get('gpuUsable'))
+                urgent = (
+                    free is None or load is None or free < 3072 or cores < 4
+                    or gpu_lost or (_profile['name'] == 'High' and free < 6144)
+                )
+                if urgent:
+                    _profile = candidate
+                    _cpu_pressure = {'profile_obj': _profile, 'count': 0, 'since': 0.0}
+                else:
+                    # جهش‌های کوتاه CPU هنگام راه‌اندازی worker یا بارگذاری مدل نباید کل کار را به Low بیندازد.
+                    threshold = 88.0 if candidate['name'] == 'Low' else 75.0
+                    if load >= threshold:
+                        if _cpu_pressure['count'] == 0:
+                            _cpu_pressure['since'] = time.monotonic()
+                        _cpu_pressure['count'] += 1
+                        if (_cpu_pressure['count'] >= _CPU_DOWNGRADE_SAMPLES
+                                and (time.monotonic() - _cpu_pressure['since']) >= _CPU_DOWNGRADE_SECONDS):
+                            _profile = candidate
+                            _cpu_pressure = {'profile_obj': _profile, 'count': 0, 'since': 0.0}
+                            return dict(_profile)
+                    else:
+                        _cpu_pressure['count'] = 0
+                        _cpu_pressure['since'] = 0.0
+                    for key in ('availableRamMb','totalRamMb','cpuPercent','cores','gpuUsable','gpuProviders'):
+                        _profile[key] = candidate.get(key)
+            elif candidate:
+                _cpu_pressure['count'] = 0
+                _cpu_pressure['since'] = 0.0
+                for key in ('availableRamMb','totalRamMb','cpuPercent','cores','gpuUsable','gpuProviders'):
+                    _profile[key] = candidate.get(key)
         return dict(_profile)
 
 
@@ -330,9 +395,6 @@ def confirm_session(session) -> None:
 
 def begin_job_profile() -> dict:
     """Recovery/upgrades are safe BETWEEN isolated jobs, never mid-inference."""
-    try:
-        profile=choose_profile(resource_snapshot())
-    except Exception:
-        profile=choose_profile({'cores':1})
+    profile = _sample_profile()
     set_profile(profile)
     return profile

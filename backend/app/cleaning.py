@@ -16,10 +16,12 @@
 * بیرون از کادرها (و در کادرهای ترجمه‌نشده) تصویر بایت‌به‌بایت دست‌نخورده است.
 """
 from pathlib import Path
-import math
 import logging
+import math
+import time
 
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = 250_000_000
 
 from . import diagnostics, hardware, progress
 
@@ -141,10 +143,12 @@ def _background(np, cv2, image, box, quad_mask=None):
 def _page_grain(cv2, np, image):
     """دانه/نویز ریزِ خودِ صفحه (بدون لبه‌ها) برای هم‌بافت ماندن وصله‌ها."""
     try:
-        smooth = cv2.medianBlur(image, 3)
+        h, w = image.shape[:2]
+        sample = image[:min(h, 1024), :min(w, 1024)]
+        smooth = cv2.medianBlur(sample, 3)
     except cv2.error:
         return None
-    diff = np.abs(image.astype(np.float32) - smooth.astype(np.float32))
+    diff = np.abs(sample.astype(np.float32) - smooth.astype(np.float32))
     grain = 1.4826 * np.median(diff.reshape(-1, 3), axis=0)
     return np.clip(grain, 0.0, GRAIN_LIMIT)
 
@@ -573,10 +577,15 @@ def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
     خط و بافتِ نقاشیِ دورِ نوشته سالم می‌ماند. اگر مدل نبود یا در کادری چیزی ندید،
     همان ماسک‌های پیش‌فرض برمی‌گردد تا نتیجه هرگز بدتر از قبل نشود.
     """
+    started = time.perf_counter()
     try:
         from . import textdet
 
-        if hardware.current_profile(refresh=True)['name']=='Low' or not textdet.available():
+        profile_name = hardware.current_profile(refresh=True)['name']
+        if profile_name == 'Low' or not textdet.available():
+            diagnostics.log_event("cleaning.text_mask.skipped",
+                                  reason="low_profile" if profile_name == 'Low' else "unavailable",
+                                  boxes=len(boxes))
             return fallback
         found = textdet.masks(image)
     except Exception:  # noqa: BLE001
@@ -586,6 +595,8 @@ def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
     glyphs = (found or {}).get('text')
     if glyphs is None or not bool(glyphs.any()):
         logger.warning("ComicTextDetector returned no text mask; using classical masks")
+        diagnostics.log_event("cleaning.text_mask.done", boxes=len(boxes), detected=False,
+                              glyphPixels=0, elapsedMs=round((time.perf_counter() - started) * 1000, 1))
         return fallback
     glyphs = np.asarray(glyphs)
     if (glyphs.ndim != 2 or glyphs.shape != image.shape[:2]
@@ -605,6 +616,13 @@ def _smart_masks(np, cv2, image, boxes, fallback: list) -> list:
         else:
             for old in fallback:
                 combined[y0:y1,x0:x1] |= old[y0:y1,x0:x1]
+    diagnostics.log_event(
+        "cleaning.text_mask.done",
+        boxes=len(boxes),
+        detected=detected,
+        glyphPixels=int(combined.sum()) if detected else 0,
+        elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+    )
     return [combined] if detected else fallback
 
 
@@ -749,169 +767,234 @@ def _force_clear_mask(cv2, np, result, box, background, quad_mask, grow_px: int 
     return mask
 
 
-def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
-                only: set[int] | None = None, force: bool = False,
-                extra: set[int] | None = None, grow: dict[int, int] | None = None,
-                shift: dict[int, tuple[int, int]] | None = None, repeat: set[int] | None = None,
-                high_quality: bool = True, on_progress=None) -> tuple[Image.Image, Image.Image]:
-    """متن نواحی ترجمه‌شده را پاک می‌کند و تصویر و ماسک را برمی‌گرداند.
+CHUNK_TRIGGER_PIXELS = 8_000_000
+CHUNK_TRIGGER_HEIGHT = 3600
+CHUNK_CORE_HEIGHT = 2400
+CHUNK_CLUSTER_PAD = 140
+CHUNK_MARGIN = 180
 
-    * ``base``: تصویری که نتیجه روی آن نوشته می‌شود؛ برای «پاک‌سازی مجدد» یک ناحیه،
-      تصویر پاک‌شدهٔ فعلی پایه می‌گیرد تا بقیهٔ ناحیه‌ها دست‌نخورده بمانند.
-    * ``only``: شمارهٔ خطوطی (۱-پایه) که باید دوباره پاک شوند؛ بقیه تغییر نمی‌کنند.
-    * ``force``: حالت تهاجمی برای همان نواحی انتخابی (فقط داخل چهارضلعیِ خودِ خط).
-    * ``grow``: تغییر اندازهٔ ناحیهٔ پاک‌سازی هر خط (شمارهٔ ۱-پایه ← پیکسل)؛ مثبت بزرگ‌تر،
-      منفی کوچک‌تر. بدون آن اندازهٔ خودکار می‌ماند.
-    * ``repeat``: خط‌هایی که یک دور پاک‌سازی تهاجمی دیگر هم می‌گیرند (متن بیرون از بالن).
-    * ``shift``: جابه‌جایی ناحیهٔ پاک‌سازی هر خط (شمارهٔ ۱-پایه ← (dx, dy) پیکسل).
-    * ``extra``: خط‌هایی که باید پاک شوند ولی ترجمه‌ای ندارند (متن تبلیغاتیِ حذف‌شده).
-    """
-    try:
-        import cv2
-        import numpy as np
-    except (ImportError, OSError) as exc:
-        raise CleaningError('ابزار پردازش تصویر نصب نشده است.') from exc
 
-    with Image.open(path) as original:
-        if original.width * original.height > 25_000_000:
-            raise CleaningError('تصویر برای پاک‌سازی آزمایشی بیش از حد بزرگ است.')
-        if original.getexif().get(274, 1) != 1:
-            raise CleaningError('تصاویر دارای چرخش EXIF در این نسخه پشتیبانی نمی‌شوند.')
-        if 'A' in original.getbands() and original.getchannel('A').getextrema()[0] < 255:
-            raise CleaningError('پاک‌سازی آزمایشی تصویر شفاف را پشتیبانی نمی‌کند.')
-        image = np.array(original.convert('RGB'))
-    report = on_progress or (lambda fraction, stage: None)
-    report(0.03, "clean_prepare")
-    diagnostics.log_event("cleaning.start", width=image.shape[1], height=image.shape[0],
-                          lineCount=len(lines), highQuality=high_quality, opencv=cv2.__version__)
+def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not intervals:
+        return []
+    ordered = sorted(intervals)
+    merged = [ordered[0]]
+    for start, end in ordered[1:]:
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end:
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _chunk_bands(height: int, clusters: list[tuple[int, int]], max_core: int = CHUNK_CORE_HEIGHT) -> list[tuple[int, int, bool]]:
+    """صفحه را به نوارهای خالی (پاس‌ترو) و نوارهای متنی فعال تقسیم می‌کند."""
+    if not clusters:
+        return [(0, height, False)] if height > 0 else []
+    bands: list[tuple[int, int, bool]] = []
+    cursor = 0
+    idx = 0
+    n = len(clusters)
+    while idx < n:
+        group_start = clusters[idx][0]
+        group_end = clusters[idx][1]
+        idx += 1
+        while idx < n and (clusters[idx][1] - group_start) <= max_core:
+            group_end = max(group_end, clusters[idx][1])
+            idx += 1
+        if group_start > cursor:
+            bands.append((cursor, group_start, False))
+        bands.append((group_start, group_end, True))
+        cursor = group_end
+    if cursor < height:
+        bands.append((cursor, height, False))
+    return bands
+
+
+def _emit_progress(report, fraction: float, stage: str, **extra) -> None:
+    """پیشرفت پاک‌سازی را با حفظ سازگاری گزارش‌گرهای دوآرگومانی ارسال می‌کند."""
+    if not report:
+        return
+    if extra:
+        try:
+            report(fraction, stage, **extra)
+            return
+        except TypeError:
+            pass
+    report(fraction, stage)
+
+
+def _clean_region(
+    cv2,
+    np,
+    image,
+    items: list[dict],
+    page_grain,
+    *,
+    base_array=None,
+    force: bool = False,
+    high_quality: bool = True,
+    allow_empty_mask: bool = False,
+    on_progress=None,
+    metrics: dict | None = None,
+    phase: tuple[float, float] | None = None,
+    eta_state: dict | None = None,
+    emit_save: bool = True,
+    strip_meta: dict | None = None,
+):
+    """پاک‌سازی یک آرایهٔ تصویر (صفحه کامل کوچک یا یک برش/قطعه از وب‌تون)."""
+    region_started = time.perf_counter()
     height, width = image.shape[:2]
-    selected = np.zeros((height, width), dtype=np.uint8)     # ناحیه‌هایی که پاک می‌شوند
-    untouched = np.zeros_like(selected)                      # ناحیه‌هایی که نباید تغییر کنند
+    selected = np.zeros((height, width), dtype=np.uint8)
+    untouched = np.zeros_like(selected)
     boxes: list[tuple[int, int, int, int]] = []
     quads: list = []
     box_grow: list[int] = []
     box_lines: list[int] = []
-    for number, line in enumerate(lines, 1):
-        quad = line.get('quad')
-        if not isinstance(quad, list) or len(quad) != 4:
-            raise CleaningError('مختصات متن OCR نامعتبر است.')
-        try:
-            coords = [[float(pt[0]), float(pt[1])] for pt in quad if len(pt) == 2]
-            if len(coords) != 4 or not all(math.isfinite(v) for pair in coords for v in pair):
-                raise ValueError()
-            points = np.array([[max(0, min(width - 1, round(x))), max(0, min(height - 1, round(y)))]
-                               for x, y in coords], dtype=np.int32)
-        except (TypeError, ValueError, IndexError, OverflowError):
-            raise CleaningError('مختصات متن OCR نامعتبر است.') from None
-        picked = only is None or number in only
-        translated = bool(translations.get(str(number), '').strip()) or bool(extra and number in extra)
-        if not translated or not picked:
-            # ترجمه‌نشده یا در این درخواست انتخاب نشده: دست‌نخورده می‌ماند.
-            cv2.fillPoly(untouched, [points], 255)
+    repeat_set: set[int] = set()
+
+    for item in items:
+        number = item['number']
+        if not item['selected']:
+            pts = np.array([[max(0, min(width - 1, round(x))), max(0, min(height - 1, round(y)))]
+                            for x, y in item['points']], dtype=np.int32)
+            cv2.fillPoly(untouched, [pts], 255)
             continue
-        offset = (shift or {}).get(number)
-        if offset and (offset[0] or offset[1]):
-            points = np.array([[max(0, min(width - 1, int(x) + int(offset[0]))),
-                                max(0, min(height - 1, int(y) + int(offset[1])))]
-                               for x, y in points], dtype=np.int32)
-        quad_vertices = points.copy()
-        # کادر OCR معمولاً حروف و دنباله‌ها را دقیق در بر نمی‌گیرد؛ کمی بزرگ‌ترش می‌کنیم
-        # تا باقی‌ماندهٔ متن انگلیسی پس از پاک‌سازی نماند. کادرهای ترجمه‌نشده بزرگ نمی‌شوند.
-        ptp_x = float(points[:, 0].max() - points[:, 0].min())
-        ptp_y = float(points[:, 1].max() - points[:, 1].min())
-        span = float(max(ptp_x, ptp_y))
-        pad = int(min(20, max(2, round(span * PADDING_RATIO))))
-        extra_grow = int((grow or {}).get(number, 0))
-        # کوچک‌کردن هرگز کادر را وارونه یا خالی نمی‌کند.
-        half = int(min(ptp_x, ptp_y) // 2)
-        pad = max(-max(0, half - 2), pad + extra_grow)
-        center_x, center_y = points[:, 0].mean(), points[:, 1].mean()
-        points = np.array([
-            [max(0, min(width - 1, int(x) + (pad if x >= center_x else -pad))),
-             max(0, min(height - 1, int(y) + (pad if y >= center_y else -pad)))]
-            for x, y in points], dtype=np.int32)
-        cv2.fillPoly(selected, [points], 255)
-        boxes.append((int(points[:, 0].min()), int(points[:, 1].min()),
-                      int(points[:, 0].max()) + 1, int(points[:, 1].max()) + 1))
+        quad_vertices = np.array([[max(0, min(width - 1, round(x))), max(0, min(height - 1, round(y)))]
+                                  for x, y in item['quad_vertices']], dtype=np.int32)
+        padded_pts = np.array([[max(0, min(width - 1, round(x))), max(0, min(height - 1, round(y)))]
+                               for x, y in item['padded_points']], dtype=np.int32)
+        cv2.fillPoly(selected, [padded_pts], 255)
+        boxes.append((int(padded_pts[:, 0].min()), int(padded_pts[:, 1].min()),
+                      int(padded_pts[:, 0].max()) + 1, int(padded_pts[:, 1].max()) + 1))
         quads.append(quad_vertices)
-        box_grow.append(extra_grow)
+        box_grow.append(item['extra_grow'])
         box_lines.append(number)
+        if item.get('repeat'):
+            repeat_set.add(number)
+
     if not boxes:
+        if allow_empty_mask:
+            canvas = base_array.copy() if base_array is not None else image.copy()
+            return canvas, np.zeros((height, width), dtype=np.uint8), 0, 0
         raise CleaningError('هیچ ناحیهٔ ترجمه‌شده‌ای برای پاک‌سازی وجود ندارد.')
 
     result = image.copy()
     mask_total = np.zeros((height, width), dtype=np.uint8)
-    page_grain = None if force else _page_grain(cv2, np, image)
     hard_masks: list = []
-    report(0.08, "clean_classical")
-    for index, (box, vertices) in enumerate(zip(boxes, quads)):
-        quad_only = np.zeros((height, width), dtype=np.uint8)
-        cv2.fillPoly(quad_only,[vertices],255)
-        background = _background(np, cv2, image, box, quad_only)
-        if background is None:
-            report(0.08 + 0.47 * (index + 1) / len(boxes), "clean_classical")
-            continue
-        _fill_ink(cv2, np, image, result, box, background, mask_total,
-                  force=force, quad_mask=quad_only != 0, grain=page_grain,
-                  collector=hard_masks)
-        report(0.08 + 0.47 * (index + 1) / len(boxes), "clean_classical")
+    state = eta_state if eta_state is not None else {'loaded': False, 'etaStartedAt': None, 'etaBaseFraction': None}
+    meta = dict(strip_meta or {})
 
-    # جوهری که بعد از پاک‌سازی تکه‌به‌تکه هنوز داخل کادر مانده (حروف سفیدِ دورخط‌دار روی هنر)
-    # برای همهٔ خط‌ها یک‌جا از بافت اطراف پر می‌شود؛ در پاک‌سازی مجدد حاشیه بیشتر است.
-    if True:
-        union = np.zeros((height, width), bool)
-        for box, vertices, extra_grow in zip(boxes, quads, box_grow):
-            quad_only = np.zeros((height, width), dtype=np.uint8)
-            cv2.fillPoly(quad_only, [vertices], 255)
-            background = _background(np, cv2, image, box, quad_only)
-            if background is None:
-                continue
+    def emit(fraction: float, stage: str) -> None:
+        if not on_progress:
+            return
+        extra = dict(meta)
+        if state.get('etaStartedAt') is not None:
+            extra['etaStartedAt'] = state['etaStartedAt']
+        if state.get('etaBaseFraction') is not None:
+            extra['etaBaseFraction'] = state['etaBaseFraction']
+        _emit_progress(on_progress, fraction, stage, **extra)
+
+    if phase is None:
+        c_start, c_end = 0.03, 0.06
+        m_frac: float | None = 0.07
+        i_start, i_end = 0.08, 0.92
+        finish_frac = 0.94
+    else:
+        b_start, b_end = phase
+        b_span = max(0.01, b_end - b_start)
+        if not state['loaded'] and b_start <= 0.081:
+            # تا قبل از بارگذاری کامل LaMa در نخستین بخش، پیشرفت زیر ۸٪ می‌ماند تا ETA کاذب ساخته نشود.
+            c_start, c_end = 0.04, 0.06
+            m_frac = 0.07
+            i_start, i_end = b_start, b_start + 0.97 * b_span
+        else:
+            c_start = b_start
+            c_end = b_start + 0.05 * b_span
+            m_frac = None if state['loaded'] else c_end
+            i_start = c_end
+            i_end = b_start + 0.98 * b_span
+        finish_frac = b_end
+
+    emit(c_start, "clean_classical")
+    quad_only = np.zeros((height, width), dtype=np.uint8)
+    for index, (box, vertices) in enumerate(zip(boxes, quads)):
+        cv2.fillPoly(quad_only, [vertices], 255)
+        background = _background(np, cv2, image, box, quad_only)
+        if background is not None:
+            _fill_ink(cv2, np, image, result, box, background, mask_total,
+                      force=force, quad_mask=quad_only != 0, grain=page_grain,
+                      collector=hard_masks)
+        quad_only[max(0, box[1] - 5):min(height, box[3] + 5), max(0, box[0] - 5):min(width, box[2] + 5)] = 0
+        emit(c_start + (c_end - c_start) * (index + 1) / len(boxes), "clean_classical")
+
+    union = np.zeros((height, width), bool)
+    for box, vertices, extra_grow in zip(boxes, quads, box_grow):
+        cv2.fillPoly(quad_only, [vertices], 255)
+        background = _background(np, cv2, image, box, quad_only)
+        if background is not None:
             grown = _force_clear_mask(cv2, np, result, box, background, quad_only != 0,
                                       max(0, (FORCE_GROW if force else SOFT_FORCE_GROW) + extra_grow),
                                       strict=not force)
             if grown is not None:
                 union |= grown
-        # ناحیه‌های انتخاب‌نشده یا ترجمه‌نشده هرگز لمس نمی‌شوند.
-        union &= untouched == 0
-        if union.any():
-            if _context_fill(cv2, np, result, union, CONTEXT_PAD, page_grain, 0x1B873593, hard_masks):
-                mask_total[union] = 255
+        quad_only[max(0, box[1] - 5):min(height, box[3] + 5), max(0, box[0] - 5):min(width, box[2] + 5)] = 0
+    union &= untouched == 0
+    if union.any():
+        if _context_fill(cv2, np, result, union, CONTEXT_PAD, page_grain, 0x1B873593, hard_masks):
+            mask_total[union] = 255
 
-    if repeat:
-        # دور دوم: روی همان نتیجه، تهاجمی و با حاشیهٔ بزرگ‌تر (متن بیرون از بالن).
+    if repeat_set:
         again = np.zeros((height, width), bool)
         for box, vertices, extra_grow, number in zip(boxes, quads, box_grow, box_lines):
-            if number not in repeat:
+            if number not in repeat_set:
                 continue
-            quad_only = np.zeros((height, width), dtype=np.uint8)
             cv2.fillPoly(quad_only, [vertices], 255)
             background = _background(np, cv2, image, box, quad_only)
-            if background is None:
-                continue
-            _fill_ink(cv2, np, image, result, box, background, mask_total, force=True,
-                      quad_mask=quad_only != 0, grain=page_grain, collector=hard_masks)
-            grown = _force_clear_mask(cv2, np, result, box, background, quad_only != 0,
-                                      max(0, FORCE_GROW + extra_grow))
-            if grown is not None:
-                again |= grown
+            if background is not None:
+                _fill_ink(cv2, np, image, result, box, background, mask_total, force=True,
+                          quad_mask=quad_only != 0, grain=page_grain, collector=hard_masks)
+                grown = _force_clear_mask(cv2, np, result, box, background, quad_only != 0,
+                                          max(0, FORCE_GROW + extra_grow))
+                if grown is not None:
+                    again |= grown
+            quad_only[max(0, box[1] - 5):min(height, box[3] + 5), max(0, box[0] - 5):min(width, box[2] + 5)] = 0
         again &= untouched == 0
         if again.any() and _context_fill(cv2, np, result, again, CONTEXT_PAD, page_grain, 0x2F4A7C15, hard_masks):
             mask_total[again] = 255
 
-    # جایی که الگوریتم رنگی نمی‌توانست پس‌زمینه را بسازد (نقاشی/عکس)، اگر مدل
-    # هوشمند نصب باشد همان ناحیه با آن بازسازی می‌شود؛ وگرنه نتیجهٔ فعلی می‌ماند.
-    profile = hardware.current_profile(refresh=True)
+    classical_ms = round((time.perf_counter() - region_started) * 1000, 1)
+    smart_masks_ms = 0.0
+    inpaint_ms = 0.0
+    inpaint_attempted = False
     if high_quality and hard_masks:
         try:
             from . import inpaint
 
-            report(0.57, "clean_model")
             ready = inpaint.available()
             diagnostics.log_event("cleaning.inpaint.status", available=ready, regions=len(hard_masks))
             if ready:
+                smart_started = time.perf_counter()
                 masks = _smart_masks(np, cv2, image, boxes, hard_masks)
-                kwargs = {"on_progress": lambda f: report(0.60 + 0.34 * f, "clean_inpaint")} if on_progress else {}
+                smart_masks_ms = round((time.perf_counter() - smart_started) * 1000, 1)
+                if not state['loaded']:
+                    if m_frac is not None:
+                        emit(m_frac, "clean_model")
+                    inpaint.ensure_session()
+                    # مبدأ ETA را دقیقاً پس از بارگذاری LaMa و پیش از نخستین تایل می‌کاریم تا
+                    # زمان ۱۳ ثانیه‌ای لود مدل به آینده تعمیم داده نشود.
+                    state['loaded'] = True
+                    state['etaStartedAt'] = time.time()
+                    state['etaBaseFraction'] = i_start
+                inpaint_started = time.perf_counter()
+                inpaint_attempted = True
+                emit(i_start, "clean_inpaint")
+                kwargs = {
+                    "on_progress": lambda f: emit(i_start + (i_end - i_start) * max(0.0, min(1.0, f)), "clean_inpaint")
+                } if on_progress else {}
                 refined = inpaint.refine(image, result, masks, **kwargs)
+                inpaint_ms = round((time.perf_counter() - inpaint_started) * 1000, 1)
                 if refined is not None:
                     result = refined
         except progress.OperationCancelled:
@@ -919,28 +1002,22 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
         except Exception:  # noqa: BLE001 - نبودِ مدل نباید پاک‌سازی را بشکند
             logger.exception("LaMa cleaning failed; retaining classical result")
             diagnostics.log_exception("cleaning.inpaint.failed", fallback="classical")
+    emit(finish_frac, "clean_classical")
 
+    sweep_started = time.perf_counter()
     swept_before = mask_total.copy()
     swept = _sweep_bubbles(cv2, np, result, boxes, selected, untouched, mask_total)
+    sweep_ms = round((time.perf_counter() - sweep_started) * 1000, 1)
     if swept:
-        diagnostics.log_event("cleaning.sweep", pixels=swept)
+        diagnostics.log_event("cleaning.sweep", pixels=swept, elapsedMs=sweep_ms)
     swept_mask = (mask_total != swept_before) & (mask_total != 0)
 
     if not high_quality or not hard_masks:
         diagnostics.log_event("cleaning.inpaint.skipped",
                               reason="disabled" if not high_quality else "no_hard_regions")
-    report(0.96, "clean_save")
-    # پایهٔ خروجی: تصویر اصلی، یا تصویر پاک‌شدهٔ فعلی برای پاک‌سازی مجدد یک ناحیه.
-    if base is not None:
-        try:
-            with Image.open(base) as existing:
-                if existing.size != (width, height):
-                    raise CleaningError('تصویر پاک‌شدهٔ فعلی با تصویر اصلی هم‌اندازه نیست.')
-                base_array = np.array(existing.convert('RGB'))
-        except CleaningError:
-            raise
-        except (OSError, ValueError) as exc:
-            raise CleaningError('تصویر پاک‌شدهٔ فعلی خوانده نشد.') from exc
+    if emit_save:
+        emit(0.95, "clean_save")
+    if base_array is not None:
         canvas = base_array.copy()
         for box in boxes:
             canvas[box[1]:box[3], box[0]:box[2]] = result[box[1]:box[3], box[0]:box[2]]
@@ -949,12 +1026,356 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
         canvas = result
         base_array = image
 
-    # بیرون از ناحیه‌های انتخاب‌شده و در ناحیه‌های ترجمه‌نشده، همه‌چیز دست‌نخورده می‌ماند.
     restore = (untouched != 0) | (selected == 0)
     canvas[restore] = base_array[restore]
     mask_total[restore] = 0
-    if not mask_total.any():
+    if not mask_total.any() and not allow_empty_mask:
         raise CleaningError('متن قابل پاک‌سازی یافت نشد.')
-    diagnostics.log_event("cleaning.done", boxes=len(boxes), maskPixels=int((mask_total != 0).sum()),
-                          changedPixels=int(np.any(canvas != base_array, axis=2).sum()))
-    return Image.fromarray(canvas, 'RGB'), Image.fromarray(mask_total, 'L')
+    mask_pixels = int((mask_total != 0).sum())
+    changed_pixels = int(np.any(canvas != base_array, axis=2).sum())
+    if metrics is not None:
+        metrics.update(
+            hardRegions=len(hard_masks),
+            sweptPixels=swept,
+            classicalMs=classical_ms,
+            smartMasksMs=smart_masks_ms,
+            inpaintMs=inpaint_ms,
+            sweepMs=sweep_ms,
+            regionMs=round((time.perf_counter() - region_started) * 1000, 1),
+        )
+    return canvas, mask_total, mask_pixels, changed_pixels
+
+
+def clean_image(path: Path, lines: list, translations: dict, *, base: Path | None = None,
+                only: set[int] | None = None, force: bool = False,
+                extra: set[int] | None = None, grow: dict[int, int] | None = None,
+                shift: dict[int, tuple[int, int]] | None = None, repeat: set[int] | None = None,
+                high_quality: bool = True, on_progress=None) -> tuple[Image.Image, Image.Image]:
+    """متن نواحی ترجمه‌شده را پاک می‌کند و تصویر و ماسک را برمی‌گرداند.
+
+    برای تصاویر بسیار بلند یا بزرگ (تا سقف ۱۲۰ میلیون پیکسل)، صفحه به‌صورت خودکار
+    تکه‌تکه (نوار به نوار) پردازش شده و قطعات بدون درز به هم دوخته می‌شوند تا حافظه
+    و پردازندهٔ سیستم در امان بمانند.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except (ImportError, OSError) as exc:
+        raise CleaningError('ابزار پردازش تصویر نصب نشده است.') from exc
+
+    with Image.open(path) as original:
+        if original.width * original.height > 150_000_000:
+            raise CleaningError('تصویر برای پاک‌سازی بیش از حد بزرگ است.')
+        if original.getexif().get(274, 1) != 1:
+            raise CleaningError('تصاویر دارای چرخش EXIF در این نسخه پشتیبانی نمی‌شوند.')
+        if 'A' in original.getbands() and original.getchannel('A').getextrema()[0] < 255:
+            raise CleaningError('پاک‌سازی آزمایشی تصویر شفاف را پشتیبانی نمی‌کند.')
+        width, height = original.size
+
+        started = time.perf_counter()
+        report = on_progress or (lambda fraction, stage: None)
+        report(0.02, "clean_prepare")
+        is_chunked_estimate = (width * height > CHUNK_TRIGGER_PIXELS) or (height > CHUNK_TRIGGER_HEIGHT)
+        diagnostics.log_event(
+            "cleaning.start",
+            width=width,
+            height=height,
+            pixels=width * height,
+            lineCount=len(lines),
+            chunked=is_chunked_estimate,
+            force=force,
+            hasBase=base is not None,
+            onlyCount=len(only) if only is not None else None,
+            extraCount=len(extra) if extra else 0,
+            repeatCount=len(repeat) if repeat else 0,
+            highQuality=high_quality,
+            opencv=cv2.__version__,
+            systemMetrics=diagnostics.system_metrics(),
+        )
+
+        items: list[dict] = []
+        any_selected = False
+        for number, line in enumerate(lines, 1):
+            quad = line.get('quad')
+            if not isinstance(quad, list) or len(quad) != 4:
+                raise CleaningError('مختصات متن OCR نامعتبر است.')
+            try:
+                coords = [[float(pt[0]), float(pt[1])] for pt in quad if len(pt) == 2]
+                if len(coords) != 4 or not all(math.isfinite(v) for pair in coords for v in pair):
+                    raise ValueError()
+                points = [[max(0, min(width - 1, round(x))), max(0, min(height - 1, round(y)))]
+                          for x, y in coords]
+            except (TypeError, ValueError, IndexError, OverflowError):
+                raise CleaningError('مختصات متن OCR نامعتبر است.') from None
+            picked = only is None or number in only
+            translated = bool(translations.get(str(number), '').strip()) or bool(extra and number in extra)
+            if not translated or not picked:
+                ys = [p[1] for p in points]
+                items.append({
+                    'number': number,
+                    'selected': False,
+                    'points': points,
+                    'y0': min(ys),
+                    'y1': max(ys) + 1,
+                })
+                continue
+
+            offset = (shift or {}).get(number)
+            if offset and (offset[0] or offset[1]):
+                points = [[max(0, min(width - 1, int(x) + int(offset[0]))),
+                           max(0, min(height - 1, int(y) + int(offset[1])))]
+                          for x, y in points]
+            quad_vertices = [list(p) for p in points]
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            ptp_x = float(max(xs) - min(xs))
+            ptp_y = float(max(ys) - min(ys))
+            span = float(max(ptp_x, ptp_y))
+            pad = int(min(20, max(2, round(span * PADDING_RATIO))))
+            extra_grow = int((grow or {}).get(number, 0))
+            half = int(min(ptp_x, ptp_y) // 2)
+            pad = max(-max(0, half - 2), pad + extra_grow)
+            center_x = sum(xs) / 4.0
+            center_y = sum(ys) / 4.0
+            padded_points = [
+                [max(0, min(width - 1, int(x) + (pad if x >= center_x else -pad))),
+                 max(0, min(height - 1, int(y) + (pad if y >= center_y else -pad)))]
+                for x, y in points
+            ]
+            pys = [p[1] for p in padded_points]
+            any_selected = True
+            items.append({
+                'number': number,
+                'selected': True,
+                'points': points,
+                'quad_vertices': quad_vertices,
+                'padded_points': padded_points,
+                'extra_grow': extra_grow,
+                'repeat': bool(repeat and number in repeat),
+                'y0': min(pys),
+                'y1': max(pys) + 1,
+                'cy': (min(pys) + max(pys)) / 2.0,
+            })
+
+        if not any_selected:
+            raise CleaningError('هیچ ناحیهٔ ترجمه‌شده‌ای برای پاک‌سازی وجود ندارد.')
+
+        is_chunked = (width * height > CHUNK_TRIGGER_PIXELS) or (height > CHUNK_TRIGGER_HEIGHT)
+        if not is_chunked:
+            image = np.array(original.convert('RGB'))
+            grain_started = time.perf_counter()
+            page_grain = None if force else _page_grain(cv2, np, image)
+            page_grain_ms = round((time.perf_counter() - grain_started) * 1000, 1)
+            base_array = None
+            if base is not None:
+                try:
+                    with Image.open(base) as existing:
+                        if existing.size != (width, height):
+                            raise CleaningError('تصویر پاک‌شدهٔ فعلی با تصویر اصلی هم‌اندازه نیست.')
+                        base_array = np.array(existing.convert('RGB'))
+                except CleaningError:
+                    raise
+                except (OSError, ValueError) as exc:
+                    raise CleaningError('تصویر پاک‌شدهٔ فعلی خوانده نشد.') from exc
+            region_metrics: dict = {}
+            canvas, mask_total, mask_px, changed_px = _clean_region(
+                cv2, np, image, items, page_grain,
+                base_array=base_array, force=force, high_quality=high_quality,
+                on_progress=on_progress, metrics=region_metrics,
+            )
+            diagnostics.log_event(
+                "cleaning.done",
+                boxes=sum(1 for i in items if i['selected']),
+                maskPixels=mask_px,
+                changedPixels=changed_px,
+                chunked=False,
+                pageGrainMs=page_grain_ms,
+                elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+                systemMetrics=diagnostics.system_metrics(),
+                **region_metrics,
+            )
+            return Image.fromarray(canvas, 'RGB'), Image.fromarray(mask_total, 'L')
+
+        # حالت تکه‌تکه برای تصاویر بلند وب‌تون (تا ۱۲۰ میلیون پیکسل)
+        grain_started = time.perf_counter()
+        sample_img = np.array(original.crop((0, 0, min(width, 1024), min(height, 1024))).convert('RGB'))
+        page_grain = None if force else _page_grain(cv2, np, sample_img)
+        page_grain_ms = round((time.perf_counter() - grain_started) * 1000, 1)
+        del sample_img
+
+        clusters = _merge_intervals([
+            (max(0, item['y0'] - CHUNK_CLUSTER_PAD), min(height, item['y1'] + CHUNK_CLUSTER_PAD))
+            for item in items if item['selected']
+        ])
+        bands = _chunk_bands(height, clusters, max_core=CHUNK_CORE_HEIGHT)
+        active_bands = [b for b in bands if b[2]]
+        band_weights: list[int] = []
+        if active_bands:
+            from . import inpaint as _inpaint_mod
+            use_tile_weights = high_quality and _inpaint_mod.available()
+            for by0, by1, _ in active_bands:
+                band_cy0 = max(0, by0 - CHUNK_MARGIN)
+                band_cy1 = min(height, by1 + CHUNK_MARGIN)
+                band_boxes = []
+                for item in items:
+                    if item['selected'] and by0 <= item['cy'] < by1:
+                        xs = [p[0] for p in item['padded_points']]
+                        ys = [p[1] - band_cy0 for p in item['padded_points']]
+                        band_boxes.append((min(xs), min(ys), max(xs) + 1, max(ys) + 1))
+                w = (_inpaint_mod.estimate_region_tiles(width, band_cy1 - band_cy0, band_boxes)
+                     if use_tile_weights and band_boxes else max(1, len(band_boxes)))
+                band_weights.append(max(1, w))
+        total_band_weight = max(1, sum(band_weights))
+        band_ranges: list[tuple[float, float]] = []
+        cursor = 0.08
+        for w in band_weights:
+            end = cursor + 0.86 * (w / total_band_weight)
+            band_ranges.append((cursor, end))
+            cursor = end
+        if band_ranges:
+            band_ranges[-1] = (band_ranges[-1][0], 0.94)
+        diagnostics.log_event(
+            "cleaning.chunked.start", width=width, height=height,
+            bands=len(bands), activeBands=len(active_bands),
+            bandWeights=band_weights,
+            selectedBoxes=sum(1 for i in items if i['selected']),
+            pageGrainMs=page_grain_ms,
+        )
+
+        out_img = Image.new('RGB', (width, height))
+        out_mask = Image.new('L', (width, height), 0)
+
+        base_src = None
+        if base is not None:
+            try:
+                base_src = Image.open(base)
+                if base_src.size != (width, height):
+                    base_src.close()
+                    raise CleaningError('تصویر پاک‌شدهٔ فعلی با تصویر اصلی هم‌اندازه نیست.')
+            except CleaningError:
+                raise
+            except (OSError, ValueError) as exc:
+                if base_src is not None:
+                    base_src.close()
+                raise CleaningError('تصویر پاک‌شدهٔ فعلی خوانده نشد.') from exc
+
+        total_mask_px = 0
+        total_changed_px = 0
+        active_index = 0
+        eta_state = {'loaded': False, 'etaStartedAt': None, 'etaBaseFraction': None}
+        totals = {
+            "hardRegions": 0,
+            "sweptPixels": 0,
+            "classicalMs": 0.0,
+            "smartMasksMs": 0.0,
+            "inpaintMs": 0.0,
+            "sweepMs": 0.0,
+        }
+        try:
+            for by0, by1, is_active in bands:
+                if not is_active:
+                    src_for_passive = base_src if base_src is not None else original
+                    strip = src_for_passive.crop((0, by0, width, by1)).convert('RGB')
+                    out_img.paste(strip, (0, by0))
+                    strip.close()
+                    continue
+
+                band_started = time.perf_counter()
+                cy0 = max(0, by0 - CHUNK_MARGIN)
+                cy1 = min(height, by1 + CHUNK_MARGIN)
+                chunk_src_pil = original.crop((0, cy0, width, cy1)).convert('RGB')
+                chunk_img = np.array(chunk_src_pil)
+                chunk_src_pil.close()
+
+                chunk_base = None
+                if base_src is not None:
+                    chunk_base_pil = base_src.crop((0, cy0, width, cy1)).convert('RGB')
+                    chunk_base = np.array(chunk_base_pil)
+                    chunk_base_pil.close()
+
+                chunk_items: list[dict] = []
+                for item in items:
+                    if item['y1'] <= cy0 or item['y0'] >= cy1:
+                        continue
+                    in_core = item['selected'] and (by0 <= item['cy'] < by1)
+                    if in_core:
+                        chunk_items.append({
+                            **item,
+                            'selected': True,
+                            'quad_vertices': [[x, y - cy0] for x, y in item['quad_vertices']],
+                            'padded_points': [[x, y - cy0] for x, y in item['padded_points']],
+                        })
+                    else:
+                        pts = item.get('padded_points') or item['points']
+                        chunk_items.append({
+                            'number': item['number'],
+                            'selected': False,
+                            'points': [[x, y - cy0] for x, y in pts],
+                        })
+
+                band_idx = active_index
+                band_count = max(1, len(active_bands))
+                band_phase = band_ranges[band_idx] if band_idx < len(band_ranges) else (0.08, 0.94)
+
+                band_metrics: dict = {}
+                canvas_c, mask_c, mask_px, changed_px = _clean_region(
+                    cv2, np, chunk_img, chunk_items, page_grain,
+                    base_array=chunk_base, force=force, high_quality=high_quality,
+                    allow_empty_mask=True, on_progress=on_progress, metrics=band_metrics,
+                    phase=band_phase, eta_state=eta_state, emit_save=False,
+                    strip_meta={'stripIndex': band_idx + 1, 'totalStrips': band_count},
+                )
+                rel_y0 = by0 - cy0
+                rel_y1 = by1 - cy0
+                out_img.paste(Image.fromarray(canvas_c[rel_y0:rel_y1], 'RGB'), (0, by0))
+                out_mask.paste(Image.fromarray(mask_c[rel_y0:rel_y1], 'L'), (0, by0))
+                total_mask_px += mask_px
+                total_changed_px += changed_px
+                for key_int in ("hardRegions", "sweptPixels"):
+                    totals[key_int] += int(band_metrics.get(key_int, 0))
+                for key_ms in ("classicalMs", "smartMasksMs", "inpaintMs", "sweepMs"):
+                    totals[key_ms] += float(band_metrics.get(key_ms, 0.0))
+                diagnostics.log_event(
+                    "cleaning.chunked.band.done",
+                    band=band_idx + 1,
+                    activeBands=band_count,
+                    by0=by0,
+                    by1=by1,
+                    cy0=cy0,
+                    cy1=cy1,
+                    bandHeight=cy1 - cy0,
+                    selectedInBand=sum(1 for ci in chunk_items if ci['selected']),
+                    maskPixels=mask_px,
+                    changedPixels=changed_px,
+                    elapsedMs=round((time.perf_counter() - band_started) * 1000, 1),
+                    systemMetrics=diagnostics.system_metrics(),
+                    **band_metrics,
+                )
+                active_index += 1
+                del chunk_img, chunk_base, canvas_c, mask_c
+        finally:
+            if base_src is not None:
+                base_src.close()
+
+        if total_mask_px == 0:
+            raise CleaningError('متن قابل پاک‌سازی یافت نشد.')
+        report(0.95, "clean_save")
+        diagnostics.log_event(
+            "cleaning.done",
+            boxes=sum(1 for i in items if i['selected']),
+            maskPixels=total_mask_px,
+            changedPixels=total_changed_px,
+            chunked=True,
+            bands=len(bands),
+            activeBands=len(active_bands),
+            pageGrainMs=page_grain_ms,
+            hardRegions=totals["hardRegions"],
+            sweptPixels=totals["sweptPixels"],
+            classicalMs=round(totals["classicalMs"], 1),
+            smartMasksMs=round(totals["smartMasksMs"], 1),
+            inpaintMs=round(totals["inpaintMs"], 1),
+            sweepMs=round(totals["sweepMs"], 1),
+            elapsedMs=round((time.perf_counter() - started) * 1000, 1),
+            systemMetrics=diagnostics.system_metrics(),
+        )
+        return out_img, out_mask

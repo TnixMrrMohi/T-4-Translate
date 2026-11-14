@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {formatSize} from './UpdatePanel';
+import {formatSize, useUpdateController, UpdatePanelContent} from './UpdatePanel';
 
 /** یک مدل از انبار مدل‌ها (همان چیزی که `/api/models` برمی‌گرداند). */
 export type ModelRow = {
@@ -87,8 +87,11 @@ export function modelPercent(row: ModelRow): number | null {
  * یک‌بار دانلود می‌شوند و بیرون از پوشهٔ نصب می‌مانند، پس با آپدیت برنامه دوباره
  * گرفته نمی‌شوند؛ همین‌جا می‌شود دید کدام نصب است، چقدر جا گرفته و چقدر دانلود شده.
  */
-export default function SystemPanel() {
+export default function SystemPanel({buttonLabel}: {buttonLabel?: string}) {
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<'system' | 'update'>('system');
+  const updateController = useUpdateController();
+  const hasUpdate = Boolean(updateController.status?.updateAvailable || updateController.status?.pending);
   const [report, setReport] = useState<SystemReport | null>(null);
   const [store, setStore] = useState<ModelsState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -178,8 +181,11 @@ export default function SystemPanel() {
         className="ocr settings-open"
         onClick={() => setOpen(true)}
         aria-haspopup="dialog"
+        aria-label="تنظیمات و مدل‌ها"
+        title="تنظیمات"
       >
-        تنظیمات و مدل‌ها
+        {buttonLabel || 'تنظیمات و مدل‌ها'}
+        {hasUpdate && <span className="settings-badge" title="نسخهٔ تازه یا آپدیت آماده است" />}
       </button>
       {open && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={event => {
@@ -189,11 +195,35 @@ export default function SystemPanel() {
             className="dialog system-dialog"
             role="dialog"
             aria-modal="true"
-            aria-label="سخت‌افزار و مدل‌ها"
+            aria-label={tab === 'system' ? 'سخت‌افزار و مدل‌ها' : 'به‌روزرسانی برنامه'}
             tabIndex={-1}
             ref={dialogRef}
           >
-            <h3>سخت‌افزار و مدل‌ها</h3>
+            <div className="settings-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === 'system'}
+                className={`settings-tab ${tab === 'system' ? 'is-active' : ''}`}
+                onClick={() => setTab('system')}
+              >
+                سخت‌افزار و مدل‌ها
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === 'update'}
+                className={`settings-tab ${tab === 'update' ? 'is-active' : ''}`}
+                onClick={() => setTab('update')}
+              >
+                به‌روزرسانی برنامه
+                {hasUpdate && <span className="settings-badge" />}
+              </button>
+            </div>
+
+            {tab === 'system' ? (
+              <>
+                <h3>سخت‌افزار و مدل‌ها</h3>
 
             {error && <p className="system-error" role="alert">{error}</p>}
             {!error && store?.progress?.error && !store.progress.running && (
@@ -329,10 +359,19 @@ export default function SystemPanel() {
                 </p>
               )}
             </section>
+              </>
+            ) : (
+              <section className="settings-update-view">
+                <h3>به‌روزرسانی برنامه</h3>
+                <UpdatePanelContent controller={updateController} inDialog={true} />
+              </section>
+            )}
 
             <div className="dialog-actions">
               <button type="button" className="primary" onClick={() => setOpen(false)}>بستن</button>
-              <button type="button" className="ghost" onClick={() => void load()}>به‌روزرسانی</button>
+              {tab === 'system' && (
+                <button type="button" className="ghost" onClick={() => void load()}>به‌روزرسانی</button>
+              )}
             </div>
           </div>
         </div>

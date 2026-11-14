@@ -193,22 +193,29 @@ def list_fonts() -> list[dict]:
     return fonts
 
 
-def _match(suggestion: str, fonts: list[dict]) -> dict | None:
+def _match(suggestion: str, fonts: list[dict], bold: bool = False) -> dict | None:
     wanted = normalize(suggestion)
     if not wanted:
         return None
-    for font in fonts:
-        if wanted in font["aliases"]:
-            return font
+    preferred = "bold" if bold else "regular"
+    candidates = [font for font in fonts if wanted in font["aliases"]]
+    if candidates:
+        for font in candidates:
+            if normalize(font.get("style", "")) == preferred:
+                return font
+        return candidates[0]
     for alias in ALIASES.get(suggestion, []):
-        found = _match(alias, fonts)
+        found = _match(alias, fonts, bold=bold)
         if found:
             return found
     # تطبیق نرم: «Koodak Bold» با فایلی که فقط «Koodak» دارد هم جور می‌شود.
-    for font in fonts:
-        alias = normalize(font["family"])
-        if alias and (alias in wanted or wanted in alias):
-            return font
+    family_candidates = [font for font in fonts if normalize(font.get("family", "")) and
+                         (normalize(font["family"]) in wanted or wanted in normalize(font["family"]))]
+    if family_candidates:
+        for font in family_candidates:
+            if normalize(font.get("style", "")) == preferred:
+                return font
+        return family_candidates[0]
     return None
 
 
@@ -237,15 +244,15 @@ def resolve_map() -> dict[str, dict]:
     fonts = list_fonts()
     resolved: dict[str, dict] = {}
     for kind, meta in BUBBLE_TYPES.items():
+        bold = bool(meta.get("style", {}).get("bold"))
         chosen = None
         missing: list[str] = []
         for suggestion in meta.get("fonts", []):
-            match = _match(suggestion, fonts)
+            match = _match(suggestion, fonts, bold=bold)
             if match:
                 chosen = match
                 break
             missing.append(suggestion)
-        bold = bool(meta.get("style", {}).get("bold"))
         used_fallback = False
         if chosen is None:
             chosen = fallback_font(bold)
