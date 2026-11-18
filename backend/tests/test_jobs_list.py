@@ -138,3 +138,31 @@ def test_artifacts_report_progress(tmp_path, monkeypatch):
         saved = client.get(f"/api/jobs/{job}/artifacts").json()
         assert saved["translations"] is True and saved["stale"] is False
         assert client.get("/api/jobs/" + "a" * 32 + "/artifacts").status_code == 404
+
+
+def test_delete_all_jobs_removes_workspaces_and_respects_keep(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(tmp_path))
+    with TestClient(app) as client:
+        first = _upload(client, "white")
+        second = _upload(client, "black")
+        third = _upload(client, "red")
+
+        root = Path(tmp_path) / "jobs"
+        assert len(list(root.iterdir())) == 3
+
+        # حذف همه به جز کار سوم
+        res = client.delete(f"/api/jobs?keep={third['jobId']}")
+        assert res.status_code == 200
+        assert res.json() == {"deleted": 2}
+        assert not (root / first["jobId"]).exists()
+        assert not (root / second["jobId"]).exists()
+        assert (root / third["jobId"]).is_dir()
+        assert [i["jobId"] for i in client.get("/api/jobs").json()["items"]] == [third["jobId"]]
+
+        # حذف همه بدون استثنا
+        res2 = client.delete("/api/jobs")
+        assert res2.status_code == 200
+        assert res2.json() == {"deleted": 1}
+        assert not (root / third["jobId"]).exists()
+        assert client.get("/api/jobs").json()["items"] == []
+

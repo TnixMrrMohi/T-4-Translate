@@ -289,6 +289,31 @@ describe('فهرست کارها و حذف', () => {
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
   });
+
+  it('دکمهٔ «حذف همه» دیالوگ تأیید باز می‌کند و با تأیید همهٔ کارهای قبلی را حذف می‌کند', async () => {
+    let remaining = [jobItem, {...jobItem, jobId: 'b'.repeat(32)}];
+    const {calls} = mockApi({
+      jobs: () => remaining,
+      onDelete: () => {remaining = []; return undefined;},
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const deleteAllBtn = await screen.findByRole('button', {name: 'حذف همهٔ کارهای قبلی'});
+    expect(deleteAllBtn).toBeInTheDocument();
+    await user.click(deleteAllBtn);
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText('حذف همهٔ کارهای قبلی')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', {name: 'حذف همه'}));
+
+    await waitFor(() => expect(calls.some(call => call.method === 'DELETE' && call.url.includes('/api/jobs'))).toBe(true));
+    const done = await screen.findByRole('alertdialog');
+    expect(within(done).getByText('کارهای قبلی حذف شدند')).toBeInTheDocument();
+    await user.click(within(done).getByRole('button', {name: 'باشه'}));
+
+    await waitFor(() => expect(screen.queryByRole('button', {name: 'حذف همهٔ کارهای قبلی'})).not.toBeInTheDocument());
+  });
 });
 
 describe('تأییدهای عملیات', () => {

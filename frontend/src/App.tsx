@@ -1231,6 +1231,44 @@ export function App() {
     }
   }
 
+  async function deleteAllPreviousJobs() {
+    if (busy || loadingData || previousJobs.length === 0) return;
+    const count = previousJobs.length;
+    const ok = await confirmDialog({
+      title: 'حذف همهٔ کارهای قبلی',
+      message: (
+        <>
+          آیا مطمئن هستید؟ همهٔ <b>{count}</b> کار قبلی با تصویر، متن OCR، ترجمه و همهٔ پیش‌نمایش‌هایشان از این سیستم حذف می‌شوند.
+          <br />
+          این کار بازگشت‌پذیر نیست.
+        </>
+      ),
+      confirmLabel: 'حذف همه',
+      cancelLabel: 'نگه دار',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    setBusy(true);
+    setMessage('در حال حذف کارهای قبلی…');
+    try {
+      const url = job?.jobId ? `/api/jobs?keep=${encodeURIComponent(job.jobId)}` : '/api/jobs';
+      const response = await fetch(url, {method: 'DELETE'});
+      if (!response.ok) {
+        for (const item of previousJobs) {
+          await fetch(`/api/jobs/${item.jobId}`, {method: 'DELETE'}).catch(() => undefined);
+        }
+      }
+      setJobs(current => (job ? current.filter(entry => entry.jobId === job.jobId) : []));
+      setMessage('همهٔ کارهای قبلی از سیستم حذف شدند.');
+      await loadJobs();
+      await alertDialog('کارهای قبلی حذف شدند', `${count} کار از حافظهٔ سیستم پاک شدند.`);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'حذف کارهای قبلی ناموفق بود.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     if (dropZoneRef.current) dropZoneRef.current.classList.add('drag-over');
@@ -2076,7 +2114,19 @@ export function App() {
 
               {previousJobs.length > 0 && (
                 <section className="jobs" aria-label="کارهای قبلی">
-                  <h3>کارهای قبلی روی این سیستم</h3>
+                  <div className="jobs-header">
+                    <h3>کارهای قبلی روی این سیستم</h3>
+                    <button
+                      type="button"
+                      className="ocr danger"
+                      disabled={busy || loadingData}
+                      onClick={() => void deleteAllPreviousJobs()}
+                      aria-label="حذف همهٔ کارهای قبلی"
+                      title="حذف همهٔ کارهای قبلی از این سیستم"
+                    >
+                      حذف همه ({previousJobs.length})
+                    </button>
+                  </div>
                   <ul>
                     {previousJobs.map(item => (
                       <li key={item.jobId}>

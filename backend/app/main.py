@@ -327,6 +327,31 @@ def list_jobs(limit: int = 20) -> dict:
     return {"items": items[:limit]}
 
 
+@app.delete("/api/jobs")
+async def delete_all_jobs(keep: str | None = None) -> dict:
+    """حذف همهٔ کارهای قبلی از روی دیسک، به جز کار باز (در صورت مشخص شدن)."""
+    async with _ocr_lock:
+        root = jobs_root()
+        if not root.is_dir():
+            return {"deleted": 0}
+        root_resolved = root.resolve()
+        deleted_count = 0
+        for workspace in list(root.iterdir()):
+            if not workspace.is_dir() or len(workspace.name) != 32:
+                continue
+            if keep and workspace.name == keep:
+                continue
+            try:
+                resolved = workspace.resolve()
+                if resolved.parent != root_resolved:
+                    continue
+                shutil.rmtree(resolved)
+                deleted_count += 1
+            except (FileNotFoundError, OSError):
+                continue
+        return {"deleted": deleted_count}
+
+
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: str) -> dict:
     """حذف کامل کار (تصویر، OCR، ترجمه و پیش‌نمایش‌ها) از روی دیسک."""
