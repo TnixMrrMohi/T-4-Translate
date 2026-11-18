@@ -152,14 +152,14 @@ export function BatchPanel({
   prompt,
   visible = true,
   resetSignal,
-  onResetFeedback,
+  onReset,
   onBusyChange,
 }: {
   onClose?: () => void;
   prompt: string;
   visible?: boolean;
   resetSignal?: number;
-  onResetFeedback?: (msg: string) => void;
+  onReset?: () => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
   const [files, setFiles] = useState<File[]>([]);
@@ -201,7 +201,7 @@ export function BatchPanel({
     }
   }, [pages, translated, outFiles]);
 
-  const doReset = (notify = true) => {
+  const doReset = () => {
     if (busy !== null) return;
     cancel.current = true;
     setFiles([]);
@@ -219,14 +219,12 @@ export function BatchPanel({
     } catch {
       // ignore
     }
-    if (notify) {
-      onResetFeedback?.('پردازش دسته‌ای ریست شد و همهٔ فایل‌ها، قطعات و متن‌های استخراج‌شده پاک شدند.');
-    }
+    onReset?.();
   };
 
   useEffect(() => {
     if (resetSignal && resetSignal > 0) {
-      doReset(false);
+      doReset();
     }
   }, [resetSignal]);
 
@@ -557,15 +555,6 @@ export function BatchPanel({
     <section className="batch-panel" aria-label="پردازش دسته‌ای" style={visible ? undefined : {display: 'none'}}>
       <div className="batch-head">
         <h2 className="wizard-title">پردازش دسته‌ای</h2>
-        <button
-          type="button"
-          className="ocr reset"
-          disabled={busy !== null}
-          onClick={() => doReset(true)}
-          title="پاک‌کردن همهٔ پردازش‌ها، تصویرها و متن‌های این فصل و شروع دوباره"
-        >
-          ریست پردازش دسته‌ای
-        </button>
       </div>
       {message && <p className="wizard-note" role="status" style={{margin: '0 0 12px'}}>{message}</p>}
       <p className="wizard-help">

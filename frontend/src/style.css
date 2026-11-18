@@ -442,9 +442,7 @@
 .batch-drop:hover,.batch-drop:focus-visible,.batch-drop.is-over{outline:none;background:#0b1a1d;border-color:#00ffcc;box-shadow:0 0 14px rgba(0,255,204,.3)}
 .batch-drop.is-busy{opacity:.5;cursor:wait}
 
-.batch-head .reset{padding:6px 14px;font-size:12px;background:#2a1619;color:#ff9b9b;border:1px solid #ff5a6e66;border-radius:8px;transition:all .15s ease;white-space:nowrap}
-.batch-head .reset:hover:not(:disabled){background:#3d1b20;border-color:#ff5a6ecc;color:#fff;box-shadow:0 0 10px rgba(255,90,110,.35)}
-.batch-head .reset:active:not(:disabled){transform:scale(.96)}
+
 
 /* دکمه‌های فعال هر کلاسی داشته باشند، اشاره‌گر دست می‌گیرند؛ فقط غیرفعال‌ها ممنوع نشان می‌دهند. */
 button:not(:disabled),summary,[role="button"]:not([aria-disabled="true"]){cursor:pointer}

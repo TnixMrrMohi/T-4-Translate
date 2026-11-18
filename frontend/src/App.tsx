@@ -1948,7 +1948,6 @@ export function App() {
           prompt={translationPrompt}
           visible={batchOpen}
           resetSignal={batchResetSignal}
-          onResetFeedback={msg => void alertDialog('ریست شد', msg)}
           onBusyChange={setBatchBusy}
         />
       )}
