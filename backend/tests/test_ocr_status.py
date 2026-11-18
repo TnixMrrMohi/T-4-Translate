@@ -66,6 +66,25 @@ def test_engine_status_reports_ready_when_engine_loads(monkeypatch):
     assert ocr.engine_status()['ready'] is True
 
 
+def test_rapidocr_info_logs_are_silenced():
+    """لاگ INFO داخلی RapidOCR («OrtInferSession») نباید کنسول را پر کند.
+
+    هر ساخت موتور OCR روی ویندوز با DirectML سه خط «Windows 10 or above...»
+    چاپ می‌کند؛ چون هر کار در فرایند جدا اجرا می‌شود، این خطوط ده‌ها بار تکرار
+    می‌شدند. `_silence_rapidocr_logs` باید لاگر را به WARNING ببرد و هندلرش را
+    بردارد.
+    """
+    import logging
+
+    pytest.importorskip("rapidocr_onnxruntime")
+    from rapidocr_onnxruntime.utils.logger import get_logger
+
+    ocr._silence_rapidocr_logs()
+    logger = get_logger("OrtInferSession")
+    assert logger.level == logging.WARNING
+    assert logger.handlers == []
+
+
 def test_status_endpoint_is_public_and_json(monkeypatch):
     monkeypatch.setattr(ocr, 'engine_status',
                         lambda: {'ready': False, 'provider': 'rapidocr-experimental',

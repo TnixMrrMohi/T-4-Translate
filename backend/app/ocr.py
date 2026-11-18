@@ -7,6 +7,7 @@
 حدود ۴۰۰ مگابایت و زمان از ۶٫۲ به ۴٫۴ ثانیه رسید.
 """
 from functools import lru_cache
+import logging
 from pathlib import Path
 import time
 from typing import Callable
@@ -46,6 +47,27 @@ class OcrUnavailable(Exception):
 INSTALL_HINT = 'python -m pip install -e ".[ocr-experimental]"'
 
 
+def _silence_rapidocr_logs() -> None:
+    """ساکت‌کردن لاگ INFO داخلی RapidOCR («OrtInferSession»).
+
+    هر ساخت موتور OCR سه خط «Windows 10 or above detected, try to use DirectML...»
+    چاپ می‌کند و چون هر کار در فرایند جدا اجرا می‌شود (max_tasks_per_child=1)،
+    کنسول و فایل دیباگ پر از همین خطوط تکراری می‌شود. لاگر RapidOCR سطح DEBUG
+    دارد و هندلر خودش را اضافه می‌کند؛ پس پیش از ساخت موتور، همان لاگرِ کش‌شده
+    را به WARNING می‌بریم و هندلرش را برمی‌داریم تا هیچ‌چیز چاپ نشود. اگر ساختار
+    داخلی بسته عوض شده باشد، بی‌صدا رد می‌شویم (فقط لاگ می‌ماند، برنامه کار می‌کند).
+    """
+    try:
+        from rapidocr_onnxruntime.utils.logger import get_logger
+
+        logger = get_logger("OrtInferSession")
+        logger.setLevel(logging.WARNING)
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+    except Exception:  # noqa: BLE001 - ساکت‌کردن لاگ نباید جلوی کار را بگیرد
+        pass
+
+
 @lru_cache(maxsize=1)
 def _engine():
     """موتور OCR؛ مدل دقیق اگر نصب باشد، وگرنه مدل همراهِ بستهٔ RapidOCR."""
@@ -72,6 +94,7 @@ def _engine():
             'python -m pip install opencv-python-headless. '
             f'جزئیات: {exc}'
         ) from exc
+    _silence_rapidocr_logs()
     import_started = time.perf_counter()
     profile = hardware.current_profile(refresh=True)
     use_cuda = 'CUDAExecutionProvider' in profile['providers'] and profile.get('gpuUsable', False)
