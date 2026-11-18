@@ -642,9 +642,6 @@ export function BatchPanel({
           {batchStep === 1 && (
             <>
               <h2 className="wizard-title">مرحله ۱: انتخاب تصویرهای فصل</h2>
-              <p className="wizard-help">
-                تصویرهای صفحهٔ مانگا یا وبتون را انتخاب کنید. با چسباندن (Ctrl+V) هم می‌توانید تصویرها را اضافه کنید (توجه: زبان متن تصاویر باید زبان مبدأ مثل انگلیسی، ژاپنی یا چینی باشد؛ موتور OCR متن فارسی را بازشناسی نمی‌کند).
-              </p>
 
               <div
                 className={`select batch-drop${dragOver ? ' drag-over' : ''}${busy !== null ? ' busy' : ''}`}
