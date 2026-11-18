@@ -1023,6 +1023,11 @@ export function App() {
   const [layoutDoc, setLayoutDoc] = useState<LayoutDoc | null>(null);
   const [layoutBusy, setLayoutBusy] = useState(false);
   const [layoutModal, setLayoutModal] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
+  // بخش دسته‌ای پس از اولین باز شدن زنده می‌ماند تا هنگام ویرایش یک صفحه، فصل از بین نرود.
+  const [batchSeen, setBatchSeen] = useState(false);
+  const [batchResetSignal, setBatchResetSignal] = useState(0);
+  const [batchBusy, setBatchBusy] = useState(false);
   const layoutRenderTimer = useRef<number | null>(null);
   const [sourceVersion, setSourceVersion] = useState(0);
   const [sourceModalOpen, setSourceModalOpen] = useState(false);
@@ -1108,10 +1113,18 @@ export function App() {
     if (target >= 1 && target <= maxStep) setStep(target);
   }
 
-  const resetApp = () => {
-    clearCurrentJob();
-    setMessage('برنامه ریست شد. عکس جدید را انتخاب کنید.');
-    void loadJobs();
+  const resetApp = async () => {
+    if (batchOpen ? batchBusy : (busy || loadingData)) return;
+    if (batchOpen) {
+      setBatchResetSignal(s => s + 1);
+      setMessage('پردازش دسته‌ای ریست شد.');
+      await alertDialog('ریست شد', 'پردازش دسته‌ای ریست شد و همهٔ فایل‌ها، قطعات و متن‌های استخراج‌شده پاک شدند.');
+    } else {
+      clearCurrentJob();
+      setMessage('برنامه ریست شد. عکس جدید را انتخاب کنید.');
+      void loadJobs();
+      await alertDialog('ریست شد', 'برنامه به حالت اولیه بازگشت. تصویر جدید را انتخاب کنید.');
+    }
   };
 
   /** پرامپت ترجمه با قاعدهٔ متن تبلیغاتیِ انتخاب‌شده. */
@@ -1908,9 +1921,6 @@ export function App() {
   }
 
   const translatedAreas = cleanAreas.filter(area => area.translated);
-  const [batchOpen, setBatchOpen] = useState(false);
-  // بخش دسته‌ای پس از اولین باز شدن زنده می‌ماند تا هنگام ویرایش یک صفحه، فصل از بین نرود.
-  const [batchSeen, setBatchSeen] = useState(false);
 
   return (
     <main className="page">
@@ -1920,12 +1930,12 @@ export function App() {
             type="button"
             className={`mode-toggle${batchOpen ? ' is-active' : ''}`}
             aria-pressed={batchOpen}
-            disabled={busy}
+            disabled={batchOpen ? batchBusy : busy}
             onClick={() => {setBatchSeen(true); setBatchOpen(open => !open);}}
           >
             {batchOpen ? 'تک‌تصویر' : 'پردازش دسته‌ای'}
           </button>
-          <button className="ocr reset" disabled={busy} onClick={resetApp}>ریست</button>
+          <button className="ocr reset" disabled={batchOpen ? batchBusy : busy} onClick={() => void resetApp()}>ریست</button>
           <SystemPanel buttonLabel="تنظیمات" />
         </div>
         <span className="brand" dir="ltr">T-4 TRANSLATE</span>
@@ -1933,8 +1943,14 @@ export function App() {
       </header>
 
       {batchSeen && (
-        <BatchPanel onClose={() => setBatchOpen(false)} prompt={translationPrompt}
-          visible={batchOpen} />
+        <BatchPanel
+          onClose={() => setBatchOpen(false)}
+          prompt={translationPrompt}
+          visible={batchOpen}
+          resetSignal={batchResetSignal}
+          onResetFeedback={msg => void alertDialog('ریست شد', msg)}
+          onBusyChange={setBatchBusy}
+        />
       )}
 
       <div className="layout" style={batchOpen ? {display: 'none'} : undefined}>

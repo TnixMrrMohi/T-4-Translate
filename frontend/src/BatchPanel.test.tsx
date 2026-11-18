@@ -37,6 +37,31 @@ describe('ناحیهٔ انداختن تصویر', () => {
     fireEvent.drop(zone, {dataTransfer: {files: [new File(['x'], 'a.txt', {type: 'text/plain'})]}});
     expect(screen.getByText('فقط تصویر PNG، JPG یا WebP پذیرفته می‌شود.')).toBeInTheDocument();
   });
+
+  it('دکمهٔ ریست پردازش دسته‌ای همهٔ فایل‌ها، قطعات و حافظه را پاک می‌کند', () => {
+    let feedback = '';
+    const {rerender} = render(
+      <BatchPanel onClose={() => {}} prompt="p" onResetFeedback={msg => {feedback = msg;}} />
+    );
+    const zone = screen.getByRole('button', {name: 'ناحیهٔ انداختن یا چسباندن تصویرها'});
+    fireEvent.drop(zone, {dataTransfer: {files: [png('1.png'), png('2.png')]}});
+    expect(screen.getByText('2 تصویر انتخاب شد.')).toBeInTheDocument();
+
+    const resetBtn = screen.getByRole('button', {name: 'ریست پردازش دسته‌ای'});
+    fireEvent.click(resetBtn);
+
+    expect(screen.getByText('هنوز تصویری انتخاب نشده است.')).toBeInTheDocument();
+    expect(screen.getByText('پردازش دسته‌ای ریست شد. تصویرهای جدید را انتخاب کنید.')).toBeInTheDocument();
+    expect(feedback).toContain('پردازش دسته‌ای ریست شد');
+
+    // سیگنال ریست از هدر بیرونی
+    fireEvent.drop(zone, {dataTransfer: {files: [png('3.png')]}});
+    expect(screen.getByText('1 تصویر انتخاب شد.')).toBeInTheDocument();
+    rerender(
+      <BatchPanel onClose={() => {}} prompt="p" resetSignal={1} onResetFeedback={msg => {feedback = msg;}} />
+    );
+    expect(screen.getByText('هنوز تصویری انتخاب نشده است.')).toBeInTheDocument();
+  });
 });
 
 import {isPlainPage} from './BatchPanel';

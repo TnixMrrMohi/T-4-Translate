@@ -147,8 +147,20 @@ export const BATCH_PROMPT_NOTE = [
 
 const STORE_KEY = 't4-batch-v2';
 
-export function BatchPanel({onClose, prompt, visible = true}: {
-  onClose: () => void; prompt: string; visible?: boolean;
+export function BatchPanel({
+  onClose,
+  prompt,
+  visible = true,
+  resetSignal,
+  onResetFeedback,
+  onBusyChange,
+}: {
+  onClose?: () => void;
+  prompt: string;
+  visible?: boolean;
+  resetSignal?: number;
+  onResetFeedback?: (msg: string) => void;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [pages, setPages] = useState<BatchPage[]>([]);
@@ -188,6 +200,39 @@ export function BatchPanel({onClose, prompt, visible = true}: {
       // حافظهٔ مرورگر پر یا بسته است.
     }
   }, [pages, translated, outFiles]);
+
+  const doReset = (notify = true) => {
+    if (busy !== null) return;
+    cancel.current = true;
+    setFiles([]);
+    setPages([]);
+    setOutFiles([]);
+    setTranslated('');
+    setFailedFiles([]);
+    setProgress('');
+    if (picker.current) {
+      picker.current.value = '';
+    }
+    setMessage('پردازش دسته‌ای ریست شد. تصویرهای جدید را انتخاب کنید.');
+    try {
+      localStorage.removeItem(STORE_KEY);
+    } catch {
+      // ignore
+    }
+    if (notify) {
+      onResetFeedback?.('پردازش دسته‌ای ریست شد و همهٔ فایل‌ها، قطعات و متن‌های استخراج‌شده پاک شدند.');
+    }
+  };
+
+  useEffect(() => {
+    if (resetSignal && resetSignal > 0) {
+      doReset(false);
+    }
+  }, [resetSignal]);
+
+  useEffect(() => {
+    onBusyChange?.(busy !== null);
+  }, [busy, onBusyChange]);
   const picker = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -512,10 +557,17 @@ export function BatchPanel({onClose, prompt, visible = true}: {
     <section className="batch-panel" aria-label="پردازش دسته‌ای" style={visible ? undefined : {display: 'none'}}>
       <div className="batch-head">
         <h2 className="wizard-title">پردازش دسته‌ای</h2>
-        <button type="button" className="ghost" disabled={busy !== null} onClick={onClose}>
-          بازگشت به حالت تک‌تصویر
+        <button
+          type="button"
+          className="ocr reset"
+          disabled={busy !== null}
+          onClick={() => doReset(true)}
+          title="پاک‌کردن همهٔ پردازش‌ها، تصویرها و متن‌های این فصل و شروع دوباره"
+        >
+          ریست پردازش دسته‌ای
         </button>
       </div>
+      {message && <p className="wizard-note" role="status" style={{margin: '0 0 12px'}}>{message}</p>}
       <p className="wizard-help">
         ۱) چند تصویر انتخاب کنید و متن‌ها را استخراج کنید (توجه: زبان متن تصاویر باید زبان مبدأ مثل انگلیسی، چینی یا ژاپنی باشد؛ موتور OCR متن فارسی را بازشناسی نمی‌کند). ۲) «کپی با پرامپت» را بزنید، در هوش مصنوعی بچسبانید و ترجمه را برگردانید.
         ۳) همهٔ صفحه‌ها خودکار ساخته می‌شوند و خروجی WebP در یک ZIP دانلود می‌شود.
@@ -650,7 +702,6 @@ export function BatchPanel({onClose, prompt, visible = true}: {
           )}
         </div>
       )}
-      {message && <p className="wizard-note" role="status">{message}</p>}
 
       <details className="batch-legend">
         <summary>راهنمای مرحله‌ها (کد و نام هر مرحله)</summary>

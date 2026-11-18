@@ -2080,3 +2080,43 @@ describe('بهبود رفتار نوار پیشرفت مراحل ۳ تا ۵', ()
     await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument());
   });
 });
+
+describe('رفتار دکمه ریست در هدر و حالت دسته‌ای', () => {
+  it('کلیک روی ریست در حالت دسته‌ای، دیالوگ تأیید نشان می‌دهد و پردازش دسته‌ای را ریست می‌کند', async () => {
+    mockApi({jobs: []});
+    const user = userEvent.setup();
+    render(<App />);
+
+    // ورود به پردازش دسته‌ای
+    const modeBtn = screen.getByRole('button', {name: 'پردازش دسته‌ای'});
+    await user.click(modeBtn);
+    expect(screen.getByRole('heading', {name: 'پردازش دسته‌ای'})).toBeInTheDocument();
+
+    // کلیک روی دکمهٔ ریست هدر
+    const resetBtn = screen.getByRole('button', {name: 'ریست'});
+    await user.click(resetBtn);
+
+    // دیالوگ alert باز می‌شود
+    const alertModal = await screen.findByRole('alertdialog');
+    expect(alertModal).toHaveTextContent('ریست شد');
+    expect(alertModal).toHaveTextContent('پردازش دسته‌ای ریست شد');
+  });
+
+  it('کلیک روی ریست در حالت تک‌تصویر، دیالوگ تأیید نشان می‌دهد و کار فعلی را ریست می‌کند', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+
+    const resetBtn = screen.getByRole('button', {name: 'ریست'});
+    await user.click(resetBtn);
+
+    const alertModal = await screen.findByRole('alertdialog');
+    expect(alertModal).toHaveTextContent('ریست شد');
+    expect(alertModal).toHaveTextContent('برنامه به حالت اولیه بازگشت');
+  });
+});

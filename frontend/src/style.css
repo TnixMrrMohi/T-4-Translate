@@ -76,10 +76,12 @@
 .app-header{position:relative;padding:14px 20px;border-bottom:1px solid #ffffff20;display:flex;justify-content:center;align-items:center;gap:10px}
 .app-header .brand{font-size:18px;letter-spacing:.1em;color:#fff;font-weight:800}
 .app-header .status{position:absolute;right:20px;font-size:13px;color:#eef9f4}
-.app-header .reset{position:absolute;left:20px;padding:6px 12px;font-size:12px;background:#1b2a2a;color:#9bf3cc;border:1px solid #00ffcc55}
+.app-header .reset{position:absolute;left:20px;padding:6px 14px;font-size:12px;background:#1b2a2a;color:#9bf3cc;border:1px solid #00ffcc55;border-radius:8px;transition:all .15s ease}
 /* دکمه‌های گوشهٔ چپ هدر: ریست و «تنظیمات و مدل‌ها» کنار هم */
 .app-header .header-tools{position:absolute;left:20px;display:flex;gap:8px;align-items:center}
 .app-header .header-tools .reset{position:static;left:auto}
+.app-header .reset:hover:not(:disabled){background:#233b3b;border-color:#00ffccaa;color:#fff;box-shadow:0 0 10px rgba(0,255,204,.35)}
+.app-header .reset:active:not(:disabled){transform:scale(.96)}
 .app-header .settings-open{padding:6px 12px;font-size:12px;background:#10202a;color:#9be9f3;border:1px solid #00c8ff55}
 @media(max-width:720px){
   .app-header .header-tools{left:8px;gap:6px}
@@ -440,7 +442,9 @@
 .batch-drop:hover,.batch-drop:focus-visible,.batch-drop.is-over{outline:none;background:#0b1a1d;border-color:#00ffcc;box-shadow:0 0 14px rgba(0,255,204,.3)}
 .batch-drop.is-busy{opacity:.5;cursor:wait}
 
-.batch-head .ghost{padding:6px 12px;font-size:12px;opacity:1;cursor:pointer;white-space:nowrap}
+.batch-head .reset{padding:6px 14px;font-size:12px;background:#2a1619;color:#ff9b9b;border:1px solid #ff5a6e66;border-radius:8px;transition:all .15s ease;white-space:nowrap}
+.batch-head .reset:hover:not(:disabled){background:#3d1b20;border-color:#ff5a6ecc;color:#fff;box-shadow:0 0 10px rgba(255,90,110,.35)}
+.batch-head .reset:active:not(:disabled){transform:scale(.96)}
 
 /* دکمه‌های فعال هر کلاسی داشته باشند، اشاره‌گر دست می‌گیرند؛ فقط غیرفعال‌ها ممنوع نشان می‌دهند. */
 button:not(:disabled),summary,[role="button"]:not([aria-disabled="true"]){cursor:pointer}
