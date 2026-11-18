@@ -163,6 +163,7 @@ export function BatchPanel({
   resetSignal,
   onReset,
   onBusyChange,
+  onHasWorkChange,
 }: {
   onClose?: () => void;
   prompt: string;
@@ -170,6 +171,7 @@ export function BatchPanel({
   resetSignal?: number;
   onReset?: () => void;
   onBusyChange?: (busy: boolean) => void;
+  onHasWorkChange?: (hasWork: boolean) => void;
 }) {
   const [batchStep, setBatchStep] = useState(1);
   const [files, setFiles] = useState<File[]>([]);
@@ -288,6 +290,11 @@ export function BatchPanel({
     document.addEventListener('paste', onPaste);
     return () => document.removeEventListener('paste', onPaste);
   });
+
+  const hasBatchWork = files.length > 0 || pages.length > 0 || Boolean(translated.trim());
+  useEffect(() => {
+    onHasWorkChange?.(hasBatchWork);
+  }, [hasBatchWork, onHasWorkChange]);
 
   const combined = buildBatchText(pages);
   const doneCount = pages.filter(p => p.state === 'done').length;

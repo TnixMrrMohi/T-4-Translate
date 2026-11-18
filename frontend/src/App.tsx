@@ -1003,6 +1003,7 @@ export function App() {
   const [batchSeen, setBatchSeen] = useState(false);
   const [batchResetSignal, setBatchResetSignal] = useState(0);
   const [batchBusy, setBatchBusy] = useState(false);
+  const [batchHasWork, setBatchHasWork] = useState(false);
   const layoutRenderTimer = useRef<number | null>(null);
   const [sourceVersion, setSourceVersion] = useState(0);
   const [sourceModalOpen, setSourceModalOpen] = useState(false);
@@ -1086,6 +1087,39 @@ export function App() {
   function goToStep(target: number) {
     if (busy || loadingData) return;
     if (target >= 1 && target <= maxStep) setStep(target);
+  }
+
+  async function handleModeSwitch(toBatch: boolean) {
+    if (toBatch === batchOpen) return;
+    if (batchBusy || busy || loadingData) return;
+
+    if (!batchOpen && toBatch) {
+      // سوئیچ از حالت تک‌تصویر به پردازش دسته‌ای
+      const singleHasWork = Boolean(job || step > 1 || translation.trim() || (source && source.items.length > 0));
+      if (singleHasWork) {
+        const ok = await confirmDialog({
+          title: 'تغییر به پردازش دسته‌ای',
+          message: 'شما در حال حاضر روی یک کار در حالت تک‌تصویر هستید. آیا می‌خواهید به پردازش دسته‌ای بروید؟ (کار فعلی شما ذخیره می‌ماند و پاک نمی‌شود)',
+          confirmLabel: 'رفتن به پردازش دسته‌ای',
+          cancelLabel: 'انصراف',
+        });
+        if (!ok) return;
+      }
+    } else if (batchOpen && !toBatch) {
+      // سوئیچ از حالت پردازش دسته‌ای به تک‌تصویر
+      if (batchHasWork) {
+        const ok = await confirmDialog({
+          title: 'تغییر به تک‌تصویر',
+          message: 'شما در حال حاضر در حالت پردازش دسته‌ای هستید و فایل‌ها یا تصاویری در جریان کار دارید. آیا می‌خواهید به حالت تک‌تصویر بروید؟ (پردازش‌های دسته‌ای شما ذخیره می‌مانند و پاک نمی‌شوند)',
+          confirmLabel: 'رفتن به تک‌تصویر',
+          cancelLabel: 'انصراف',
+        });
+        if (!ok) return;
+      }
+    }
+
+    setBatchSeen(true);
+    setBatchOpen(toBatch);
   }
 
   const resetApp = async () => {
@@ -1901,15 +1935,26 @@ export function App() {
     <main className="page">
       <header className="app-header">
         <div className="header-tools">
-          <button
-            type="button"
-            className={`mode-toggle${batchOpen ? ' is-active' : ''}`}
-            aria-pressed={batchOpen}
-            disabled={batchOpen ? batchBusy : busy}
-            onClick={() => {setBatchSeen(true); setBatchOpen(open => !open);}}
-          >
-            {batchOpen ? 'تک‌تصویر' : 'پردازش دسته‌ای'}
-          </button>
+          <div className="mode-segmented" role="group" aria-label="انتخاب حالت کاربری">
+            <button
+              type="button"
+              className={`mode-seg-btn${!batchOpen ? ' is-active' : ''}`}
+              aria-pressed={!batchOpen}
+              disabled={batchOpen ? batchBusy : (busy || loadingData)}
+              onClick={() => void handleModeSwitch(false)}
+            >
+              تک‌تصویر
+            </button>
+            <button
+              type="button"
+              className={`mode-seg-btn${batchOpen ? ' is-active' : ''}`}
+              aria-pressed={batchOpen}
+              disabled={batchOpen ? batchBusy : (busy || loadingData)}
+              onClick={() => void handleModeSwitch(true)}
+            >
+              پردازش دسته‌ای
+            </button>
+          </div>
           <button className="ocr reset" disabled={batchOpen ? batchBusy : busy} onClick={() => void resetApp()}>ریست</button>
           <SystemPanel buttonLabel="تنظیمات" />
         </div>
@@ -1919,11 +1964,12 @@ export function App() {
 
       {batchSeen && (
         <BatchPanel
-          onClose={() => setBatchOpen(false)}
+          onClose={() => void handleModeSwitch(false)}
           prompt={translationPrompt}
           visible={batchOpen}
           resetSignal={batchResetSignal}
           onBusyChange={setBatchBusy}
+          onHasWorkChange={setBatchHasWork}
         />
       )}
 

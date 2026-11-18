@@ -2121,3 +2121,48 @@ describe('رفتار دکمه ریست در هدر و حالت دسته‌ای',
     expect(alertModal).toHaveTextContent('برنامه به حالت اولیه بازگشت');
   });
 });
+
+describe('سوئیچینگ حالت کاربری در هدر (تک‌تصویر و پردازش دسته‌ای)', () => {
+  it('هر دو دکمه در کنترل سگمنتد حضور دارند و دکمهٔ حالت فعال روشن است', () => {
+    mockApi({jobs: []});
+    render(<App />);
+    const singleBtn = screen.getByRole('button', {name: 'تک‌تصویر'});
+    const batchBtn = screen.getByRole('button', {name: 'پردازش دسته‌ای'});
+    expect(singleBtn).toHaveClass('is-active');
+    expect(batchBtn).not.toHaveClass('is-active');
+  });
+
+  it('در صورت داشتن کار در تک‌تصویر، برای تغییر به حالت دسته‌ای دیالوگ تأیید نشان می‌دهد', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
+
+    const batchBtn = screen.getByRole('button', {name: 'پردازش دسته‌ای'});
+    await user.click(batchBtn);
+
+    // دیالوگ تأیید باز می‌شود
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText('تغییر به پردازش دسته‌ای')).toBeInTheDocument();
+    expect(within(dialog).getByText(/شما در حال حاضر روی یک کار در حالت تک‌تصویر هستید/)).toBeInTheDocument();
+
+    // انصراف
+    await user.click(within(dialog).getByRole('button', {name: 'انصراف'}));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'تک‌تصویر'})).toHaveClass('is-active');
+
+    // کلیک مجدد و تأیید
+    await user.click(batchBtn);
+    const dialog2 = await screen.findByRole('alertdialog');
+    await user.click(within(dialog2).getByRole('button', {name: 'رفتن به پردازش دسته‌ای'}));
+
+    // اکنون حالت دسته‌ای فعال است
+    expect(screen.getByRole('button', {name: 'پردازش دسته‌ای'})).toHaveClass('is-active');
+    expect(screen.getByRole('button', {name: 'تک‌تصویر'})).not.toHaveClass('is-active');
+    expect(within(screen.getByLabelText('پردازش دسته‌ای')).getByRole('heading', {name: /مرحله ۱: انتخاب تصویر/})).toBeInTheDocument();
+  });
+});
