@@ -1,4 +1,4 @@
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 import {buildBatchText, splitBatchText} from './BatchPanel';
 
 describe('قالب متن دسته‌ای', () => {
@@ -20,7 +20,7 @@ describe('قالب متن دسته‌ای', () => {
   });
 });
 
-import {fireEvent, render, screen} from '@testing-library/react';
+import {fireEvent, render, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 import {BatchPanel} from './BatchPanel';
 
@@ -48,16 +48,58 @@ describe('ناحیهٔ انداختن تصویر', () => {
     const zone = screen.getByRole('button', {name: 'ناحیهٔ انداختن یا چسباندن تصویرها'});
     fireEvent.drop(zone, {dataTransfer: {files: [png('1.png'), png('2.png')]}});
     expect(screen.getByText('2 تصویر انتخاب شد.')).toBeInTheDocument();
-    expect(screen.getByRole('button', {name: 'استخراج متن همهٔ تصویرها'})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'استخراج متن'})).toBeInTheDocument();
 
     // ارسال سیگنال ریست از هدر برنامه
     rerender(
       <BatchPanel onClose={() => {}} prompt="p" resetSignal={1} onReset={() => {resetDone = true;}} />
     );
     expect(screen.queryByText('2 تصویر انتخاب شد.')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', {name: 'استخراج متن همهٔ تصویرها'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: 'استخراج متن'})).not.toBeInTheDocument();
     expect(screen.getByText('پردازش دسته‌ای ریست شد. تصویرهای جدید را انتخاب کنید.')).toBeInTheDocument();
     expect(resetDone).toBe(true);
+  });
+
+  it('دکمهٔ استخراج متن نام کوتاه دارد و دکمهٔ توقف عملیات را کنسل می‌کند', async () => {
+    const origFetch = global.fetch;
+    let resolveJob: ((val: unknown) => void) | null = null;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/jobs') {
+        return new Promise(resolve => {
+          resolveJob = () => resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({jobId: 'job-1', height: 1000}),
+          });
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+      });
+    });
+
+    render(<BatchPanel onClose={() => {}} prompt="p" />);
+    const zone = screen.getByRole('button', {name: 'ناحیهٔ انداختن یا چسباندن تصویرها'});
+    fireEvent.drop(zone, {dataTransfer: {files: [png('1.png')]}});
+    const extractBtn = screen.getByRole('button', {name: 'استخراج متن'});
+    expect(extractBtn).toBeInTheDocument();
+
+    fireEvent.click(extractBtn);
+    const stopBtn = await screen.findByRole('button', {name: 'توقف'});
+    expect(stopBtn).toBeInTheDocument();
+
+    fireEvent.click(stopBtn);
+    expect(screen.getByText('در حال توقف…')).toBeInTheDocument();
+
+    if (resolveJob) (resolveJob as () => void)();
+
+    await waitFor(() => {
+      expect(screen.getByText('عملیات استخراج متن متوقف شد.')).toBeInTheDocument();
+    });
+
+    global.fetch = origFetch;
   });
 });
 

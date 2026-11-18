@@ -324,14 +324,17 @@ export function BatchPanel({
     const pieces: BatchPiece[] = [];
     const added: BatchPage[] = [];
     for (let part = 0; part < units.length; part += 1) {
+      if (cancel.current) break;
       const unit = units[part];
       const where = `${tag} ${file.name}` + (units.length > 1 ? ` · برش ${part + 1} از ${units.length}` : '');
       setProgress(stage('ocr', where));
       await retrying('OCR', () => call(`/api/jobs/${unit.jobId}/ocr`, {method: 'POST'}, 'OCR'));
+      if (cancel.current) break;
       const label = units.length > 1 ? `${file.name} [${part + 1}]` : file.name;
       added.push(await loadPage(unit.jobId, label, unit.height));
       pieces.push({jobId: unit.jobId, top: 0, bottom: unit.height});
     }
+    if (cancel.current) return;
     // فقط وقتی همهٔ برش‌های این فایل خوانده شد، به فصل اضافه می‌شود؛ فایل نیمه‌کاره نمی‌ماند.
     found.push(...added);
     fileList.push({name: file.name, order, pieces});
@@ -439,7 +442,19 @@ export function BatchPanel({
         failed.push({file: files[index], order: index, error: error instanceof Error ? error.message : 'خطا'});
       }
     }
+    if (cancel.current) {
+      setBusy(null);
+      setProgress('');
+      setMessage('عملیات استخراج متن متوقف شد.');
+      return;
+    }
     const joined = await seamPass(found, fileList, errors);
+    if (cancel.current) {
+      setBusy(null);
+      setProgress('');
+      setMessage('عملیات استخراج متن متوقف شد.');
+      return;
+    }
     finishExtract(found, fileList, failed, errors, joined);
   }
 
@@ -466,6 +481,10 @@ export function BatchPanel({
         stillFailed.push({...item, error: error instanceof Error ? error.message : 'خطا'});
         continue;
       }
+      if (cancel.current) {
+        stillFailed.push(item);
+        continue;
+      }
       // سر جای درست: بعد از آخرین صفحهٔ نزدیک‌ترین فایلِ قبلی‌اش.
       const before = fileList.filter(file => (file.order ?? 0) < item.order)
         .sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).pop();
@@ -476,6 +495,13 @@ export function BatchPanel({
       }
       found.splice(position, 0, ...fresh);
       fileList.push(...freshFiles);
+    }
+    if (cancel.current) {
+      setFailedFiles(stillFailed);
+      setBusy(null);
+      setProgress('');
+      setMessage('عملیات متوقف شد.');
+      return;
     }
     fileList.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const joined = await seamPass(found, fileList, errors);
@@ -527,6 +553,10 @@ export function BatchPanel({
     }
     setBusy(null);
     setProgress('');
+    if (cancel.current) {
+      setMessage(`عملیات متوقف شد (${ok} صفحه تکمیل شده بود).`);
+      return;
+    }
     setMessage(bad
       ? `${ok} صفحه پردازش شد و ${bad} صفحه ناموفق ماند؛ کنار هر صفحهٔ ناموفق دکمهٔ «تلاش دوباره» هست.`
       : (phase === 'clean' ? 'پاک‌سازی صفحات انجام شد؛ اکنون مرحلهٔ بعد (درج ترجمه) را بزنید.' : 'پردازش دسته‌ای تمام شد؛ حالا خروجی WebP را دانلود کنید.'));
@@ -711,7 +741,7 @@ export function BatchPanel({
                 <div className="wizard-nav start">
                   <span className="fonts-note">{files.length} تصویر انتخاب شد.</span>
                   <button type="button" className="ocr" disabled={busy !== null} onClick={() => void extract()}>
-                    استخراج متن همهٔ تصویرها
+                    استخراج متن
                   </button>
                   {failedFiles.length > 0 && (
                     <button type="button" className="ghost" disabled={busy !== null} onClick={() => void retryFailedFiles()}>
@@ -725,7 +755,16 @@ export function BatchPanel({
                 <div className="wizard-nav start">
                   <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
                   {busy !== 'export' && (
-                    <button type="button" className="ghost" onClick={() => {cancel.current = true;}}>توقف پس از صفحهٔ جاری</button>
+                    <button
+                      type="button"
+                      className="ghost danger"
+                      onClick={() => {
+                        cancel.current = true;
+                        setProgress('در حال توقف…');
+                      }}
+                    >
+                      توقف
+                    </button>
                   )}
                 </div>
               )}
@@ -830,7 +869,16 @@ export function BatchPanel({
                 <div className="wizard-nav start">
                   <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
                   {busy !== 'export' && (
-                    <button type="button" className="ghost" onClick={() => {cancel.current = true;}}>توقف پس از صفحهٔ جاری</button>
+                    <button
+                      type="button"
+                      className="ghost danger"
+                      onClick={() => {
+                        cancel.current = true;
+                        setProgress('در حال توقف…');
+                      }}
+                    >
+                      توقف
+                    </button>
                   )}
                 </div>
               )}
@@ -885,7 +933,16 @@ export function BatchPanel({
                 <div className="wizard-nav start">
                   <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
                   {busy !== 'export' && (
-                    <button type="button" className="ghost" onClick={() => {cancel.current = true;}}>توقف پس از صفحهٔ جاری</button>
+                    <button
+                      type="button"
+                      className="ghost danger"
+                      onClick={() => {
+                        cancel.current = true;
+                        setProgress('در حال توقف…');
+                      }}
+                    >
+                      توقف
+                    </button>
                   )}
                 </div>
               )}

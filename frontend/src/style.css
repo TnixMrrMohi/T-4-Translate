@@ -157,6 +157,8 @@
 .wizard-nav button{font-size:14px;padding:9px 16px}
 .wizard-nav button.ghost{background:transparent;color:#9fb5b2;border:1px solid #ffffff2e;cursor:pointer}
 .wizard-nav button.ghost:hover:not(:disabled){color:#eef9f4;border-color:#00ffcc66}
+.wizard-nav button.ghost.danger{color:#ff9b9b;border-color:#ff6b6b55}
+.wizard-nav button.ghost.danger:hover:not(:disabled){color:#ffb8b8;border-color:#ff6b6b;background:#3a141444}
 /* --- نوار ورود عکس: برچسب + آیکون سطل زباله (بالاتر از ناحیهٔ انتخاب) --- */
 .upload-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 8px}
 .upload-bar-label{color:#9fb5b2;font-size:13px}
