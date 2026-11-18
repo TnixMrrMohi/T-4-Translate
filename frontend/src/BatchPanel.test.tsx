@@ -136,6 +136,44 @@ describe('ناحیهٔ انداختن تصویر', () => {
     });
     localStorage.removeItem('t4-batch-v2');
   });
+
+  it('در مرحلهٔ ۲ در ستون راست باکسی پیوسته از همهٔ تصاویر فصل با پیش‌نمایش OCR نمایش داده می‌شود', async () => {
+    localStorage.setItem('t4-batch-v2', JSON.stringify({
+      pages: [
+        {page: 1, name: 'page1.png', jobId: 'job-p1', revision: 'r1', text: '[1] Line 1', state: 'extracted'},
+        {page: 2, name: 'page2.png', jobId: 'job-p2', revision: 'r2', text: '[1] Line 2', state: 'extracted'},
+      ],
+      files: [
+        {name: 'page1.png', pieces: [{jobId: 'job-p1', top: 0, bottom: 500}]},
+        {name: 'page2.png', pieces: [{jobId: 'job-p2', top: 0, bottom: 500}]},
+      ],
+      translated: '',
+    }));
+
+    render(<BatchPanel onClose={() => {}} prompt="p" />);
+    // باکس پیش‌نمایش در سایدبار حضور دارد
+    const previewRegion = screen.getByRole('region', {name: 'پیش‌نمایش پیوستهٔ صفحات با کادرهای OCR'});
+    expect(previewRegion).toBeInTheDocument();
+
+    // تمام تصاویر چسبیده به هم رندر شده‌اند
+    const images = screen.getAllByRole('img');
+    const ocrImages = images.filter(img => img.getAttribute('src')?.includes('/display/ocr'));
+    expect(ocrImages).toHaveLength(2);
+    expect(ocrImages[0]).toHaveAttribute('src', expect.stringContaining('/api/jobs/job-p1/display/ocr?width=800'));
+    expect(ocrImages[1]).toHaveAttribute('src', expect.stringContaining('/api/jobs/job-p2/display/ocr?width=800'));
+
+    // کلیک روی دکمهٔ بزرگ‌نمایی، مودال را باز می‌کند
+    const zoomBtn = screen.getByRole('button', {name: 'بزرگ‌نمایی'});
+    fireEvent.click(zoomBtn);
+    expect(screen.getByRole('dialog', {name: 'پیش‌نمایش پیوستهٔ کادرهای OCR فصل'})).toBeInTheDocument();
+
+    // بستن مودال
+    const closeBtn = screen.getByRole('button', {name: 'بستن ✕'});
+    fireEvent.click(closeBtn);
+    expect(screen.queryByRole('dialog', {name: 'پیش‌نمایش پیوستهٔ کادرهای OCR فصل'})).not.toBeInTheDocument();
+
+    localStorage.removeItem('t4-batch-v2');
+  });
 });
 
 import {isPlainPage} from './BatchPanel';

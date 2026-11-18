@@ -1,4 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
+import {createPortal} from 'react-dom';
 import {ChapterPage} from './ChapterPage';
 import {copyToClipboard} from './clipboard';
 
@@ -192,6 +193,16 @@ export function BatchPanel({
     };
   }, []);
   const [chapterVersion, setChapterVersion] = useState(() => Date.now());
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!previewModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPreviewModalOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewModalOpen]);
   // پس از برگشت از ویرایشگر، خروجی‌های تغییرکرده دوباره بارگذاری می‌شوند.
   useEffect(() => {
     if (visible) setChapterVersion(Date.now());
@@ -692,6 +703,45 @@ export function BatchPanel({
           )}
         </div>
 
+        {batchStep >= 2 && pages.length > 0 && (
+          <div className="sidebar-previews" aria-label="پیش‌نمایش پیوستهٔ کادرهای OCR">
+            <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
+              <div className="batch-preview-header">
+                <span className="batch-preview-title">پیش‌نمایش OCR فصل ({pages.length} تصویر)</span>
+                <button
+                  type="button"
+                  className="ghost small"
+                  onClick={() => setPreviewModalOpen(true)}
+                  title="بزرگ‌نمایی پیوستهٔ فصل"
+                >
+                  بزرگ‌نمایی
+                </button>
+              </div>
+              <div
+                className="preview-thumb is-scroll batch-stream"
+                tabIndex={0}
+                role="region"
+                aria-label="پیش‌نمایش پیوستهٔ صفحات با کادرهای OCR"
+                onClick={() => setPreviewModalOpen(true)}
+              >
+                {pages.map((p, idx) => (
+                  <div key={p.jobId} className="batch-stream-item">
+                    <span className="batch-stream-tag">{idx + 1}. {p.name}</span>
+                    <img
+                      src={`/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`}
+                      alt={`صفحهٔ ${p.page}: ${p.name}`}
+                      loading="lazy"
+                    />
+                  </div>
+                ))}
+              </div>
+              <figcaption>
+                <span>تصاویر پیوستهٔ فصل با کادرهای متن و شماره‌ها</span>
+              </figcaption>
+            </figure>
+          </div>
+        )}
+
         <details className="batch-legend">
           <summary>راهنمای کد مرحله‌ها</summary>
           <ul>
@@ -1060,6 +1110,32 @@ export function BatchPanel({
           )}
         </section>
       </section>
+
+      {previewModalOpen && createPortal(
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="پیش‌نمایش پیوستهٔ کادرهای OCR فصل">
+          <div className="modal-bar">
+            <span className="grow">پیش‌نمایش پیوستهٔ صفحات فصل ({pages.length} تصویر) — همراه کادر و شمارهٔ خطوط OCR</span>
+            <div className="modal-actions">
+              <button type="button" className="ghost" onClick={() => setPreviewModalOpen(false)}>بستن ✕</button>
+            </div>
+          </div>
+          <div className="modal-stage" style={{display: 'block', overflowY: 'auto', maxHeight: 'calc(100vh - 80px)'}}>
+            <div style={{maxWidth: '900px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 0}}>
+              {pages.map((p, idx) => (
+                <div key={p.jobId} style={{position: 'relative', width: '100%', lineHeight: 0}}>
+                  <span className="batch-stream-tag">{idx + 1}. {p.name}</span>
+                  <img
+                    src={`/api/jobs/${p.jobId}/display/ocr?width=1200&v=${chapterVersion}`}
+                    alt={`صفحهٔ ${p.page}: ${p.name}`}
+                    style={{width: '100%', height: 'auto', display: 'block'}}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
