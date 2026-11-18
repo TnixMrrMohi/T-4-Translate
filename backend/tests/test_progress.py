@@ -300,6 +300,7 @@ def test_inpaint_refine_weights_regions_by_tile_count(monkeypatch):
     large[100:600, 100:600] = True     # ۴ تایل (با PAD ابعاد حدود ۵۹۷×۵۹۷ می‌شود -> ۲×۲)
 
     monkeypatch.setattr(inpaint, 'available', lambda: True)
+    monkeypatch.setattr(inpaint, '_session', lambda: object())
     monkeypatch.setattr(inpaint, '_fixed_tile', lambda: 512)
     monkeypatch.setattr(inpaint, '_looks_reasonable', lambda *a, **k: True)
 
