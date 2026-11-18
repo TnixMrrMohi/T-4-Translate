@@ -148,10 +148,11 @@ export const BATCH_PROMPT_NOTE = [
 const STORE_KEY = 't4-batch-v2';
 
 export const BATCH_STEPS = [
-  {id: 1, title: 'انتخاب تصویرها'},
-  {id: 2, title: 'متن استخراج‌شده'},
-  {id: 3, title: 'ترجمه و پردازش'},
-  {id: 4, title: 'نمای فصل و دانلود'},
+  {id: 1, title: 'انتخاب تصویر'},
+  {id: 2, title: 'ترجمهٔ فارسی'},
+  {id: 3, title: 'پاک‌سازی'},
+  {id: 4, title: 'درج ترجمه'},
+  {id: 5, title: 'مقایسه'},
 ];
 
 export function BatchPanel({
@@ -198,7 +199,7 @@ export function BatchPanel({
         setTranslated(trans);
         if (Array.isArray(saved.files)) setOutFiles(saved.files);
         const done = loaded.filter(p => p.state === 'done').length;
-        if (done > 0) setBatchStep(4);
+        if (done > 0) setBatchStep(5);
         else if (trans.trim()) setBatchStep(3);
         else setBatchStep(2);
       }
@@ -281,7 +282,7 @@ export function BatchPanel({
 
   const combined = buildBatchText(pages);
   const doneCount = pages.filter(p => p.state === 'done').length;
-  const maxBatchStep = doneCount > 0 ? 4 : (pages.length > 0 ? 3 : 1);
+  const maxBatchStep = doneCount > 0 ? 5 : (pages.length > 0 ? 4 : 1);
   const failedPages = pages.filter(p => p.state === 'failed');
 
   function update(index: number, patch: Partial<BatchPage>) {
@@ -482,7 +483,7 @@ export function BatchPanel({
   }
 
   /** اجرای دسته‌ای: همهٔ صفحه‌ها یا فقط صفحه‌های داده‌شده (تلاش دوباره). */
-  async function run(only?: string[]) {
+  async function run(only?: string[], phase: 'clean' | 'render' | 'full' = 'full') {
     if (busy || !pages.length) return;
     const parts = splitBatchText(translated);
     cancel.current = false;
@@ -496,7 +497,6 @@ export function BatchPanel({
       const index = pages.findIndex(entry => entry.jobId === page.jobId);
       const tag = `${at + 1} از ${targets.length} · ${page.name}`;
       if (isPlainPage(page)) {
-        // بدون متن: چیزی برای ترجمه/پاک‌سازی نیست؛ همان تصویر اصلی در خروجی می‌ماند.
         update(index, {state: 'done', error: undefined});
         ok += 1;
         continue;
@@ -505,15 +505,19 @@ export function BatchPanel({
       try {
         const text = parts.get(page.page);
         if (!text) throw new Error('ترجمهٔ این صفحه در متن نیست (تیتر === ... === را نگه دارید).');
-        setProgress(stage('save', tag));
-        await call(`/api/jobs/${page.jobId}/translations`, {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({sourceRevision: page.revision, text, promo: 'replace'}),
-        }, 'ذخیرهٔ ترجمه');
-        setProgress(stage('clean', tag));
-        await retrying('پاک‌سازی', () => call(`/api/jobs/${page.jobId}/clean`, {method: 'POST'}, 'پاک‌سازی'));
-        setProgress(stage('render', tag));
-        await retrying('درج ترجمه', () => call(`/api/jobs/${page.jobId}/render`, {method: 'POST'}, 'درج ترجمه'));
+        if (phase === 'clean' || phase === 'full') {
+          setProgress(stage('save', tag));
+          await call(`/api/jobs/${page.jobId}/translations`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({sourceRevision: page.revision, text, promo: 'replace'}),
+          }, 'ذخیرهٔ ترجمه');
+          setProgress(stage('clean', tag));
+          await retrying('پاک‌سازی', () => call(`/api/jobs/${page.jobId}/clean`, {method: 'POST'}, 'پاک‌سازی'));
+        }
+        if (phase === 'render' || phase === 'full') {
+          setProgress(stage('render', tag));
+          await retrying('درج ترجمه', () => call(`/api/jobs/${page.jobId}/render`, {method: 'POST'}, 'درج ترجمه'));
+        }
         update(index, {state: 'done'});
         ok += 1;
       } catch (error) {
@@ -524,10 +528,11 @@ export function BatchPanel({
     setBusy(null);
     setProgress('');
     setMessage(bad
-      ? `${ok} صفحه ساخته شد و ${bad} صفحه ناموفق ماند؛ کنارِ هر صفحهٔ ناموفق دکمهٔ «تلاش دوباره» هست (بقیه دست‌نخورده می‌مانند).`
-      : 'پردازش دسته‌ای تمام شد؛ حالا خروجی WebP را دانلود کنید.');
+      ? `${ok} صفحه پردازش شد و ${bad} صفحه ناموفق ماند؛ کنار هر صفحهٔ ناموفق دکمهٔ «تلاش دوباره» هست.`
+      : (phase === 'clean' ? 'پاک‌سازی صفحات انجام شد؛ اکنون مرحلهٔ بعد (درج ترجمه) را بزنید.' : 'پردازش دسته‌ای تمام شد؛ حالا خروجی WebP را دانلود کنید.'));
     if (ok > 0) {
-      setBatchStep(4);
+      if (phase === 'clean') setBatchStep(4);
+      else setBatchStep(5);
     }
   }
 
@@ -575,7 +580,7 @@ export function BatchPanel({
 
   return (
     <div className="layout" aria-label="پردازش دسته‌ای" style={visible ? undefined : {display: 'none'}}>
-      {/* ستون راست: چهار مرحله و خلاصه وضعیت فصل */}
+      {/* ستون راست: پنج مرحله و خلاصه وضعیت فصل */}
       <aside className="sidebar" aria-label="مراحل پردازش دسته‌ای">
         <ol className="wizard-steps" aria-label="مراحل کار">
           {BATCH_STEPS.map(item => {
@@ -606,10 +611,12 @@ export function BatchPanel({
             <span>تعداد کل تصاویر:</span>
             <strong>{files.length}</strong>
           </div>
-          <div className="batch-stat-row">
-            <span>صفحات استخراج‌شده:</span>
-            <strong>{pages.length}</strong>
-          </div>
+          {batchStep > 1 && pages.length > 0 && (
+            <div className="batch-stat-row">
+              <span>صفحات استخراج‌شده:</span>
+              <strong>{pages.length}</strong>
+            </div>
+          )}
           {doneCount > 0 && (
             <div className="batch-stat-row is-success">
               <span>صفحات آماده:</span>
@@ -641,7 +648,30 @@ export function BatchPanel({
         <section className="wizard-card" aria-live="polite">
           {batchStep === 1 && (
             <>
-              <h2 className="wizard-title">مرحله ۱: انتخاب تصویرهای فصل</h2>
+              <h2 className="wizard-title">مرحله ۱: انتخاب تصویر</h2>
+
+              <div className="upload-bar">
+                <span className="upload-bar-label">تصویرهای ورودی</span>
+                {files.length > 0 && (
+                  <button
+                    type="button"
+                    className="icon-button trash"
+                    onClick={() => {setFiles([]); setPages([]);}}
+                    disabled={busy !== null}
+                    aria-label="پاک‌کردن تصویرهای انتخاب‌شده"
+                    title="پاک‌کردن تصویرهای انتخاب‌شده"
+                  >
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M3 6h18" />
+                      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                      <path d="M10 11v6" />
+                      <path d="M14 11v6" />
+                    </svg>
+                  </button>
+                )}
+              </div>
 
               <div
                 className={`select batch-drop${dragOver ? ' drag-over' : ''}${busy !== null ? ' busy' : ''}`}
@@ -677,21 +707,19 @@ export function BatchPanel({
                 <small>پشتیبانی از PNG ،JPG و WebP — با کلید میان‌بر Ctrl+V نیز تصویر چسبانده می‌شود</small>
               </div>
 
-              <div className="wizard-nav start">
-                <span className="fonts-note">{files.length ? `${files.length} تصویر انتخاب شد.` : 'هنوز تصویری انتخاب نشده است.'}</span>
-                {files.length > 0 && (
-                  <button type="button" className="ghost" disabled={busy !== null}
-                    onClick={() => {setFiles([]); setPages([]);}}>پاک‌کردن فهرست</button>
-                )}
-                <button type="button" className="ocr" disabled={!files.length || busy !== null} onClick={() => void extract()}>
-                  استخراج متن همهٔ تصویرها
-                </button>
-                {failedFiles.length > 0 && (
-                  <button type="button" className="ghost" disabled={busy !== null} onClick={() => void retryFailedFiles()}>
-                    تلاش دوباره برای فایل‌های ناموفق ({failedFiles.length})
+              {files.length > 0 && (
+                <div className="wizard-nav start">
+                  <span className="fonts-note">{files.length} تصویر انتخاب شد.</span>
+                  <button type="button" className="ocr" disabled={busy !== null} onClick={() => void extract()}>
+                    استخراج متن همهٔ تصویرها
                   </button>
-                )}
-              </div>
+                  {failedFiles.length > 0 && (
+                    <button type="button" className="ghost" disabled={busy !== null} onClick={() => void retryFailedFiles()}>
+                      تلاش دوباره برای فایل‌های ناموفق ({failedFiles.length})
+                    </button>
+                  )}
+                </div>
+              )}
 
               {busy && (
                 <div className="wizard-nav start">
@@ -732,7 +760,7 @@ export function BatchPanel({
               {pages.length > 0 && (
                 <div className="wizard-nav">
                   <button type="button" className="ocr" onClick={() => setBatchStep(2)}>
-                    مرحلهٔ بعد: متن استخراج‌شده ←
+                    مرحلهٔ بعد: ترجمهٔ فارسی ←
                   </button>
                 </div>
               )}
@@ -741,9 +769,9 @@ export function BatchPanel({
 
           {batchStep === 2 && (
             <>
-              <h2 className="wizard-title">مرحله ۲: متن استخراج‌شده و پرامپت</h2>
+              <h2 className="wizard-title">مرحله ۲: ترجمهٔ فارسی</h2>
               <p className="wizard-help">
-                متن استخراج‌شده از همهٔ صفحه‌ها آماده است. «کپی با پرامپت» را بزنید، در هوش مصنوعی بچسبانید و ترجمه را دریافت کنید.
+                متن استخراج‌شده از همهٔ صفحه‌ها آماده است. «کپی با پرامپت» را بزنید، در هوش مصنوعی بچسبانید و ترجمه را دریافت کنید؛ سپس آن را در کادر ترجمه قرار دهید.
               </p>
 
               <div className="wizard-nav start">
@@ -759,12 +787,18 @@ export function BatchPanel({
 
               <textarea className="batch-text" readOnly dir="ltr" aria-label="متن استخراج‌شده" value={combined} />
 
+              <h3 className="wizard-subtitle">متن ترجمه‌شده</h3>
+              <p className="wizard-help">همان قالب را نگه دارید: تیتر هر صفحه (=== 001 | نام ===) و شمارهٔ هر متن ([۱]).</p>
+              <textarea className="batch-text" dir="rtl" aria-label="متن ترجمه‌شده" value={translated}
+                placeholder="متن ترجمه‌شده را اینجا بچسبانید..."
+                onChange={event => setTranslated(event.target.value)} />
+
               <div className="wizard-nav">
                 <button type="button" className="ghost" onClick={() => setBatchStep(1)}>
-                  → مرحلهٔ قبل: تصویرها
+                  → مرحلهٔ قبل: انتخاب تصویر
                 </button>
-                <button type="button" className="ocr" onClick={() => setBatchStep(3)}>
-                  مرحلهٔ بعد: درج ترجمه ←
+                <button type="button" className="ocr" disabled={!translated.trim()} onClick={() => setBatchStep(3)}>
+                  مرحلهٔ بعد: پاک‌سازی ←
                 </button>
               </div>
             </>
@@ -772,28 +806,22 @@ export function BatchPanel({
 
           {batchStep === 3 && (
             <>
-              <h2 className="wizard-title">مرحله ۳: درج ترجمه و پردازش دسته‌ای</h2>
+              <h2 className="wizard-title">مرحله ۳: پاک‌سازی</h2>
               <p className="wizard-help">
-                همان قالب را نگه دارید: تیتر هر صفحه (=== 001 | نام ===) و شمارهٔ هر متن ([۱]). ترجمه را بچسبانید و «اجرای دسته‌ای» را بزنید.
+                پاک‌سازی خودکار متن اصلی از روی تصاویر تمام صفحات فصل با هوش مصنوعی (Inpaint).
               </p>
 
-              <textarea className="batch-text" dir="rtl" aria-label="متن ترجمه‌شده" value={translated}
-                placeholder="متن ترجمه‌شده را اینجا بچسبانید..."
-                onChange={event => setTranslated(event.target.value)} />
-
               <div className="wizard-nav start">
-                <button type="button" className="ocr" disabled={busy !== null || !translated.trim()} onClick={() => void run()}>
-                  اجرای دسته‌ای (پاک‌سازی و درج ترجمه)
+                <button type="button" className="ocr" disabled={busy !== null || !translated.trim()} onClick={() => void run(undefined, 'clean')}>
+                  اجرای پاک‌سازی دسته‌ای
+                </button>
+                <button type="button" className="ghost" disabled={busy !== null || !translated.trim()} onClick={() => void run(undefined, 'full')}>
+                  اجرای کامل (پاک‌سازی و درج ترجمه)
                 </button>
                 {failedPages.length > 0 && (
                   <button type="button" className="ghost" disabled={busy !== null || !translated.trim()}
-                    onClick={() => void run(failedPages.map(page => page.jobId))}>
+                    onClick={() => void run(failedPages.map(page => page.jobId), 'clean')}>
                     تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
-                  </button>
-                )}
-                {doneCount > 0 && (
-                  <button type="button" className="ocr" disabled={busy !== null} onClick={() => void exportZip()}>
-                    دانلود خروجی WebP (ZIP)
                   </button>
                 )}
               </div>
@@ -812,11 +840,11 @@ export function BatchPanel({
                   <li key={page.jobId} className={`batch-row is-${page.state}`}>
                     <span>{page.page}. {page.name}</span>
                     <span className="batch-row-state">
-                      {page.state === 'done' ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده') : page.state === 'running' ? 'در حال ساخت…'
+                      {page.state === 'done' ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده') : page.state === 'running' ? 'در حال کار…'
                         : page.state === 'failed' ? `ناموفق: ${page.error}` : 'متن استخراج شد'}
                       {page.state === 'failed' && (
                         <button type="button" className="ghost small" disabled={busy !== null || !translated.trim()}
-                          onClick={() => void run([page.jobId])}>تلاش دوباره</button>
+                          onClick={() => void run([page.jobId], 'clean')}>تلاش دوباره</button>
                       )}
                     </span>
                   </li>
@@ -825,20 +853,75 @@ export function BatchPanel({
 
               <div className="wizard-nav">
                 <button type="button" className="ghost" onClick={() => setBatchStep(2)}>
-                  → مرحلهٔ قبل: متن استخراج‌شده
+                  → مرحلهٔ قبل: ترجمهٔ فارسی
                 </button>
-                {doneCount > 0 && (
-                  <button type="button" className="ocr" onClick={() => setBatchStep(4)}>
-                    مرحلهٔ بعد: نمای فصل و خروجی ←
-                  </button>
-                )}
+                <button type="button" className="ocr" onClick={() => setBatchStep(4)}>
+                  مرحلهٔ بعد: درج ترجمه ←
+                </button>
               </div>
             </>
           )}
 
           {batchStep === 4 && (
             <>
-              <h2 className="wizard-title">مرحله ۴: نمای فصل و دانلود خروجی</h2>
+              <h2 className="wizard-title">مرحله ۴: درج ترجمه</h2>
+              <p className="wizard-help">
+                درج خودکار متون ترجمه‌شده روی تصاویر پاک‌شدهٔ فصل با فونت و تنظیمات استاندارد.
+              </p>
+
+              <div className="wizard-nav start">
+                <button type="button" className="ocr" disabled={busy !== null || !translated.trim()} onClick={() => void run(undefined, 'render')}>
+                  درج ترجمه روی همهٔ صفحه‌ها
+                </button>
+                {failedPages.length > 0 && (
+                  <button type="button" className="ghost" disabled={busy !== null || !translated.trim()}
+                    onClick={() => void run(failedPages.map(page => page.jobId), 'render')}>
+                    تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
+                  </button>
+                )}
+              </div>
+
+              {busy && (
+                <div className="wizard-nav start">
+                  <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
+                  {busy !== 'export' && (
+                    <button type="button" className="ghost" onClick={() => {cancel.current = true;}}>توقف پس از صفحهٔ جاری</button>
+                  )}
+                </div>
+              )}
+
+              <ul className="batch-list">
+                {pages.map(page => (
+                  <li key={page.jobId} className={`batch-row is-${page.state}`}>
+                    <span>{page.page}. {page.name}</span>
+                    <span className="batch-row-state">
+                      {page.state === 'done' ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده') : page.state === 'running' ? 'در حال کار…'
+                        : page.state === 'failed' ? `ناموفق: ${page.error}` : 'متن استخراج شد'}
+                      {page.state === 'failed' && (
+                        <button type="button" className="ghost small" disabled={busy !== null || !translated.trim()}
+                          onClick={() => void run([page.jobId], 'render')}>تلاش دوباره</button>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+
+              <div className="wizard-nav">
+                <button type="button" className="ghost" onClick={() => setBatchStep(3)}>
+                  → مرحلهٔ قبل: پاک‌سازی
+                </button>
+                {doneCount > 0 && (
+                  <button type="button" className="ocr" onClick={() => setBatchStep(5)}>
+                    مرحلهٔ بعد: مقایسه و خروجی ←
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {batchStep === 5 && (
+            <>
+              <h2 className="wizard-title">مرحله ۵: مقایسه</h2>
               <p className="wizard-help">
                 همهٔ صفحه‌ها به ترتیب زیر هم‌اند. روی هر متنِ تصویر کلیک کنید: فونت، اندازه، چرخش، جا، متن و
                 خط‌بندی‌اش را عوض کنید یا پشتش را دوباره پاک کنید. تغییرها همان لحظه ذخیره و درج می‌شوند.
@@ -848,7 +931,7 @@ export function BatchPanel({
                 <button type="button" className="ocr" disabled={busy !== null || doneCount === 0} onClick={() => void exportZip()}>
                   دانلود خروجی WebP (ZIP)
                 </button>
-                <button type="button" className="ghost" onClick={() => setBatchStep(3)}>
+                <button type="button" className="ghost" onClick={() => setBatchStep(2)}>
                   ویرایش مجدد ترجمه
                 </button>
               </div>
@@ -861,8 +944,8 @@ export function BatchPanel({
               </div>
 
               <div className="wizard-nav">
-                <button type="button" className="ghost" onClick={() => setBatchStep(3)}>
-                  → مرحلهٔ قبل: ویرایش ترجمه
+                <button type="button" className="ghost" onClick={() => setBatchStep(4)}>
+                  → مرحلهٔ قبل: درج ترجمه
                 </button>
                 <button type="button" className="ocr" disabled={busy !== null || doneCount === 0} onClick={() => void exportZip()}>
                   دانلود خروجی WebP (ZIP)

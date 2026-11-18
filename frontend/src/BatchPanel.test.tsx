@@ -48,12 +48,14 @@ describe('ناحیهٔ انداختن تصویر', () => {
     const zone = screen.getByRole('button', {name: 'ناحیهٔ انداختن یا چسباندن تصویرها'});
     fireEvent.drop(zone, {dataTransfer: {files: [png('1.png'), png('2.png')]}});
     expect(screen.getByText('2 تصویر انتخاب شد.')).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'استخراج متن همهٔ تصویرها'})).toBeInTheDocument();
 
     // ارسال سیگنال ریست از هدر برنامه
     rerender(
       <BatchPanel onClose={() => {}} prompt="p" resetSignal={1} onReset={() => {resetDone = true;}} />
     );
-    expect(screen.getByText('هنوز تصویری انتخاب نشده است.')).toBeInTheDocument();
+    expect(screen.queryByText('2 تصویر انتخاب شد.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: 'استخراج متن همهٔ تصویرها'})).not.toBeInTheDocument();
     expect(screen.getByText('پردازش دسته‌ای ریست شد. تصویرهای جدید را انتخاب کنید.')).toBeInTheDocument();
     expect(resetDone).toBe(true);
   });

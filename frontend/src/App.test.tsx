@@ -2091,7 +2091,7 @@ describe('رفتار دکمه ریست در هدر و حالت دسته‌ای',
     // ورود به پردازش دسته‌ای
     const modeBtn = screen.getByRole('button', {name: 'پردازش دسته‌ای'});
     await user.click(modeBtn);
-    expect(screen.getByRole('heading', {name: /انتخاب تصویرهای فصل/})).toBeInTheDocument();
+    expect(within(screen.getByLabelText('پردازش دسته‌ای')).getByRole('heading', {name: /مرحله ۱: انتخاب تصویر/})).toBeInTheDocument();
 
     // کلیک روی دکمهٔ ریست هدر
     const resetBtn = screen.getByRole('button', {name: 'ریست'});
