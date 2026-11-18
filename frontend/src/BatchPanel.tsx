@@ -1,5 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {ChapterPage} from './ChapterPage';
+import {copyToClipboard} from './clipboard';
 
 const WEBP_QUALITY = 90;
 const HEADER = /^===\s*(\d+)\s*\|\s*(.+?)\s*===\s*$/;
@@ -180,6 +181,14 @@ export function BatchPanel({
   const [message, setMessage] = useState('');
   const [progress, setProgress] = useState('');
   const cancel = useRef(false);
+  const [copied, setCopied] = useState<'prompt' | 'text' | null>(null);
+  const copiedTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+    };
+  }, []);
   const [chapterVersion, setChapterVersion] = useState(() => Date.now());
   // پس از برگشت از ویرایشگر، خروجی‌های تغییرکرده دوباره بارگذاری می‌شوند.
   useEffect(() => {
@@ -608,6 +617,21 @@ export function BatchPanel({
     }
   }
 
+  async function copyPrompt(withPrompt = true) {
+    const payload = withPrompt ? `${prompt}${BATCH_PROMPT_NOTE}\n${combined}` : combined;
+    const ok = await copyToClipboard(payload);
+    if (!ok) {
+      setMessage('کپی در کلیپ‌بورد ممکن نشد؛ متن را دستی از کادر زیر انتخاب و کپی کنید.');
+      return;
+    }
+    setCopied(withPrompt ? 'prompt' : 'text');
+    setMessage(withPrompt
+      ? 'پرامپت و متن همهٔ صفحه‌ها کپی شد؛ در هوش مصنوعی بچسبانید.'
+      : 'متن استخراج‌شدهٔ همهٔ صفحه‌ها کپی شد.');
+    if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+    copiedTimer.current = window.setTimeout(() => setCopied(null), 2500);
+  }
+
   return (
     <div className="layout" aria-label="پردازش دسته‌ای" style={visible ? undefined : {display: 'none'}}>
       {/* ستون راست: پنج مرحله و خلاصه وضعیت فصل */}
@@ -814,12 +838,29 @@ export function BatchPanel({
               </p>
 
               <div className="wizard-nav start">
-                <button type="button" className="ocr" onClick={() => {
-                  void navigator.clipboard?.writeText(`${prompt}${BATCH_PROMPT_NOTE}\n${combined}`)
-                    .then(() => setMessage('پرامپت و متن همهٔ صفحه‌ها کپی شد؛ در هوش مصنوعی بچسبانید.'));
-                }}>کپی با پرامپت</button>
-                <button type="button" className="ghost"
-                  onClick={() => saveBlob(new Blob([combined], {type: 'text/plain;charset=utf-8'}), 'texts.txt')}>
+                <button
+                  type="button"
+                  className={`ocr${copied === 'prompt' ? ' is-copied' : ''}`}
+                  onClick={() => void copyPrompt(true)}
+                  aria-live="polite"
+                  title="متن همراه پرامپت ترجمه برای هوش مصنوعی"
+                >
+                  {copied === 'prompt' ? 'کپی شد ✓' : 'کپی با پرامپت'}
+                </button>
+                <button
+                  type="button"
+                  className={`ghost${copied === 'text' ? ' is-copied' : ''}`}
+                  onClick={() => void copyPrompt(false)}
+                  aria-live="polite"
+                  title="فقط متن‌های استخراج‌شده بدون پرامپت"
+                >
+                  {copied === 'text' ? 'کپی شد ✓' : 'کپی فقط متن'}
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => saveBlob(new Blob([combined], {type: 'text/plain;charset=utf-8'}), 'texts.txt')}
+                >
                   ذخیرهٔ به‌صورت فایل
                 </button>
               </div>

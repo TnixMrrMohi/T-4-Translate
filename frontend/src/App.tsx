@@ -4,6 +4,7 @@ import {CompareSlider} from './CompareSlider';
 import {TextLayoutEditor} from './TextLayoutEditor';
 import SystemPanel from './SystemPanel';
 import {BatchPanel} from './BatchPanel';
+import {copyToClipboard} from './clipboard';
 import type {LayoutDoc, TextOverrides} from './TextLayoutEditor';
 import './style.css';
 
@@ -165,32 +166,6 @@ function formatFileSize(bytes: number): string {
   return label.replace(/\d/g, digit => '۰۱۲۳۴۵۶۷۸۹'[Number(digit)]);
 }
 
-/** کپی در کلیپ‌بورد با روش جایگزین برای محیط‌های بدون Clipboard API. */
-async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // پایین‌تر با textarea امتحان می‌کنیم.
-  }
-  try {
-    const area = document.createElement('textarea');
-    area.value = text;
-    area.setAttribute('readonly', '');
-    area.style.position = 'fixed';
-    area.style.top = '0';
-    area.style.opacity = '0';
-    document.body.appendChild(area);
-    area.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(area);
-    return ok;
-  } catch {
-    return false;
-  }
-}
 
 type PreviewProps = {
   jobId: string;

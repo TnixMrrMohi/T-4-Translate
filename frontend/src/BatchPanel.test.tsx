@@ -101,6 +101,41 @@ describe('ناحیهٔ انداختن تصویر', () => {
 
     global.fetch = origFetch;
   });
+
+  it('کلیک روی کپی با پرامپت بازخورد بصری «کپی شد ✓» می‌دهد', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const origClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, 'clipboard', {
+      value: {writeText},
+      configurable: true,
+    });
+
+    localStorage.setItem('t4-batch-v2', JSON.stringify({
+      pages: [
+        {page: 1, name: '1.png', jobId: 'j1', revision: 'r1', text: '[1] Hello', state: 'extracted'},
+      ],
+      files: [{name: '1.png', pieces: [{jobId: 'j1', top: 0, bottom: 100}]}],
+      translated: '',
+    }));
+
+    render(<BatchPanel onClose={() => {}} prompt="TRANSLATE_PROMPT" />);
+    const copyPromptBtn = screen.getByRole('button', {name: 'کپی با پرامپت'});
+    expect(copyPromptBtn).toBeInTheDocument();
+
+    fireEvent.click(copyPromptBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', {name: 'کپی شد ✓'})).toBeInTheDocument();
+      expect(screen.getByRole('button', {name: 'کپی شد ✓'})).toHaveClass('is-copied');
+    });
+    expect(writeText).toHaveBeenCalled();
+
+    Object.defineProperty(navigator, 'clipboard', {
+      value: origClipboard,
+      configurable: true,
+    });
+    localStorage.removeItem('t4-batch-v2');
+  });
 });
 
 import {isPlainPage} from './BatchPanel';
