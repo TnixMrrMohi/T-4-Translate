@@ -89,3 +89,88 @@ def test_short_page_is_read_in_one_piece(monkeypatch, tmp_path):
     lines = ocr.recognize(page)
     assert len(calls) == 1
     assert lines[0]["quad"][0] == [5.0, 5.0]
+
+
+def test_is_gpu_oom_detects_directml_and_cuda_messages():
+    """خطای کمبود حافظهٔ GPU (DirectML و CUDA) باید شناخته شود، خطای دیگر نه."""
+    assert ocr._is_gpu_oom(RuntimeError("8007000E Not enough memory resources are available"))
+    assert ocr._is_gpu_oom(RuntimeError("CUDA error: out of memory"))
+    assert ocr._is_gpu_oom(RuntimeError("OutOfMemory"))
+    assert not ocr._is_gpu_oom(ValueError("boom"))
+    assert not ocr._is_gpu_oom(FileNotFoundError("model missing"))
+
+
+class _EngineFactory:
+    """جانشین _engine که بعد از cache_clear موتور دوم را می‌دهد."""
+
+    def __init__(self, first, second):
+        self.first, self.second = first, second
+        self.cleared = 0
+
+    def cache_clear(self):
+        self.cleared += 1
+
+    def __call__(self):
+        return self.first if self.cleared == 0 else self.second
+
+
+def test_read_falls_back_to_cpu_engine_on_gpu_oom(monkeypatch):
+    """OOM روی GPU نباید کل کار را بکشد؛ موتور روی CPU بازسازی و نوار دوباره خوانده می‌شود."""
+    import numpy as np
+
+    class OomEngine:
+        def __call__(self, image):
+            raise RuntimeError("8007000E Not enough memory resources are available")
+
+    class OkEngine:
+        def __call__(self, image):
+            return [], None
+
+    factory = _EngineFactory(OomEngine(), OkEngine())
+    monkeypatch.setattr(ocr, "_engine", factory)
+    monkeypatch.setattr(ocr, "_gpu_disabled", False)
+    result = ocr._read(np.zeros((100, 100, 3), np.uint8))
+    assert result == []
+    assert factory.cleared == 1
+    assert ocr._gpu_disabled is True
+
+
+def test_read_does_not_fallback_on_non_oom_errors(monkeypatch):
+    """خطای غیر-OOM نباید باعث بازسازی موتور شود؛ همان خطا بالا می‌آید."""
+    import numpy as np
+
+    class BrokenEngine:
+        def __call__(self, image):
+            raise ValueError("boom")
+
+    factory = _EngineFactory(BrokenEngine(), BrokenEngine())
+    monkeypatch.setattr(ocr, "_engine", factory)
+    monkeypatch.setattr(ocr, "_gpu_disabled", False)
+    try:
+        ocr._read(np.zeros((100, 100, 3), np.uint8))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError")
+    assert factory.cleared == 0
+    assert ocr._gpu_disabled is False
+
+
+def test_read_does_not_retry_twice_when_gpu_already_disabled(monkeypatch):
+    """اگر GPU قبلاً غیرفعال شده، OOM دوباره تلاش نمی‌شود (حلقهٔ بی‌نهایت نه)."""
+    import numpy as np
+
+    class OomEngine:
+        def __call__(self, image):
+            raise RuntimeError("8007000E Not enough memory resources are available")
+
+    factory = _EngineFactory(OomEngine(), OomEngine())
+    monkeypatch.setattr(ocr, "_engine", factory)
+    monkeypatch.setattr(ocr, "_gpu_disabled", True)
+    try:
+        ocr._read(np.zeros((100, 100, 3), np.uint8))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected RuntimeError")
+    assert factory.cleared == 0

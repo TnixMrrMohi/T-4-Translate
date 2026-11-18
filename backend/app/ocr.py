@@ -46,6 +46,24 @@ class OcrUnavailable(Exception):
 
 INSTALL_HINT = 'python -m pip install -e ".[ocr-experimental]"'
 
+# پس از OOM روی GPU (DirectML/CUDA)، موتور با CPU بازسازی می‌شود و دیگر GPU
+# امتحان نمی‌شود؛ وگرنه هر نوار همان خطا را تکرار می‌کرد.
+_gpu_disabled = False
+
+
+def _is_gpu_oom(exc: BaseException) -> bool:
+    """آیا خطا «کمبود حافظهٔ GPU» است؟ (DirectML: 8007000E، CUDA: out of memory)"""
+    message = str(exc).lower()
+    return ("8007000e" in message or "not enough memory" in message
+            or "out of memory" in message or "outofmemory" in message)
+
+
+def _disable_gpu() -> None:
+    """غیرفعال‌کردن GPU برای بقیهٔ این فرایند و بازسازی موتور روی CPU."""
+    global _gpu_disabled
+    _gpu_disabled = True
+    _engine.cache_clear()
+
 
 def _silence_rapidocr_logs() -> None:
     """ساکت‌کردن لاگ INFO داخلی RapidOCR («OrtInferSession»).
@@ -97,8 +115,10 @@ def _engine():
     _silence_rapidocr_logs()
     import_started = time.perf_counter()
     profile = hardware.current_profile(refresh=True)
-    use_cuda = 'CUDAExecutionProvider' in profile['providers'] and profile.get('gpuUsable', False)
-    use_dml = 'DmlExecutionProvider' in profile['providers'] and profile.get('gpuUsable', False)
+    use_cuda = ('CUDAExecutionProvider' in profile['providers'] and profile.get('gpuUsable', False)
+                and not _gpu_disabled)
+    use_dml = ('DmlExecutionProvider' in profile['providers'] and profile.get('gpuUsable', False)
+               and not _gpu_disabled)
     # مدل سنگین ocr-server فقط روی GPU (شتاب‌دهنده) فعال می‌شود؛ روی CPU (Medium و Low) مدل سبک استفاده می‌شود
     # تا سرعت بالا حفظ شود و خطوط به قطعات ریز خرد نشوند.
     use_server = (use_cuda or use_dml) and profile['name'] != 'Low'
@@ -866,7 +886,19 @@ def _read(image, on_progress=None) -> list:
         on_progress(0.2, 'ocr_detect')
     engine = _engine()
     detect_started = time.perf_counter()
-    raw, _ = engine(image)
+    try:
+        raw, _ = engine(image)
+    except Exception as exc:
+        # مدل سنگین روی GPU ضعیف (DirectML/CUDA) با OOM می‌افتد؛ به‌جای شکستِ
+        # کل کار، یک‌بار موتور را روی CPU بازسازی و همان نوار را دوباره می‌خوانیم.
+        if not _is_gpu_oom(exc) or _gpu_disabled:
+            raise
+        diagnostics.log_exception(
+            "ocr.gpu.oom_fallback", errorType=type(exc).__name__, error=str(exc)[:500],
+        )
+        _disable_gpu()
+        engine = _engine()
+        raw, _ = engine(image)
     lines = [item for item in (raw or []) if isinstance(item, (list, tuple)) and len(item) == 3]
     if lines:
         lines = _extend_punctuation_quads(lines, image)
