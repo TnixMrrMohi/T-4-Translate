@@ -147,6 +147,13 @@ export const BATCH_PROMPT_NOTE = [
 
 const STORE_KEY = 't4-batch-v2';
 
+export const BATCH_STEPS = [
+  {id: 1, title: 'انتخاب تصویرها'},
+  {id: 2, title: 'متن استخراج‌شده'},
+  {id: 3, title: 'ترجمه و پردازش'},
+  {id: 4, title: 'نمای فصل و دانلود'},
+];
+
 export function BatchPanel({
   onClose,
   prompt,
@@ -162,6 +169,7 @@ export function BatchPanel({
   onReset?: () => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
+  const [batchStep, setBatchStep] = useState(1);
   const [files, setFiles] = useState<File[]>([]);
   const [pages, setPages] = useState<BatchPage[]>([]);
   const [outFiles, setOutFiles] = useState<BatchFile[]>([]);
@@ -184,9 +192,15 @@ export function BatchPanel({
     try {
       const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null');
       if (saved && Array.isArray(saved.pages) && saved.pages.length) {
-        setPages(saved.pages.map((p: BatchPage) => ({...p, state: p.state === 'running' ? 'extracted' : p.state})));
-        setTranslated(typeof saved.translated === 'string' ? saved.translated : '');
+        const loaded: BatchPage[] = saved.pages.map((p: BatchPage) => ({...p, state: p.state === 'running' ? 'extracted' : p.state}));
+        setPages(loaded);
+        const trans = typeof saved.translated === 'string' ? saved.translated : '';
+        setTranslated(trans);
         if (Array.isArray(saved.files)) setOutFiles(saved.files);
+        const done = loaded.filter(p => p.state === 'done').length;
+        if (done > 0) setBatchStep(4);
+        else if (trans.trim()) setBatchStep(3);
+        else setBatchStep(2);
       }
     } catch {
       // ذخیرهٔ خراب نادیده گرفته می‌شود.
@@ -204,6 +218,7 @@ export function BatchPanel({
   const doReset = () => {
     if (busy !== null) return;
     cancel.current = true;
+    setBatchStep(1);
     setFiles([]);
     setPages([]);
     setOutFiles([]);
@@ -266,6 +281,7 @@ export function BatchPanel({
 
   const combined = buildBatchText(pages);
   const doneCount = pages.filter(p => p.state === 'done').length;
+  const maxBatchStep = doneCount > 0 ? 4 : (pages.length > 0 ? 3 : 1);
   const failedPages = pages.filter(p => p.state === 'failed');
 
   function update(index: number, patch: Partial<BatchPage>) {
@@ -399,6 +415,9 @@ export function BatchPanel({
     if (failed.length) parts.push(`${failed.length} فایل خوانده نشد (دکمهٔ «تلاش دوباره برای فایل‌های ناموفق» را بزنید؛ بقیه دست‌نخورده می‌مانند)`);
     if (errors.length) parts.push(`خطاها: ${errors.join(' | ')}`);
     setMessage(parts.join('؛ ') + '.');
+    if (found.length > 0) {
+      setBatchStep(2);
+    }
   }
 
   async function extract() {
@@ -507,6 +526,9 @@ export function BatchPanel({
     setMessage(bad
       ? `${ok} صفحه ساخته شد و ${bad} صفحه ناموفق ماند؛ کنارِ هر صفحهٔ ناموفق دکمهٔ «تلاش دوباره» هست (بقیه دست‌نخورده می‌مانند).`
       : 'پردازش دسته‌ای تمام شد؛ حالا خروجی WebP را دانلود کنید.');
+    if (ok > 0) {
+      setBatchStep(4);
+    }
   }
 
   async function exportZip() {
@@ -552,154 +574,307 @@ export function BatchPanel({
   }
 
   return (
-    <section className="batch-panel" aria-label="پردازش دسته‌ای" style={visible ? undefined : {display: 'none'}}>
-      <div className="batch-head">
-        <h2 className="wizard-title">پردازش دسته‌ای</h2>
-      </div>
-      {message && <p className="wizard-note" role="status" style={{margin: '0 0 12px'}}>{message}</p>}
-      <p className="wizard-help">
-        ۱) چند تصویر انتخاب کنید و متن‌ها را استخراج کنید (توجه: زبان متن تصاویر باید زبان مبدأ مثل انگلیسی، چینی یا ژاپنی باشد؛ موتور OCR متن فارسی را بازشناسی نمی‌کند). ۲) «کپی با پرامپت» را بزنید، در هوش مصنوعی بچسبانید و ترجمه را برگردانید.
-        ۳) همهٔ صفحه‌ها خودکار ساخته می‌شوند و خروجی WebP در یک ZIP دانلود می‌شود.
-      </p>
-
-      <h3 className="wizard-subtitle">۱) تصویرها</h3>
-      <div
-        className={`batch-drop${dragOver ? ' is-over' : ''}${busy !== null ? ' is-busy' : ''}`}
-        role="button"
-        tabIndex={0}
-        aria-label="ناحیهٔ انداختن یا چسباندن تصویرها"
-        onClick={() => busy === null && picker.current?.click()}
-        onKeyDown={event => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            if (busy === null) picker.current?.click();
-          }
-        }}
-        onDragOver={event => {event.preventDefault(); if (busy === null) setDragOver(true);}}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={event => {
-          event.preventDefault();
-          setDragOver(false);
-          addFiles(event.dataTransfer.files);
-        }}
-      >
-        <strong>تصویرها را اینجا بیندازید</strong>
-        <span>یا کلیک کنید و انتخاب کنید؛ با Ctrl+V هم می‌شود تصویر چسباند.</span>
-        <input ref={picker} type="file" multiple accept="image/png,image/jpeg,image/webp"
-          aria-label="انتخاب تصویرها" hidden disabled={busy !== null}
-          onChange={event => {addFiles(event.target.files); event.target.value = '';}} />
-      </div>
-      <div className="wizard-nav start">
-        <span className="fonts-note">{files.length ? `${files.length} تصویر انتخاب شد.` : 'هنوز تصویری انتخاب نشده است.'}</span>
-        {files.length > 0 && (
-          <button type="button" className="ghost" disabled={busy !== null}
-            onClick={() => {setFiles([]); setPages([]);}}>پاک‌کردن فهرست</button>
-        )}
-        <button type="button" className="ocr" disabled={!files.length || busy !== null} onClick={() => void extract()}>
-          استخراج متن همهٔ تصویرها
-        </button>
-        {failedFiles.length > 0 && (
-          <button type="button" className="ghost" disabled={busy !== null} onClick={() => void retryFailedFiles()}>
-            تلاش دوباره برای فایل‌های ناموفق ({failedFiles.length})
-          </button>
-        )}
-      </div>
-
-      {failedFiles.length > 0 && (
-        <ul className="batch-list" aria-label="فایل‌های خوانده‌نشده">
-          {failedFiles.map(item => (
-            <li key={`${item.order}-${item.file.name}`} className="batch-row is-failed">
-              <span dir="ltr">{item.file.name}</span>
-              <span>خوانده نشد: {item.error}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {pages.length > 0 && (
-        <>
-          <h3 className="wizard-subtitle">۲) متن استخراج‌شده</h3>
-          <div className="wizard-nav start">
-            <button type="button" className="ocr" onClick={() => {
-              void navigator.clipboard?.writeText(`${prompt}${BATCH_PROMPT_NOTE}\n${combined}`)
-                .then(() => setMessage('پرامپت و متن همهٔ صفحه‌ها کپی شد؛ در هوش مصنوعی بچسبانید.'));
-            }}>کپی با پرامپت</button>
-            <button type="button" className="ghost"
-              onClick={() => saveBlob(new Blob([combined], {type: 'text/plain;charset=utf-8'}), 'texts.txt')}>
-              ذخیرهٔ به‌صورت فایل
-            </button>
-          </div>
-          <textarea className="batch-text" readOnly dir="ltr" aria-label="متن استخراج‌شده" value={combined} />
-
-          <h3 className="wizard-subtitle">۳) ترجمهٔ شما</h3>
-          <p className="wizard-help">همان قالب را نگه دارید: تیتر هر صفحه (=== 001 | نام ===) و شمارهٔ هر متن ([۱]).</p>
-          <textarea className="batch-text" dir="rtl" aria-label="متن ترجمه‌شده" value={translated}
-            onChange={event => setTranslated(event.target.value)} />
-          <div className="wizard-nav start">
-            <button type="button" className="ocr" disabled={busy !== null || !translated.trim()} onClick={() => void run()}>
-              اجرای دسته‌ای (پاک‌سازی و درج ترجمه)
-            </button>
-            {failedPages.length > 0 && (
-              <button type="button" className="ghost" disabled={busy !== null || !translated.trim()}
-                onClick={() => void run(failedPages.map(page => page.jobId))}>
-                تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
-              </button>
-            )}
-            <button type="button" className="ocr" disabled={busy !== null || doneCount === 0} onClick={() => void exportZip()}>
-              دانلود خروجی WebP (ZIP)
-            </button>
-          </div>
-
-          <ul className="batch-list">
-            {pages.map(page => (
-              <li key={page.jobId} className={`batch-row is-${page.state}`}>
-                <span>{page.page}. {page.name}</span>
-                <span className="batch-row-state">
-                  {page.state === 'done' ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده') : page.state === 'running' ? 'در حال ساخت…'
-                    : page.state === 'failed' ? `ناموفق: ${page.error}` : 'متن استخراج شد'}
-                  {page.state === 'failed' && (
-                    <button type="button" className="ghost small" disabled={busy !== null || !translated.trim()}
-                      onClick={() => void run([page.jobId])}>تلاش دوباره</button>
-                  )}
-                </span>
+    <div className="layout" aria-label="پردازش دسته‌ای" style={visible ? undefined : {display: 'none'}}>
+      {/* ستون راست: چهار مرحله و خلاصه وضعیت فصل */}
+      <aside className="sidebar" aria-label="مراحل پردازش دسته‌ای">
+        <ol className="wizard-steps" aria-label="مراحل کار">
+          {BATCH_STEPS.map(item => {
+            const isCurrent = item.id === batchStep;
+            const isAvailable = item.id <= maxBatchStep;
+            const isDone = item.id < batchStep || (item.id === 1 && pages.length > 0) || (item.id === 2 && Boolean(translated.trim())) || (item.id === 3 && doneCount > 0);
+            const stepState = isCurrent ? 'current' : isDone ? 'done' : isAvailable ? 'available' : 'locked';
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  className={`step-item is-${stepState}`}
+                  onClick={() => setBatchStep(item.id)}
+                  disabled={!isAvailable || busy !== null}
+                  aria-current={stepState === 'current' ? 'step' : undefined}
+                  title={stepState === 'locked' ? 'برای باز شدن این مرحله، مرحلهٔ قبل را کامل کنید' : item.title}
+                >
+                  <span className="step-index">{stepState === 'done' ? '✓' : item.id}</span>
+                  <span className="step-title">{item.title}</span>
+                </button>
               </li>
-            ))}
-          </ul>
-        </>
-      )}
+            );
+          })}
+        </ol>
 
-      {doneCount > 0 && (
-        <div className="chapter-view" aria-label="نمای فصل">
-          <h3 className="wizard-subtitle">نمای فصل (از بالا به پایین)</h3>
-          <p className="wizard-help">
-            همهٔ صفحه‌ها به ترتیب زیر هم‌اند. روی هر متنِ تصویر کلیک کنید: فونت، اندازه، چرخش، جا، متن و
-            خط‌بندی‌اش را عوض کنید یا پشتش را دوباره پاک کنید (با اندازه و جای دلخواهِ ناحیه). تغییرها
-            همان لحظه ذخیره و درج می‌شوند.
-          </p>
-          {pages.filter(page => page.state === 'done').map(page => (
-            <ChapterPage key={page.jobId} jobId={page.jobId} label={page.name} index={page.page}
-              version={chapterVersion} plain={isPlainPage(page)} />
-          ))}
-        </div>
-      )}
-
-      {busy && (
-        <div className="wizard-nav start">
-          <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
-          {busy !== 'export' && (
-            <button type="button" className="ghost" onClick={() => {cancel.current = true;}}>توقف پس از صفحهٔ جاری</button>
+        <div className="batch-sidebar-info" aria-label="خلاصه وضعیت فصل">
+          <div className="batch-stat-row">
+            <span>تعداد کل تصاویر:</span>
+            <strong>{files.length}</strong>
+          </div>
+          <div className="batch-stat-row">
+            <span>صفحات استخراج‌شده:</span>
+            <strong>{pages.length}</strong>
+          </div>
+          {doneCount > 0 && (
+            <div className="batch-stat-row is-success">
+              <span>صفحات آماده:</span>
+              <strong>{doneCount} از {pages.length}</strong>
+            </div>
+          )}
+          {failedPages.length > 0 && (
+            <div className="batch-stat-row is-danger">
+              <span>صفحات ناموفق:</span>
+              <strong>{failedPages.length}</strong>
+            </div>
           )}
         </div>
-      )}
 
-      <details className="batch-legend">
-        <summary>راهنمای مرحله‌ها (کد و نام هر مرحله)</summary>
-        <ul>
-          {(Object.keys(STAGES) as (keyof typeof STAGES)[]).map(key => (
-            <li key={key}><b dir="ltr">{STAGES[key][0]}</b> {STAGES[key][1]}</li>
-          ))}
-        </ul>
-      </details>
-    </section>
+        <details className="batch-legend">
+          <summary>راهنمای کد مرحله‌ها</summary>
+          <ul>
+            {(Object.keys(STAGES) as (keyof typeof STAGES)[]).map(key => (
+              <li key={key}><b dir="ltr">{STAGES[key][0]}</b> {STAGES[key][1]}</li>
+            ))}
+          </ul>
+        </details>
+      </aside>
+
+      {/* ستون چپ: کارت مرحلهٔ جاری */}
+      <section className="workspace" aria-label="محیط پردازش دسته‌ای">
+        {message && <p className="wizard-status" role="status">{message}</p>}
+
+        <section className="wizard-card" aria-live="polite">
+          {batchStep === 1 && (
+            <>
+              <h2 className="wizard-title">مرحله ۱: انتخاب تصویرهای فصل</h2>
+              <p className="wizard-help">
+                تصویرهای صفحهٔ مانگا یا وبتون را انتخاب کنید. با چسباندن (Ctrl+V) هم می‌توانید تصویرها را اضافه کنید (توجه: زبان متن تصاویر باید زبان مبدأ مثل انگلیسی، ژاپنی یا چینی باشد؛ موتور OCR متن فارسی را بازشناسی نمی‌کند).
+              </p>
+
+              <div
+                className={`select batch-drop${dragOver ? ' drag-over' : ''}${busy !== null ? ' busy' : ''}`}
+                role="button"
+                tabIndex={0}
+                aria-label="ناحیهٔ انداختن یا چسباندن تصویرها"
+                onClick={() => busy === null && picker.current?.click()}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    if (busy === null) picker.current?.click();
+                  }
+                }}
+                onDragOver={event => {event.preventDefault(); if (busy === null) setDragOver(true);}}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={event => {
+                  event.preventDefault();
+                  setDragOver(false);
+                  addFiles(event.dataTransfer.files);
+                }}
+              >
+                <input
+                  ref={picker}
+                  type="file"
+                  multiple
+                  accept="image/png,image/jpeg,image/webp"
+                  aria-label="انتخاب تصویرها"
+                  hidden
+                  disabled={busy !== null}
+                  onChange={event => {addFiles(event.target.files); event.target.value = '';}}
+                />
+                <strong>تصویرها را اینجا بکشید یا برای انتخاب کلیک کنید</strong>
+                <small>پشتیبانی از PNG ،JPG و WebP — با کلید میان‌بر Ctrl+V نیز تصویر چسبانده می‌شود</small>
+              </div>
+
+              <div className="wizard-nav start">
+                <span className="fonts-note">{files.length ? `${files.length} تصویر انتخاب شد.` : 'هنوز تصویری انتخاب نشده است.'}</span>
+                {files.length > 0 && (
+                  <button type="button" className="ghost" disabled={busy !== null}
+                    onClick={() => {setFiles([]); setPages([]);}}>پاک‌کردن فهرست</button>
+                )}
+                <button type="button" className="ocr" disabled={!files.length || busy !== null} onClick={() => void extract()}>
+                  استخراج متن همهٔ تصویرها
+                </button>
+                {failedFiles.length > 0 && (
+                  <button type="button" className="ghost" disabled={busy !== null} onClick={() => void retryFailedFiles()}>
+                    تلاش دوباره برای فایل‌های ناموفق ({failedFiles.length})
+                  </button>
+                )}
+              </div>
+
+              {busy && (
+                <div className="wizard-nav start">
+                  <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
+                  {busy !== 'export' && (
+                    <button type="button" className="ghost" onClick={() => {cancel.current = true;}}>توقف پس از صفحهٔ جاری</button>
+                  )}
+                </div>
+              )}
+
+              {failedFiles.length > 0 && (
+                <ul className="batch-list" aria-label="فایل‌های خوانده‌نشده">
+                  {failedFiles.map(item => (
+                    <li key={`${item.order}-${item.file.name}`} className="batch-row is-failed">
+                      <span dir="ltr">{item.file.name}</span>
+                      <span>خوانده نشد: {item.error}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {files.length > 0 && (
+                <div className="jobs">
+                  <div className="jobs-header">
+                    <h3>تصویرهای انتخاب‌شده ({files.length})</h3>
+                  </div>
+                  <ul className="batch-list" aria-label="فهرست تصویرها">
+                    {files.map((file, i) => (
+                      <li key={`${file.name}-${file.size}`} className="batch-row">
+                        <span dir="ltr">{i + 1}. {file.name}</span>
+                        <small className="fonts-note">{(file.size / 1024).toFixed(0)} KB</small>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {pages.length > 0 && (
+                <div className="wizard-nav">
+                  <button type="button" className="ocr" onClick={() => setBatchStep(2)}>
+                    مرحلهٔ بعد: متن استخراج‌شده ←
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          {batchStep === 2 && (
+            <>
+              <h2 className="wizard-title">مرحله ۲: متن استخراج‌شده و پرامپت</h2>
+              <p className="wizard-help">
+                متن استخراج‌شده از همهٔ صفحه‌ها آماده است. «کپی با پرامپت» را بزنید، در هوش مصنوعی بچسبانید و ترجمه را دریافت کنید.
+              </p>
+
+              <div className="wizard-nav start">
+                <button type="button" className="ocr" onClick={() => {
+                  void navigator.clipboard?.writeText(`${prompt}${BATCH_PROMPT_NOTE}\n${combined}`)
+                    .then(() => setMessage('پرامپت و متن همهٔ صفحه‌ها کپی شد؛ در هوش مصنوعی بچسبانید.'));
+                }}>کپی با پرامپت</button>
+                <button type="button" className="ghost"
+                  onClick={() => saveBlob(new Blob([combined], {type: 'text/plain;charset=utf-8'}), 'texts.txt')}>
+                  ذخیرهٔ به‌صورت فایل
+                </button>
+              </div>
+
+              <textarea className="batch-text" readOnly dir="ltr" aria-label="متن استخراج‌شده" value={combined} />
+
+              <div className="wizard-nav">
+                <button type="button" className="ghost" onClick={() => setBatchStep(1)}>
+                  → مرحلهٔ قبل: تصویرها
+                </button>
+                <button type="button" className="ocr" onClick={() => setBatchStep(3)}>
+                  مرحلهٔ بعد: درج ترجمه ←
+                </button>
+              </div>
+            </>
+          )}
+
+          {batchStep === 3 && (
+            <>
+              <h2 className="wizard-title">مرحله ۳: درج ترجمه و پردازش دسته‌ای</h2>
+              <p className="wizard-help">
+                همان قالب را نگه دارید: تیتر هر صفحه (=== 001 | نام ===) و شمارهٔ هر متن ([۱]). ترجمه را بچسبانید و «اجرای دسته‌ای» را بزنید.
+              </p>
+
+              <textarea className="batch-text" dir="rtl" aria-label="متن ترجمه‌شده" value={translated}
+                placeholder="متن ترجمه‌شده را اینجا بچسبانید..."
+                onChange={event => setTranslated(event.target.value)} />
+
+              <div className="wizard-nav start">
+                <button type="button" className="ocr" disabled={busy !== null || !translated.trim()} onClick={() => void run()}>
+                  اجرای دسته‌ای (پاک‌سازی و درج ترجمه)
+                </button>
+                {failedPages.length > 0 && (
+                  <button type="button" className="ghost" disabled={busy !== null || !translated.trim()}
+                    onClick={() => void run(failedPages.map(page => page.jobId))}>
+                    تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
+                  </button>
+                )}
+                {doneCount > 0 && (
+                  <button type="button" className="ocr" disabled={busy !== null} onClick={() => void exportZip()}>
+                    دانلود خروجی WebP (ZIP)
+                  </button>
+                )}
+              </div>
+
+              {busy && (
+                <div className="wizard-nav start">
+                  <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
+                  {busy !== 'export' && (
+                    <button type="button" className="ghost" onClick={() => {cancel.current = true;}}>توقف پس از صفحهٔ جاری</button>
+                  )}
+                </div>
+              )}
+
+              <ul className="batch-list">
+                {pages.map(page => (
+                  <li key={page.jobId} className={`batch-row is-${page.state}`}>
+                    <span>{page.page}. {page.name}</span>
+                    <span className="batch-row-state">
+                      {page.state === 'done' ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده') : page.state === 'running' ? 'در حال ساخت…'
+                        : page.state === 'failed' ? `ناموفق: ${page.error}` : 'متن استخراج شد'}
+                      {page.state === 'failed' && (
+                        <button type="button" className="ghost small" disabled={busy !== null || !translated.trim()}
+                          onClick={() => void run([page.jobId])}>تلاش دوباره</button>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+
+              <div className="wizard-nav">
+                <button type="button" className="ghost" onClick={() => setBatchStep(2)}>
+                  → مرحلهٔ قبل: متن استخراج‌شده
+                </button>
+                {doneCount > 0 && (
+                  <button type="button" className="ocr" onClick={() => setBatchStep(4)}>
+                    مرحلهٔ بعد: نمای فصل و خروجی ←
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {batchStep === 4 && (
+            <>
+              <h2 className="wizard-title">مرحله ۴: نمای فصل و دانلود خروجی</h2>
+              <p className="wizard-help">
+                همهٔ صفحه‌ها به ترتیب زیر هم‌اند. روی هر متنِ تصویر کلیک کنید: فونت، اندازه، چرخش، جا، متن و
+                خط‌بندی‌اش را عوض کنید یا پشتش را دوباره پاک کنید. تغییرها همان لحظه ذخیره و درج می‌شوند.
+              </p>
+
+              <div className="wizard-nav start">
+                <button type="button" className="ocr" disabled={busy !== null || doneCount === 0} onClick={() => void exportZip()}>
+                  دانلود خروجی WebP (ZIP)
+                </button>
+                <button type="button" className="ghost" onClick={() => setBatchStep(3)}>
+                  ویرایش مجدد ترجمه
+                </button>
+              </div>
+
+              <div className="chapter-view" aria-label="نمای فصل">
+                {pages.filter(page => page.state === 'done').map(page => (
+                  <ChapterPage key={page.jobId} jobId={page.jobId} label={page.name} index={page.page}
+                    version={chapterVersion} plain={isPlainPage(page)} />
+                ))}
+              </div>
+
+              <div className="wizard-nav">
+                <button type="button" className="ghost" onClick={() => setBatchStep(3)}>
+                  → مرحلهٔ قبل: ویرایش ترجمه
+                </button>
+                <button type="button" className="ocr" disabled={busy !== null || doneCount === 0} onClick={() => void exportZip()}>
+                  دانلود خروجی WebP (ZIP)
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      </section>
+    </div>
   );
 }

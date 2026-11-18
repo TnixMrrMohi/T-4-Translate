@@ -427,9 +427,12 @@
 .clean-under{margin:14px 0;border:1px solid #00ffcc33;border-radius:12px;padding:10px 12px;background:#070f11}
 .clean-under summary{cursor:pointer;color:#9bf3cc;font-weight:bold}
 
-.batch-panel{max-width:980px;margin:16px auto;padding:16px;border:1px solid #00ffcc33;border-radius:14px;background:#070f11}
-.batch-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
-.batch-text{width:100%;min-height:200px;margin:8px 0;padding:10px;border-radius:10px;border:1px solid #00ffcc33;background:#04090a;color:inherit;font:inherit;line-height:1.7}
+.batch-sidebar-info{display:flex;flex-direction:column;gap:8px;padding:12px;background:#0b171d;border:1px solid #ffffff1a;border-radius:10px;font-size:12px;color:#a8b9bb}
+.batch-stat-row{display:flex;justify-content:space-between;align-items:center}
+.batch-stat-row strong{color:#eef9f4}
+.batch-stat-row.is-success strong{color:#00ffcc}
+.batch-stat-row.is-danger strong{color:#ff5a6e}
+.batch-text{width:100%;min-height:220px;margin:10px 0;padding:12px;border-radius:10px;border:1px solid #00ffcc33;background:#04090a;color:inherit;font:inherit;line-height:1.7}
 .batch-list{list-style:none;margin:12px 0;padding:0;display:grid;gap:6px}
 .batch-row{display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:8px;background:#0b1a1d}
 .batch-row.is-done{border-right:3px solid #00ffcc}.batch-row.is-failed{border-right:3px solid #ff5a6e}

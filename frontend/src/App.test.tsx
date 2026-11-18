@@ -1121,12 +1121,13 @@ describe('چیدمان دو ستونی', () => {
     expect(within(workspace).queryByRole('button', {name: /بزرگ‌نمایی:/})).not.toBeInTheDocument();
   });
 
-  it('پیش از انتخاب تصویر، ستون راست جای پیش‌نمایش را با راهنما نشان می‌دهد', async () => {
+  it('پیش از انتخاب تصویر، متن‌های توضیحی و پیام پیش‌نمایش خالی نشان داده نمی‌شوند', async () => {
     mockApi({jobs: []});
     render(<App />);
     await screen.findByRole('heading', {name: 'مرحله ۱: انتخاب تصویر'});
     const {sidebar} = layout();
-    expect(within(sidebar).getByText(/پس از انتخاب تصویر، پیش‌نمایش همین‌جا/)).toBeInTheDocument();
+    expect(within(sidebar).queryByText(/پس از انتخاب تصویر/)).not.toBeInTheDocument();
+    expect(within(sidebar).queryByText(/پیش‌نمایش مرحلهٔ ۱/)).not.toBeInTheDocument();
   });
 });
 
@@ -2090,7 +2091,7 @@ describe('رفتار دکمه ریست در هدر و حالت دسته‌ای',
     // ورود به پردازش دسته‌ای
     const modeBtn = screen.getByRole('button', {name: 'پردازش دسته‌ای'});
     await user.click(modeBtn);
-    expect(screen.getByRole('heading', {name: 'پردازش دسته‌ای'})).toBeInTheDocument();
+    expect(screen.getByRole('heading', {name: /انتخاب تصویرهای فصل/})).toBeInTheDocument();
 
     // کلیک روی دکمهٔ ریست هدر
     const resetBtn = screen.getByRole('button', {name: 'ریست'});

@@ -1978,11 +1978,6 @@ export function App() {
         </ol>
 
         <div className="sidebar-previews" aria-label="پیش‌نمایش مرحلهٔ جاری">
-          {step === 1 && (
-            <p className="sidebar-empty">
-              پیش‌نمایش مرحلهٔ ۱ با دکمهٔ «بزرگ‌نمایی تصویر» در اندازهٔ کامل باز می‌شود.
-            </p>
-          )}
           {step === 2 && source && ocrVersion > 0 && job && (
             <ImagePreview
               jobId={job.jobId}
@@ -2005,15 +2000,6 @@ export function App() {
               downloadName={`t4-${job.jobId}-fa.png`}
               caption={<span>خروجی فارسی (آزمایشی)</span>}
             />
-          )}
-          {/* مرحلهٔ ۵ خودش هر دو لایه را در پردهٔ مقایسه نشان می‌دهد؛ تکرارش لازم نیست. */}
-          {step === 5 && (
-            <p className="sidebar-empty">
-              مقایسهٔ پرده‌ای در کارت کنار نمایش داده می‌شود: ورودی و خروجی روی هم، با دستگیره.
-            </p>
-          )}
-          {step !== 5 && (!job || sourceVersion === 0) && (
-            <p className="sidebar-empty">پس از انتخاب تصویر، پیش‌نمایش همین‌جا نمایش داده می‌شود.</p>
           )}
         </div>
         </aside>
