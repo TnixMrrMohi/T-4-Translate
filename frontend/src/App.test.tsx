@@ -726,11 +726,10 @@ describe('فونت هر نوع بالن در مرحلهٔ درج ترجمه', ()
     const samples = screen.getAllByText('نمونهٔ متن فارسی');
     expect(samples).toHaveLength(2);
     expect(samples[1]).toHaveStyle({fontFamily: "'AFSANEH'"});
-    expect(screen.getByLabelText('افزودن فونت')).toBeInTheDocument();
-    expect(screen.getByText(/۲ فونت موجود است|2 فونت موجود است/)).toBeInTheDocument();
   });
 
-  it('آپلود یک ZIP همهٔ فونت‌های داخلش را نصب می‌کند', async () => {
+  // بخش افزودن فونت به درخواست کاربر از مرحلهٔ ۴ حذف شد.
+  it.skip('آپلود یک ZIP همهٔ فونت‌های داخلش را نصب می‌کند', async () => {
     localStorage.setItem('t4-last-job', JOB_ID);
     mockApi({
       job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
@@ -758,7 +757,8 @@ describe('فونت هر نوع بالن در مرحلهٔ درج ترجمه', ()
     await user.click(screen.getByRole('button', {name: 'باشه'}));
   });
 
-  it('نصب فونت خطاها را گزارش می‌کند و موفق‌ها را می‌شمارد', async () => {
+  // بخش افزودن فونت به درخواست کاربر از مرحلهٔ ۴ حذف شد.
+  it.skip('نصب فونت خطاها را گزارش می‌کند و موفق‌ها را می‌شمارد', async () => {
     localStorage.setItem('t4-last-job', JOB_ID);
     const {calls} = mockApi({
       job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},

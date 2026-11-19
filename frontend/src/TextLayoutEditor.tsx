@@ -404,10 +404,6 @@ export function TextLayoutEditor({
     <div className={`layout-editor${tall ? ' is-tall' : ''}`}>
       {!floating && controls}
 
-      <p className="layout-hint">
-        جابه‌جایی: کشیدن متن • اندازه: کشیدن گوشه‌ها • چرخش: کشیدن دستهٔ بالای کادر • جابه‌جایی دقیق با کلیدهای جهت
-      </p>
-
       <div
         className="layout-stage"
         ref={stageRef}
@@ -537,11 +533,11 @@ export function TextLayoutEditor({
           );
         })()}
       </div>
-      <p className="layout-note" aria-live="polite">
-        {selectedBlock
-          ? `متن ${selectedBlock.number} انتخاب شده است؛ تغییرها ذخیره و درج می‌شوند.`
-          : 'برای ویرایش، یکی از متن‌ها را روی تصویر انتخاب کنید.'}
-      </p>
+      {selectedBlock && (
+        <p className="layout-note" aria-live="polite">
+          متن {selectedBlock.number} انتخاب شده است؛ تغییرها ذخیره و درج می‌شوند.
+        </p>
+      )}
     </div>
   );
 }

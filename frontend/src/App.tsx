@@ -1206,7 +1206,7 @@ export function App() {
 
   function goToStep(target: number) {
     if (busy || loadingData) return;
-    if (target === 3) setMessage('');
+    if (target === 3 || target === 4) setMessage('');
     setCleanModalOpen(false);
     if (target >= 1 && target <= maxStep) setStep(target);
   }
@@ -1586,7 +1586,7 @@ export function App() {
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw Error(typeof result.detail === 'string' ? result.detail : 'درج ترجمه روی تصویر ناموفق بود.');
       setRenderVersion(Date.now());
-      setMessage(result.message ?? 'ترجمهٔ فارسی روی تصویر قرار گرفت.');
+      setMessage('');
       setStep(4);
       finishProgress('render');
     } catch (error) {
@@ -2599,16 +2599,6 @@ export function App() {
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : (
                 <>
-                  <p className="wizard-help">
-                    متن فارسی داخل کادر هر بالن روی تصویر پاک‌سازی‌شده نوشته می‌شود؛ فونت هر نوع بالن از
-                    فهرست «فونت‌های مخصوص تایپ» انتخاب می‌شود و در نبود آن، وزیرمتن جانشین می‌شود.
-                  </p>
-
-                  <h3 className="wizard-subtitle">جای هر متن، فونت، اندازه و چرخش</h3>
-                  <p className="wizard-help">
-                    هر متن جداست: با کشیدن جابه‌جا می‌شود، با گوشه‌ها کوچک و بزرگ می‌شود و با دستهٔ بالای
-                    کادر می‌چرخد. فونت و اندازهٔ هر متن هم از همین نوار تغییر می‌کند.
-                  </p>
                   {layoutDoc && Array.isArray(layoutDoc.blocks) && layoutDoc.blocks.length > 0 ? (
                     <>
                       <TextLayoutEditor
@@ -2666,27 +2656,6 @@ export function App() {
                   )}
 
                   <h3 className="wizard-subtitle">فونت هر نوع بالن</h3>
-                  <div className="fonts-upload">
-                    <label className={`ghost file-button${fontsBusy ? ' is-busy' : ''}`}>
-                      {fontsBusy ? 'در حال نصب…' : 'افزودن فونت (ttf / otf / ttc یا ZIP)'}
-                      <input
-                        type="file"
-                        accept=".ttf,.otf,.ttc,.zip,font/ttf,font/otf,font/collection,application/zip"
-                        multiple
-                        aria-label="افزودن فونت"
-                        disabled={fontsBusy || busy}
-                        onChange={event => {
-                          void uploadFonts(event.target.files);
-                          event.target.value = '';
-                        }}
-                      />
-                    </label>
-                    <span className="fonts-note">
-                      {fontsDoc
-                        ? `${fontsDoc.fonts.length} فونت موجود است؛ نام فایل مهم است (مثل Koodak-Bold.ttf یا Afsaneh.otf). یک ZIP از همهٔ فونت‌ها را هم می‌شود یک‌جا فرستاد.`
-                        : 'فهرست فونت‌ها در حال بارگذاری…'}
-                    </span>
-                  </div>
                   {fontsDoc && fontsDoc.types.length > 0 && (
                     <ul className="font-types">
                       {fontsDoc.types.map(item => (
@@ -2712,12 +2681,6 @@ export function App() {
                       {renderVersion > 0 ? 'درج دوبارهٔ ترجمه' : 'درج ترجمه روی تصویر'}
                     </button>
                   </div>
-
-                  <p className="wizard-note">
-                    {renderVersion > 0
-                      ? 'ترجمه روی تصویر درج شد؛ خروجی در ستون راست است.'
-                      : busy ? 'در حال درج ترجمه…' : 'هنوز ترجمه روی تصویر درج نشده است.'}
-                  </p>
 
                   <div className="wizard-nav">
                     <button type="button" className="ghost" onClick={() => goToStep(3)}>مرحلهٔ قبل (پاک‌سازی)</button>
