@@ -2225,7 +2225,7 @@ export function App() {
                     <div className="promo-hint">
                       {promoAction === 'remove' ? (
                         <span>
-                          <strong>حالت فعال:</strong> واترمارک‌ها و آدرس‌های سایت قبلی از متن شماره‌گذاری‌شده حذف می‌شوند تا ترجمه یا درج نشوند.
+                          <strong>حالت فعال:</strong> واترمارک‌ها و آدرس‌های سایت قبلی از متن شماره‌گذاری‌شده حذف می‌شوند.
                         </span>
                       ) : (
                         <span>
