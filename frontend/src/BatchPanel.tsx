@@ -890,9 +890,6 @@ export function BatchPanel({
           {batchStep === 2 && (
             <>
               <h2 className="wizard-title">مرحله ۲: ترجمهٔ فارسی</h2>
-              <p className="wizard-help">
-                متن استخراج‌شده از همهٔ صفحه‌ها آماده است. «کپی با پرامپت» را بزنید، در هوش مصنوعی بچسبانید و ترجمه را دریافت کنید؛ سپس آن را در کادر ترجمه قرار دهید.
-              </p>
 
               <div className="wizard-nav start">
                 <button
@@ -925,7 +922,6 @@ export function BatchPanel({
               <textarea className="batch-text" readOnly dir="ltr" aria-label="متن استخراج‌شده" value={combined} />
 
               <h3 className="wizard-subtitle">متن ترجمه‌شده</h3>
-              <p className="wizard-help">همان قالب را نگه دارید: تیتر هر صفحه (=== 001 | نام ===) و شمارهٔ هر متن ([۱]).</p>
               <textarea className="batch-text" dir="rtl" aria-label="متن ترجمه‌شده" value={translated}
                 placeholder="متن ترجمه‌شده را اینجا بچسبانید..."
                 onChange={event => setTranslated(event.target.value)} />
