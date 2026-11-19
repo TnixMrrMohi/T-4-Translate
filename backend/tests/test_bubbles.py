@@ -364,3 +364,36 @@ def test_chunked_webtoon_bubble_analysis_preserves_page_coordinates(tmp_path):
     found = [b for b in result["bubbles"] if b["kind"] != "outside"]
     assert [(b["kind"], b["lines"]) for b in found] == [("speech", [1, 2]), ("square", [3])]
     assert found[0]["bbox"][1] < 450 and found[1]["bbox"][1] > 6000
+
+
+def test_is_sfx_text():
+    assert bubbles.is_sfx_text("SLURP")
+    assert bubbles.is_sfx_text("*SLURP*")
+    assert bubbles.is_sfx_text("SLUUUURP")
+    assert bubbles.is_sfx_text("cough")
+    assert bubbles.is_sfx_text("Achoo!")
+    assert bubbles.is_sfx_text("Haha!")
+    assert bubbles.is_sfx_text("TAP TAP")
+    assert bubbles.is_sfx_text("sigh...")
+    assert not bubbles.is_sfx_text("DAMN! THIS IS WAY TOO BITTER.")
+    assert not bubbles.is_sfx_text("WHAT TSK. WHAT A RIP OFF.")
+    assert not bubbles.is_sfx_text("Hello world")
+
+
+def test_sfx_outside_bubble_is_dropped_from_blocks():
+    lines = [
+        {"text": "SLURP", "confidence": 0.95, "quad": [[10, 10], [50, 10], [50, 30], [10, 30]]},
+        {"text": "Haha!", "confidence": 0.95, "quad": [[10, 60], [50, 60], [50, 80], [10, 80]]},
+        {"text": "I am fine.", "confidence": 0.95, "quad": [[10, 100], [80, 100], [80, 120], [10, 120]]},
+    ]
+    raw_blocks = [
+        {"number": 1, "text": "SLURP", "kind": "outside", "lines": [1]},
+        {"number": 2, "text": "Haha!", "kind": "speech", "lines": [2]},
+        {"number": 3, "text": "I am fine.", "kind": "outside", "lines": [3]},
+    ]
+    filtered = bubbles.drop_junk_blocks(raw_blocks, lines)
+    texts = [b["text"] for b in filtered]
+    assert "SLURP" not in texts
+    assert "Haha!" in texts  # در بالن صحبت باقی می‌ماند
+    assert "I am fine." in texts
+

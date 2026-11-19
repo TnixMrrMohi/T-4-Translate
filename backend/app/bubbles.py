@@ -1160,6 +1160,53 @@ def is_junk_text(text: str, confidence: float | None = None) -> bool:
     return False
 
 
+# ------------------------------------------------ صداواژه‌ها و افکت‌های صوتی (SFX)
+# کلماتی مثل slurp, gulp (قورت دادن/هورت کشیدن)، cough, sneeze (سرفه/عطسه)، haha (خنده)،
+# sigh, gasp (نفس/آه) و افکت‌های صوتی ضربه/محیطی که بیرون بالن نوشته شده‌اند نباید
+# به عنوان متن گفتگو ترجمه شوند و باید دست‌نخورده روی نقاشی باقی بمانند.
+SFX_WORDS = {
+    # خوردن، نوشیدن و قورت دادن
+    "slurp", "gulp", "sip", "munch", "crunch", "chew", "chomp", "nom", "burp", "glug",
+    # سرفه، عطسه، گلو و نفس
+    "cough", "koff", "coff", "ahem", "sneeze", "achoo", "sniff", "snort", "hic", "hiccup",
+    "gasp", "pant", "wheeze", "phew", "whew", "sigh", "yawn",
+    # خنده و پوزخند
+    "haha", "hahaha", "hehe", "hehehe", "kuku", "kukuku", "fufu", "fufufu",
+    "chuckle", "giggle", "snicker", "pfft", "bwahaha", "wahaha", "muahaha",
+    # حرکات بدنی و واکنش‌های حسی کمیک
+    "shiver", "tremble", "twitch", "flinch", "shudder", "blink", "stare", "glare",
+    "peek", "nod", "shrug", "smirk", "sob", "whimper", "groan", "grunt", "tsk", "tch",
+    # ضربه، برخورد و صداهای محیطی
+    "boom", "bang", "crash", "thud", "smack", "slam", "clatter", "rustle", "rumble",
+    "click", "clack", "clink", "tap", "taptap", "drip", "splash", "sizzle", "whoosh",
+    "swish", "zap", "buzz", "crackle", "squeak", "creak", "screech", "shriek", "snap",
+    "rattle", "thump", "plop", "ding", "dong", "vroom", "stagger", "dash", "woosh",
+}
+
+
+def is_sfx_text(text: str) -> bool:
+    """آیا این متن یک صداواژه، افکت صوتی یا صدای بدنی (SFX) است؟"""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    words = re.findall(r"[A-Za-z]+", raw)
+    if not words:
+        return False
+    for word in words:
+        w = word.lower()
+        if w in SFX_WORDS:
+            continue
+        # حذف تکرار کشیدهٔ حروف: sluuuurp -> slurp, haaaaha -> haha
+        collapsed = re.sub(r"(.)\1+", r"\1", w)
+        if collapsed in SFX_WORDS:
+            continue
+        # تکرار الگوهای خنده: hahahaha, hehehe, kukuku
+        if re.fullmatch(r"(ha|he|ku|fu|ah|oh)+", w) and len(w) >= 4:
+            continue
+        return False
+    return True
+
+
 def drop_junk_blocks(block_list: list, lines: list) -> list:
     """بلوک‌هایی که همهٔ خطوطشان بی‌معنی‌اند کنار گذاشته می‌شوند (شماره‌گذاری بعداً دوباره ساخته می‌شود)."""
     kept = []
@@ -1171,7 +1218,11 @@ def drop_junk_blocks(block_list: list, lines: list) -> list:
                 if isinstance(value, (int, float)):
                     scores.append(float(value))
         confidence = sum(scores) / len(scores) if scores else None
-        if is_junk_text(item.get("text", ""), confidence):
+        text = item.get("text", "")
+        if is_junk_text(text, confidence):
+            continue
+        # صداواژه‌ها و افکت‌های صوتی بیرون بالن از فهرست ترجمه کنار گذاشته می‌شوند
+        if item.get("kind") in ("outside", "unknown") and is_sfx_text(text):
             continue
         kept.append(item)
     return kept
