@@ -1129,10 +1129,44 @@ export function App() {
       setMessage('پردازش دسته‌ای ریست شد.');
       await alertDialog('ریست شد', 'پردازش دسته‌ای ریست شد و همهٔ فایل‌ها، قطعات و متن‌های استخراج‌شده پاک شدند.');
     } else {
-      clearCurrentJob();
-      setMessage('برنامه ریست شد. عکس جدید را انتخاب کنید.');
-      void loadJobs();
-      await alertDialog('ریست شد', 'برنامه به حالت اولیه بازگشت. تصویر جدید را انتخاب کنید.');
+      const hasAnyJobs = previousJobs.length > 0 || !!job;
+      if (hasAnyJobs) {
+        const ok = await confirmDialog({
+          title: 'ریست و حذف همه‌چیز',
+          message: (
+            <>
+              آیا از ریست اطمینان دارید؟ همهٔ کارهای قبلی و فایل‌های ذخیره‌شده از این سیستم کاملاً حذف می‌شوند و برنامه به مرحلهٔ ۱ بازمی‌گردد.
+              <br />
+              این کار بازگشت‌پذیر نیست.
+            </>
+          ),
+          confirmLabel: 'ریست و حذف همه',
+          cancelLabel: 'نگه دار',
+          tone: 'danger',
+        });
+        if (!ok) return;
+        setBusy(true);
+        setMessage('در حال حذف کارهای قبلی و ریست برنامه…');
+        try {
+          await fetch('/api/jobs', {method: 'DELETE'}).catch(() => undefined);
+          setJobs([]);
+          clearCurrentJob();
+          setStep(1);
+          setMessage('برنامه ریست شد و همهٔ کارها حذف شدند.');
+          await loadJobs();
+          await alertDialog('ریست شد', 'برنامه به حالت اولیه بازگشت و همهٔ کارهای قبلی حذف شدند.');
+        } catch (error) {
+          fail(error instanceof Error ? error.message : 'ریست و حذف کارهای قبلی ناموفق بود.');
+        } finally {
+          setBusy(false);
+        }
+      } else {
+        clearCurrentJob();
+        setStep(1);
+        setMessage('برنامه ریست شد. تصویر جدید را انتخاب کنید.');
+        await loadJobs();
+        await alertDialog('ریست شد', 'برنامه به حالت اولیه بازگشت. تصویر جدید را انتخاب کنید.');
+      }
     }
   };
 
@@ -1253,42 +1287,10 @@ export function App() {
     }
   }
 
-  async function deleteAllPreviousJobs() {
-    if (busy || loadingData || previousJobs.length === 0) return;
-    const count = previousJobs.length;
-    const ok = await confirmDialog({
-      title: 'حذف همهٔ کارهای قبلی',
-      message: (
-        <>
-          آیا مطمئن هستید؟ همهٔ <b>{count}</b> کار قبلی با تصویر، متن OCR، ترجمه و همهٔ پیش‌نمایش‌هایشان از این سیستم حذف می‌شوند.
-          <br />
-          این کار بازگشت‌پذیر نیست.
-        </>
-      ),
-      confirmLabel: 'حذف همه',
-      cancelLabel: 'نگه دار',
-      tone: 'danger',
-    });
-    if (!ok) return;
-    setBusy(true);
-    setMessage('در حال حذف کارهای قبلی…');
-    try {
-      const url = job?.jobId ? `/api/jobs?keep=${encodeURIComponent(job.jobId)}` : '/api/jobs';
-      const response = await fetch(url, {method: 'DELETE'});
-      if (!response.ok) {
-        for (const item of previousJobs) {
-          await fetch(`/api/jobs/${item.jobId}`, {method: 'DELETE'}).catch(() => undefined);
-        }
-      }
-      setJobs(current => (job ? current.filter(entry => entry.jobId === job.jobId) : []));
-      setMessage('همهٔ کارهای قبلی از سیستم حذف شدند.');
-      await loadJobs();
-      await alertDialog('کارهای قبلی حذف شدند', `${count} کار از حافظهٔ سیستم پاک شدند.`);
-    } catch (error) {
-      fail(error instanceof Error ? error.message : 'حذف کارهای قبلی ناموفق بود.');
-    } finally {
-      setBusy(false);
-    }
+  function clearSelectedImage() {
+    clearCurrentJob();
+    setMessage('تصویر انتخاب‌شده برداشته شد.');
+    void loadJobs();
   }
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -2050,7 +2052,7 @@ export function App() {
                 <button
                   type="button"
                   className="icon-button trash"
-                  onClick={resetApp}
+                  onClick={clearSelectedImage}
                   disabled={busy || loadingData || !job}
                   aria-label="حذف تصویر انتخاب‌شده و شروع دوباره"
                   title={job ? 'حذف تصویر انتخاب‌شده و شروع دوباره' : 'تصویری انتخاب نشده است'}
@@ -2138,16 +2140,6 @@ export function App() {
                 <section className="jobs" aria-label="کارهای قبلی">
                   <div className="jobs-header">
                     <h3>کارهای قبلی روی این سیستم</h3>
-                    <button
-                      type="button"
-                      className="ocr danger"
-                      disabled={busy || loadingData}
-                      onClick={() => void deleteAllPreviousJobs()}
-                      aria-label="حذف همهٔ کارهای قبلی"
-                      title="حذف همهٔ کارهای قبلی از این سیستم"
-                    >
-                      حذف همه ({previousJobs.length})
-                    </button>
                   </div>
                   <ul>
                     {previousJobs.map(item => (

@@ -290,7 +290,7 @@ describe('فهرست کارها و حذف', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
   });
 
-  it('دکمهٔ «حذف همه» دیالوگ تأیید باز می‌کند و با تأیید همهٔ کارهای قبلی را حذف می‌کند', async () => {
+  it('دکمهٔ ریست دیالوگ تأیید باز می‌کند و با تأیید همهٔ کارهای قبلی را حذف می‌کند و به مرحله ۱ بازمی‌گردد', async () => {
     let remaining = [jobItem, {...jobItem, jobId: 'b'.repeat(32)}];
     const {calls} = mockApi({
       jobs: () => remaining,
@@ -299,20 +299,19 @@ describe('فهرست کارها و حذف', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const deleteAllBtn = await screen.findByRole('button', {name: 'حذف همهٔ کارهای قبلی'});
-    expect(deleteAllBtn).toBeInTheDocument();
-    await user.click(deleteAllBtn);
+    const resetBtn = screen.getByRole('button', {name: 'ریست'});
+    await user.click(resetBtn);
 
     const dialog = await screen.findByRole('alertdialog');
-    expect(within(dialog).getByText('حذف همهٔ کارهای قبلی')).toBeInTheDocument();
-    await user.click(within(dialog).getByRole('button', {name: 'حذف همه'}));
+    expect(within(dialog).getByText('ریست و حذف همه‌چیز')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', {name: 'ریست و حذف همه'}));
 
     await waitFor(() => expect(calls.some(call => call.method === 'DELETE' && call.url.includes('/api/jobs'))).toBe(true));
     const done = await screen.findByRole('alertdialog');
-    expect(within(done).getByText('کارهای قبلی حذف شدند')).toBeInTheDocument();
+    expect(within(done).getByText('ریست شد')).toBeInTheDocument();
     await user.click(within(done).getByRole('button', {name: 'باشه'}));
 
-    await waitFor(() => expect(screen.queryByRole('button', {name: 'حذف همهٔ کارهای قبلی'})).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('section', {name: 'کارهای قبلی'})).not.toBeInTheDocument());
   });
 });
 
@@ -2115,6 +2114,10 @@ describe('رفتار دکمه ریست در هدر و حالت دسته‌ای',
 
     const resetBtn = screen.getByRole('button', {name: 'ریست'});
     await user.click(resetBtn);
+
+    const confirmModal = await screen.findByRole('alertdialog');
+    expect(confirmModal).toHaveTextContent('ریست و حذف همه‌چیز');
+    await user.click(within(confirmModal).getByRole('button', {name: 'ریست و حذف همه'}));
 
     const alertModal = await screen.findByRole('alertdialog');
     expect(alertModal).toHaveTextContent('ریست شد');
