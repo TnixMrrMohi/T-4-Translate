@@ -716,7 +716,7 @@ describe('فونت هر نوع بالن در مرحلهٔ درج ترجمه', ()
     await userEvent.setup().click(screen.getByRole('button', {name: 'ادامه (پاک‌سازی و درج ترجمه)'}));
     await screen.findByRole('heading', {name: 'مرحله ۴: درج ترجمه روی تصویر'});
 
-    expect(await screen.findByRole('heading', {name: 'فونت هر نوع بالن'})).toBeInTheDocument();
+    expect(await screen.findByText('فونت هر نوع بالن')).toBeInTheDocument();
     expect(await screen.findByText('Afsaneh')).toBeInTheDocument();
     expect(screen.getByText('Vazirmatn Regular')).toBeInTheDocument();
     // دسته‌ای که فونت پیشنهادی‌اش نصب نیست، برچسب «جانشین» دارد.

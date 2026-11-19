@@ -2644,26 +2644,28 @@ export function App() {
                     </details>
                   )}
 
-                  <h3 className="wizard-subtitle">فونت هر نوع بالن</h3>
                   {fontsDoc && fontsDoc.types.length > 0 && (
-                    <ul className="font-types">
-                      {fontsDoc.types.map(item => (
-                        <li key={item.kind} className={`font-type${item.fallback ? ' is-fallback' : ''}`}>
-                          <span className="font-type-kind">{item.label}</span>
-                          <span className="font-type-name">
-                            {item.resolved ?? '—'}
-                            {item.fallback && <span className="font-type-tag">جانشین</span>}
-                          </span>
-                          <span
-                            className="font-type-sample"
-                            style={item.bundled && item.resolvedCss ? {fontFamily: `'${item.resolvedCss}'`} : undefined}
-                            dir="rtl"
-                          >
-                            نمونهٔ متن فارسی
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
+                    <details className="clean-under font-types-details">
+                      <summary>فونت هر نوع بالن</summary>
+                      <ul className="font-types">
+                        {fontsDoc.types.map(item => (
+                          <li key={item.kind} className={`font-type${item.fallback ? ' is-fallback' : ''}`}>
+                            <span className="font-type-kind">{item.label}</span>
+                            <span className="font-type-name">
+                              {item.resolved ?? '—'}
+                              {item.fallback && <span className="font-type-tag">جانشین</span>}
+                            </span>
+                            <span
+                              className="font-type-sample"
+                              style={item.bundled && item.resolvedCss ? {fontFamily: `'${item.resolvedCss}'`} : undefined}
+                              dir="rtl"
+                            >
+                              نمونهٔ متن فارسی
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
                   )}
                   <div className="wizard-nav start">
                     <button type="button" className="ocr" disabled={busy || loadingData || cleanVersion === 0} onClick={() => void renderImage()}>
