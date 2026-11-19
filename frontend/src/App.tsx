@@ -24,6 +24,7 @@ type SourceItem = {
 type PromoAction = 'replace' | 'remove';
 const PROMO_KEY = 't4-promo';
 const PROMO_SITE = 'moonb.ir';
+const SLANTED_KEY = 't4-filter-slanted';
 type Source = {revision: string; items: SourceItem[]; blockCount?: number};
 type Job = {jobId: string; width: number; height: number; format: string; status: string};
 type JobSummary = Job & {createdAt: string; sizeBytes?: number};
@@ -1016,6 +1017,9 @@ export function App() {
   // رفتار متن تبلیغاتی؛ انتخاب کاربر بین دو کار همان اجرا می‌ماند.
   const [promoAction, setPromoAction] = useState<PromoAction>(
     () => (localStorage.getItem(PROMO_KEY) === 'remove' ? 'remove' : 'replace'));
+  // فیلتر متن‌های مایل و کج (جلوه‌های صوتی)
+  const [filterSlanted, setFilterSlanted] = useState<boolean>(
+    () => localStorage.getItem(SLANTED_KEY) !== 'false');
 
   // پیشرفت زندهٔ تشخیص خودکار متن (نوار پیشرفت مرحلهٔ ۱).
   const [ocrProgress, setOcrProgress] = useState<Progress | null>(null);
@@ -1204,6 +1208,33 @@ export function App() {
     }
   }
 
+  /** تغییر فیلتر متن‌های مایل و کج (جلوه‌های صوتی) */
+  async function chooseFilterSlanted(active: boolean) {
+    if (active === filterSlanted) return;
+    setFilterSlanted(active);
+    localStorage.setItem(SLANTED_KEY, active ? 'true' : 'false');
+    if (!job) return;
+    try {
+      const response = await fetch(`/api/jobs/${job.jobId}/ocr-settings`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({filterSlanted: active}),
+      });
+      if (!response.ok) return;
+      setOcrVersion(Date.now());
+      const sourceResponse = await fetch(`/api/jobs/${job.jobId}/translation-source?promo=${promoAction}`);
+      if (sourceResponse.ok) {
+        const updated: Source = await sourceResponse.json();
+        setSource(updated);
+        setWarnings(translation.trim()
+          ? 'کادرهای متن تغییر کردند؛ ترجمهٔ فعلی را دوباره بررسی کنید.'
+          : '');
+      }
+    } catch {
+      fail('تغییر تنظیم فیلتر متن‌های کج ناموفق بود.');
+    }
+  }
+
   async function copySource(withPrompt: boolean) {
     if (!numberedSource) return;
     const payload = withPrompt ? `${translationPrompt}\n${numberedSource}` : numberedSource;
@@ -1355,12 +1386,20 @@ export function App() {
       fetch(`/api/jobs/${job.jobId}/translation-source?promo=${promoAction}`, {signal: controller.signal}),
       fetch(`/api/jobs/${job.jobId}/translations`, {signal: controller.signal}),
       fetch(`/api/jobs/${job.jobId}/artifacts`, {signal: controller.signal}),
-    ]).then(async ([sourceResponse, translationResponse, artifactResponse]) => {
+      fetch(`/api/jobs/${job.jobId}/ocr`, {signal: controller.signal}),
+    ]).then(async ([sourceResponse, translationResponse, artifactResponse, ocrResponse]) => {
       if (!sourceResponse.ok && sourceResponse.status !== 404) throw Error();
       if (!translationResponse.ok && translationResponse.status !== 404) throw Error();
       const savedSource: Source | null = sourceResponse.ok ? await sourceResponse.json() : null;
       const savedTranslation = translationResponse.ok ? await translationResponse.json() : null;
       const artifacts = artifactResponse.ok ? await artifactResponse.json() : null;
+      if (ocrResponse && ocrResponse.ok) {
+        const ocrDoc = await ocrResponse.json().catch(() => null);
+        if (typeof ocrDoc?.filterSlanted === 'boolean') {
+          setFilterSlanted(ocrDoc.filterSlanted);
+          localStorage.setItem(SLANTED_KEY, ocrDoc.filterSlanted ? 'true' : 'false');
+        }
+      }
       // ترجمه با همان تنظیم «متن تبلیغاتی» ذخیره شده؛ همان تنظیم را می‌خوانیم تا
       // شماره‌گذاری بلوک‌ها با چیزی که کاربر ترجمه کرده یکی بماند.
       let shownSource: Source | null = savedSource;
@@ -2230,6 +2269,52 @@ export function App() {
                       ) : (
                         <span>
                           <strong>حالت فعال:</strong> به‌جای متن‌های تبلیغاتی شناسایی‌شده، آدرس <code>{PROMO_SITE}</code> قرار می‌گیرد تا به‌عنوان واترمارک شما در تصویر درج شود.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {/* فیلتر متن‌های مایل و کج (جلوه‌های صوتی) */}
+                  <div className="promo-setting" role="group" aria-label="فیلتر متن‌های مایل و کج">
+                    <div className="promo-setting-header">
+                      <div className="promo-setting-info">
+                        <span className="promo-setting-title">
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '6px'}}>
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="m4.93 4.93 14.14 14.14"/>
+                          </svg>
+                          فیلتر جلوه‌های صوتی مایل (کج)
+                        </span>
+                        <span className="promo-setting-desc">
+                          متون با زاویهٔ مایل (صداهای بلعیدن، عطسه، سرفه و افکت‌ها):
+                        </span>
+                      </div>
+                      <div className="promo-options">
+                        <button
+                          type="button"
+                          className={filterSlanted ? 'is-active' : ''}
+                          aria-pressed={filterSlanted}
+                          onClick={() => void chooseFilterSlanted(true)}
+                        >
+                          حذف متن‌های کج
+                        </button>
+                        <button
+                          type="button"
+                          className={!filterSlanted ? 'is-active' : ''}
+                          aria-pressed={!filterSlanted}
+                          onClick={() => void chooseFilterSlanted(false)}
+                        >
+                          شناسایی همه
+                        </button>
+                      </div>
+                    </div>
+                    <div className="promo-hint">
+                      {filterSlanted ? (
+                        <span>
+                          <strong>حالت فعال:</strong> کادرهایی که با زاویهٔ مایل نوشته شده‌اند (مثل جلوه‌های صوتی و صداهای پس‌زمینه) نادیده گرفته می‌شوند و در تصویر و فهرست ترجمه لحاظ نمی‌شوند.
+                        </span>
+                      ) : (
+                        <span>
+                          <strong>حالت غیرفعال:</strong> تمام کادرها حتی با زاویهٔ مایل تشخیص داده شده و شماره‌گذاری می‌شوند.
                         </span>
                       )}
                     </div>

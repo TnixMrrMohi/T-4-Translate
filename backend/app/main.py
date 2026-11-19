@@ -509,7 +509,7 @@ async def ocr_status() -> dict:
 
 
 @app.post("/api/jobs/{job_id}/ocr")
-async def run_ocr(job_id: str) -> dict:
+async def run_ocr(job_id: str, filter_slanted: bool = True) -> dict:
     # The single shared engine is not used concurrently; work runs off the event loop.
     get_job(job_id)
     root = Path(os.environ.get("T4_DATA_DIR", str(Path.home() / ".t4-translate"))) / "jobs"
@@ -577,7 +577,16 @@ async def run_ocr(job_id: str) -> dict:
             )
             progress.fail(job_id, "پردازش OCR ناموفق بود.")
             raise HTTPException(500, "پردازش OCR ناموفق بود.") from None
-        result = {"jobId": job_id, "provider": "rapidocr-experimental", "lines": lines, "revision": ocr_revision(lines)}
+        raw_lines = list(lines)
+        active_lines = [l for l in raw_lines if not ocr.is_slanted_quad(l.get("quad"))] if filter_slanted else list(raw_lines)
+        result = {
+            "jobId": job_id,
+            "provider": "rapidocr-experimental",
+            "lines": active_lines,
+            "rawLines": raw_lines,
+            "filterSlanted": filter_slanted,
+            "revision": ocr_revision(active_lines),
+        }
         tmp = workspace / "ocr.json.tmp"
         save_started = time.perf_counter()
         tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
@@ -590,7 +599,7 @@ async def run_ocr(job_id: str) -> dict:
         os.replace(tmp, workspace / "ocr.json")
         progress.finish(job_id)
         diagnostics.log_event(
-            "ocr.job.done", jobId=job_id, lineCount=len(lines),
+            "ocr.job.done", jobId=job_id, lineCount=len(active_lines),
             elapsedMs=round((time.perf_counter() - started) * 1000, 1),
             saveMs=round((time.perf_counter() - save_started) * 1000, 1),
         )
@@ -598,7 +607,7 @@ async def run_ocr(job_id: str) -> dict:
             "OCR_PIPELINE_DONE",
             "Stage 1 OCR pipeline finished and saved to workspace",
             jobId=job_id,
-            linesExtracted=len(lines),
+            linesExtracted=len(active_lines),
             totalDurationMs=round((time.perf_counter() - started) * 1000, 1),
         )
         return result
@@ -638,6 +647,59 @@ def get_ocr(job_id: str) -> dict:
         return json.loads((root / job_id / "ocr.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise HTTPException(404, "نتیجهٔ OCR موجود نیست.") from None
+
+
+class OcrSettingsPayload(BaseModel):
+    filterSlanted: bool
+
+
+@app.post("/api/jobs/{job_id}/ocr-settings")
+async def update_ocr_settings(job_id: str, payload: OcrSettingsPayload) -> dict:
+    get_job(job_id)
+    workspace = workspace_for(job_id)
+    doc = get_ocr(job_id)
+    raw_lines = doc.get("rawLines")
+    if raw_lines is None:
+        raw_lines = list(doc.get("lines", []))
+        doc["rawLines"] = raw_lines
+
+    filter_slanted = payload.filterSlanted
+    if filter_slanted:
+        active_lines = [l for l in raw_lines if not ocr.is_slanted_quad(l.get("quad"))]
+    else:
+        active_lines = list(raw_lines)
+
+    rev = ocr_revision(active_lines)
+    doc["lines"] = active_lines
+    doc["rawLines"] = raw_lines
+    doc["filterSlanted"] = filter_slanted
+    doc["revision"] = rev
+
+    tmp = workspace / "ocr.json.tmp"
+    tmp.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, workspace / "ocr.json")
+
+    # Invalidate previews and bubbles cache
+    for fname in ["ocr-preview.png", "ocr-preview-rev.txt", "bubbles.json", "bubbles.json.tmp"]:
+        fpath = workspace / fname
+        if fpath.is_file():
+            try:
+                fpath.unlink()
+            except OSError:
+                pass
+
+    # Invalidate display webp cache
+    for fpath in workspace.glob("display-ocr-*"):
+        try:
+            fpath.unlink()
+        except OSError:
+            pass
+
+    async with _ocr_lock:
+        await run_native_safely(_write_overlay, workspace, active_lines)
+        await run_native_safely(bubbles_for, job_id, active_lines)
+
+    return {"ok": True, "filterSlanted": filter_slanted, "linesCount": len(active_lines), "revision": rev}
 
 
 def ocr_revision(lines: list) -> str:

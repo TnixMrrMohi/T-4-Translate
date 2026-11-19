@@ -8,6 +8,7 @@
 """
 from functools import lru_cache
 import logging
+import math
 from pathlib import Path
 import time
 from typing import Callable
@@ -995,6 +996,39 @@ def _union_quad(q1: list, q2: list) -> list:
     xs = [float(p[0]) for p in pts]
     ys = [float(p[1]) for p in pts]
     return [[min(xs), min(ys)], [max(xs), min(ys)], [max(xs), max(ys)], [min(xs), max(ys)]]
+
+
+def is_slanted_quad(quad: list, max_angle_deg: float = 8.0) -> bool:
+    """محاسبهٔ زاویهٔ چرخش کادر نسبت به افق؛ آیا مایل و کج است؟"""
+    if not quad or len(quad) < 4:
+        return False
+    try:
+        pts = np.asarray(quad, dtype=np.float32)
+        if pts.shape != (4, 2):
+            return False
+        dx1 = float(pts[1, 0] - pts[0, 0])
+        dy1 = float(pts[1, 1] - pts[0, 1])
+        len1 = math.hypot(dx1, dy1)
+
+        dx2 = float(pts[3, 0] - pts[0, 0])
+        dy2 = float(pts[3, 1] - pts[0, 1])
+        len2 = math.hypot(dx2, dy2)
+
+        if len1 >= len2:
+            dx, dy = dx1, dy1
+        else:
+            dx, dy = dx2, dy2
+
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            return False
+
+        angle_rad = math.atan2(dy, dx)
+        dev = abs(math.degrees(angle_rad)) % 180
+        if dev > 90:
+            dev = 180 - dev
+        return dev > max_angle_deg
+    except Exception:
+        return False
 
 
 def _dedupe(lines: list[dict]) -> list[dict]:

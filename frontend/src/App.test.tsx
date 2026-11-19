@@ -85,6 +85,9 @@ function mockApi(options: {
       ocrDone = true;
       return json({jobId: JOB_ID, provider: 'mock', lines: options.ocrLines ?? [], revision: 'r'.repeat(64)});
     }
+    if (method === 'POST' && url.endsWith('/ocr-settings')) {
+      return json({ok: true, filterSlanted: (body as {filterSlanted?: boolean})?.filterSlanted ?? true});
+    }
     if (method === 'POST' && url.endsWith('/clean')) {
       if (options.holdClean) await options.holdClean();
       const custom = options.onClean?.(init);
@@ -171,6 +174,9 @@ function mockApi(options: {
     }
     if (url.endsWith('/bubbles')) {
       return options.bubbles ? json(options.bubbles) : json({detail: 'نیست'}, 404);
+    }
+    if (url.endsWith('/ocr')) {
+      return json({jobId: JOB_ID, lines: options.ocrLines ?? [], filterSlanted: true});
     }
     if (url.includes('/translation-source')) {
       const promo = new URL(url, 'http://t4.local').searchParams.get('promo') ?? 'replace';
@@ -1453,6 +1459,30 @@ describe('متن تبلیغاتی در مرحلهٔ ۲', () => {
       expect(copied).toContain('آن شماره را کاملاً حذف کن');
       expect(copied).not.toContain('به‌جای ترجمه فقط');
     });
+  });
+
+  it('دکمه‌های فیلتر متن‌های مایل و کج (جلوه‌های صوتی) کار می‌کنند و وضعیت را به سرور می‌فرستند', async () => {
+    localStorage.removeItem('t4-filter-slanted');
+    const {user, calls} = await open();
+    const btnRemove = screen.getByRole('button', {name: 'حذف متن‌های کج'});
+    const btnAll = screen.getByRole('button', {name: 'شناسایی همه'});
+
+    // پیش‌فرض فعال است
+    expect(btnRemove).toHaveAttribute('aria-pressed', 'true');
+    expect(btnAll).toHaveAttribute('aria-pressed', 'false');
+
+    // کلیک روی شناسایی همه
+    await user.click(btnAll);
+    await waitFor(() => expect(calls.some(call => call.url.includes('/ocr-settings') && (call.body as {filterSlanted?: boolean})?.filterSlanted === false)).toBe(true));
+    expect(localStorage.getItem('t4-filter-slanted')).toBe('false');
+    expect(btnAll).toHaveAttribute('aria-pressed', 'true');
+    expect(btnRemove).toHaveAttribute('aria-pressed', 'false');
+
+    // کلیک دوباره روی حذف متن‌های کج
+    await user.click(btnRemove);
+    await waitFor(() => expect(calls.some(call => call.url.includes('/ocr-settings') && (call.body as {filterSlanted?: boolean})?.filterSlanted === true)).toBe(true));
+    expect(localStorage.getItem('t4-filter-slanted')).toBe('true');
+    expect(btnRemove).toHaveAttribute('aria-pressed', 'true');
   });
 });
 

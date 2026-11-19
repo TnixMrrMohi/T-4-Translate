@@ -153,6 +153,46 @@ def test_read_does_not_fallback_on_non_oom_errors(monkeypatch):
     else:
         raise AssertionError("expected ValueError")
     assert factory.cleared == 0
+
+
+def test_is_slanted_quad():
+    # Horizontal line (0 deg)
+    assert not ocr.is_slanted_quad([[10, 20], [100, 20], [100, 50], [10, 50]])
+    # Slight natural tilt (3 deg) -> dy ~ 4.7 for dx=90
+    assert not ocr.is_slanted_quad([[10, 20], [100, 24.7], [100, 54.7], [10, 50]])
+    # Slanted SFX (SLURP: 15.9 deg)
+    assert ocr.is_slanted_quad([[497.0, 0.0], [799.0, 86.0], [738.0, 337.0], [413.0, 228.0]])
+
+
+def test_ocr_settings_toggle_filter_slanted(monkeypatch, tmp_path):
+    monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
+    slanted = {'text': 'SLURP', 'confidence': 0.93,
+               'quad': [[497.0, 0.0], [799.0, 86.0], [738.0, 337.0], [413.0, 228.0]]}
+    normal = {'text': 'HELLO', 'confidence': 0.98,
+              'quad': [[100.0, 200.0], [300.0, 200.0], [300.0, 250.0], [100.0, 250.0]]}
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: [slanted, normal])
+
+    with TestClient(app) as client:
+        job = create(client)
+        res = client.post(f'/api/jobs/{job}/ocr').json()
+        # Default is filterSlanted=True -> slanted line is excluded
+        assert [l['text'] for l in res['lines']] == ['HELLO']
+        assert len(res['rawLines']) == 2
+
+        # Toggle filterSlanted=False -> all lines included
+        res_off = client.post(f'/api/jobs/{job}/ocr-settings', json={'filterSlanted': False}).json()
+        assert res_off['ok'] is True
+        assert res_off['filterSlanted'] is False
+        ocr_doc = client.get(f'/api/jobs/{job}/ocr').json()
+        assert [l['text'] for l in ocr_doc['lines']] == ['SLURP', 'HELLO']
+
+        # Toggle back to filterSlanted=True -> slanted line is excluded again
+        res_on = client.post(f'/api/jobs/{job}/ocr-settings', json={'filterSlanted': True}).json()
+        assert res_on['ok'] is True
+        assert res_on['filterSlanted'] is True
+        ocr_doc2 = client.get(f'/api/jobs/{job}/ocr').json()
+        assert [l['text'] for l in ocr_doc2['lines']] == ['HELLO']
+
     assert ocr._gpu_disabled is False
 
 
@@ -174,3 +214,43 @@ def test_read_does_not_retry_twice_when_gpu_already_disabled(monkeypatch):
     else:
         raise AssertionError("expected RuntimeError")
     assert factory.cleared == 0
+
+
+def test_is_slanted_quad():
+    # Horizontal line (0 deg)
+    assert not ocr.is_slanted_quad([[10, 20], [100, 20], [100, 50], [10, 50]])
+    # Slight natural tilt (3 deg) -> dy ~ 4.7 for dx=90
+    assert not ocr.is_slanted_quad([[10, 20], [100, 24.7], [100, 54.7], [10, 50]])
+    # Slanted SFX (SLURP: 15.9 deg)
+    assert ocr.is_slanted_quad([[497.0, 0.0], [799.0, 86.0], [738.0, 337.0], [413.0, 228.0]])
+
+
+def test_ocr_settings_toggle_filter_slanted(monkeypatch, tmp_path):
+    monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
+    slanted = {'text': 'SLURP', 'confidence': 0.93,
+               'quad': [[497.0, 0.0], [799.0, 86.0], [738.0, 337.0], [413.0, 228.0]]}
+    normal = {'text': 'HELLO', 'confidence': 0.98,
+              'quad': [[100.0, 200.0], [300.0, 200.0], [300.0, 250.0], [100.0, 250.0]]}
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: [slanted, normal])
+
+    with TestClient(app) as client:
+        job = create(client)
+        res = client.post(f'/api/jobs/{job}/ocr').json()
+        # Default is filterSlanted=True -> slanted line is excluded
+        assert [l['text'] for l in res['lines']] == ['HELLO']
+        assert len(res['rawLines']) == 2
+
+        # Toggle filterSlanted=False -> all lines included
+        res_off = client.post(f'/api/jobs/{job}/ocr-settings', json={'filterSlanted': False}).json()
+        assert res_off['ok'] is True
+        assert res_off['filterSlanted'] is False
+        ocr_doc = client.get(f'/api/jobs/{job}/ocr').json()
+        assert [l['text'] for l in ocr_doc['lines']] == ['SLURP', 'HELLO']
+
+        # Toggle back to filterSlanted=True -> slanted line is excluded again
+        res_on = client.post(f'/api/jobs/{job}/ocr-settings', json={'filterSlanted': True}).json()
+        assert res_on['ok'] is True
+        assert res_on['filterSlanted'] is True
+        ocr_doc2 = client.get(f'/api/jobs/{job}/ocr').json()
+        assert [l['text'] for l in ocr_doc2['lines']] == ['HELLO']
+
