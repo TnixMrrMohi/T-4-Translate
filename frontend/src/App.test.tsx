@@ -2099,7 +2099,8 @@ describe('بهبود رفتار نوار پیشرفت مراحل ۳ تا ۵', ()
     expect(screen.queryByText(/پاک‌سازی انجام شد/)).not.toBeInTheDocument();
   });
 
-  it('دکمهٔ «درج دوبارهٔ ترجمه» در مرحلهٔ ۵ نوار پیشرفت را نمایش می‌دهد', async () => {
+  // دکمهٔ «درج دوبارهٔ ترجمه» در مرحلهٔ ۵ به درخواست کاربر حذف شد؛ در مرحلهٔ ۴ موجود است.
+  it.skip('دکمهٔ «درج دوبارهٔ ترجمه» در مرحلهٔ ۵ نوار پیشرفت را نمایش می‌دهد', async () => {
     localStorage.setItem('t4-last-job', JOB_ID);
     const hold = deferred();
     mockApi({
@@ -2119,6 +2120,27 @@ describe('بهبود رفتار نوار پیشرفت مراحل ۳ تا ۵', ()
     expect(screen.getByText(/زمان تقریبی باقی‌مانده:/)).toHaveTextContent('۷');
     hold.resolve();
     await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument());
+  });
+
+  it('دکمهٔ بزرگ‌نمایی تصویر در مرحلهٔ ۵ مودال بزرگ‌نمایی مقایسه را با زوم ۵۰٪ باز می‌کند', async () => {
+    localStorage.setItem('t4-last-job', JOB_ID);
+    mockApi({
+      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
+      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
+      translation: '[1] سلام',
+      clean: true,
+      render: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', {name: 'مرحله ۵: مقایسهٔ ورودی و خروجی'});
+    await user.click(screen.getByRole('button', {name: 'بزرگ‌نمایی تصویر'}));
+    const dialog = await screen.findByRole('dialog', {name: 'بزرگ‌نمایی مقایسهٔ ورودی و خروجی'});
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText('50٪')).toBeInTheDocument();
+    expect(within(dialog).getByRole('slider', {name: 'دستگیرهٔ مقایسهٔ ورودی و خروجی'})).toBeInTheDocument();
+    fireEvent.keyDown(window, {key: 'Escape'});
+    await waitFor(() => expect(screen.queryByRole('dialog', {name: 'بزرگ‌نمایی مقایسهٔ ورودی و خروجی'})).not.toBeInTheDocument());
   });
 });
 

@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {createPortal} from 'react-dom';
 import {CompareSlider} from './CompareSlider';
+import {Overlay, useOverlayIsolation} from './Overlay';
 import {TextLayoutEditor} from './TextLayoutEditor';
 import SystemPanel from './SystemPanel';
 import {BatchPanel} from './BatchPanel';
@@ -372,62 +373,6 @@ function ProgressBar({progress, onCancel, cancelPending}: {progress: Progress; o
         {cancelPending ? 'در حال لغو…' : 'لغو پردازش'}
       </button>}
     </div>
-  );
-}
-
-// شمار لایه‌های باز؛ تا وقتی حتی یکی باز است، محتوای اپ پشت آن غیرفعال می‌ماند.
-let activeOverlays = 0;
-
-/**
- * در طول باز بودن لایه، ریشهٔ اپ `inert` و از دید صفحه‌خوان پنهان می‌شود؛ پس هیچ
- * دکمه‌ای از کارت مرحله‌ها نه فوکوس می‌گیرد و نه کلیک می‌شود. (رنگ‌آمیزی هم با
- * پورتال حل شده است؛ این لایهٔ دومِ محافظت است.)
- */
-function useOverlayIsolation() {
-  useEffect(() => {
-    const root = document.getElementById('root');
-    activeOverlays += 1;
-    if (root && activeOverlays === 1) {
-      root.setAttribute('inert', '');
-      root.setAttribute('aria-hidden', 'true');
-    }
-    return () => {
-      activeOverlays = Math.max(0, activeOverlays - 1);
-      if (root && activeOverlays === 0) {
-        root.removeAttribute('inert');
-        root.removeAttribute('aria-hidden');
-      }
-    };
-  }, []);
-}
-
-/**
- * لایهٔ تمام‌صفحه (مودال) همیشه با پورتال مستقیم روی <body> رندر می‌شود.
- *
- * دلیل: ستون راست `position: sticky` است و هر عنصر sticky/fixed خودش بستر
- * انباشتگی (stacking context) می‌سازد. مودالی که داخل ستون یا کارت رندر شود،
- * حتی با z-index بالا، از بستر خودش بیرون نمی‌آید و عناصر بعدیِ DOM (کارت مرحله
- * و نوار دکمه‌هایش) روی تصویر می‌افتند. پورتال این کلاس از خطا را حذف می‌کند.
- */
-function Overlay({label, onBackdropClick, className = 'modal-backdrop', children}: {
-  label: string;
-  onBackdropClick?: () => void;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  useOverlayIsolation();
-  return createPortal(
-    <div
-      className={className}
-      data-overlay="modal"
-      role="dialog"
-      aria-modal="true"
-      aria-label={label}
-      onClick={event => {if (event.target === event.currentTarget) onBackdropClick?.();}}
-    >
-      {children}
-    </div>,
-    document.body,
   );
 }
 
@@ -2710,7 +2655,6 @@ export function App() {
                       {webpBusy ? 'در حال ساخت WebP…' : 'دانلود WebP'}
                     </button>
                     <button type="button" className="ghost" onClick={() => goToStep(4)}>مرحلهٔ قبل (درج)</button>
-                    <button type="button" className="ghost" disabled={busy || loadingData} onClick={() => void renderImage()}>درج دوبارهٔ ترجمه</button>
                     <button type="button" className="ghost" onClick={resetApp}>کار جدید</button>
                   </div>
                 </>

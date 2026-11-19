@@ -242,6 +242,9 @@
 .cmp-side-img{display:block;width:100%;border:1px solid #00ffcc40;border-radius:10px;background:#050505}
 .cmp-download{display:inline-block;margin-top:8px;color:#00ffcc;font-size:12.5px}
 .cmp-hint{margin:10px 0 0;color:#7d9294;font-size:12.5px;line-height:1.8}
+.cmp-toolbar .ghost{font-size:12px;padding:6px 12px;border-radius:9px}
+.modal-stage .cmp-modal-track{margin:0 auto}
+.modal-stage .cmp-modal-side{margin:0 auto}
 @media(max-width:720px){
   .cmp-track{height:clamp(240px,48vh,520px)}
   .cmp-toolbar{gap:8px}
