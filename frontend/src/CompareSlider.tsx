@@ -132,12 +132,6 @@ export function CompareSlider({jobId, width, height, format, sourceVersion, rend
           </div>
         </div>
       )}
-
-      <p className="cmp-hint">
-        {mode === 'curtain'
-          ? 'برای مقایسه، دستگیره را با موس/لمس بکشید یا با کلیدهای ← → جابه‌جا کنید؛ دوبار کلیک آن را به وسط برمی‌گرداند.'
-          : 'دو نسخه کنار هم؛ برای مقایسهٔ دقیق از حالت پرده استفاده کنید.'}
-      </p>
     </div>
   );
 }

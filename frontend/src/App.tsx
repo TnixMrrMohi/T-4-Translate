@@ -2701,9 +2701,6 @@ export function App() {
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : (
                 <>
-                  <p className="wizard-help">
-                    نسخهٔ ورودی و خروجی با «پردهٔ مقایسه» روی هم قرار می‌گیرند؛ دستگیره را بکشید تا تفاوت را ببینید.
-                  </p>
                   {ocrProgress?.stage.startsWith('render_') && <ProgressBar progress={ocrProgress} onCancel={() => void cancelProcessing()} cancelPending={cancelPending} />}
 
                   <CompareSlider
@@ -2715,11 +2712,6 @@ export function App() {
                     renderVersion={renderVersion}
                     cleanVersion={cleanVersion}
                   />
-
-                  <p className="wizard-help">
-                    خروجی نهایی با فرمت <b>WebP</b> ذخیره می‌شود: همان تصویر با حجم کم‌تر و کیفیت بالا،
-                    مناسب برای آپلود در وب‌تون.
-                  </p>
 
                   <div className="wizard-nav">
                     <button type="button" className="ocr" disabled={busy || loadingData || webpBusy}

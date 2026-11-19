@@ -425,7 +425,6 @@ describe('جادوگر مرحله‌به‌مرحله', () => {
     render(<App />);
 
     const button = await screen.findByRole('button', {name: 'دانلود WebP'});
-    expect(screen.getByText(/فرمت/)).toHaveTextContent('WebP');
     await user.click(button);
 
     await waitFor(() => {
