@@ -477,26 +477,25 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
   };
   const closeModal = () => setModalOpen(false);
 
-  const [zoom, setZoom] = useState(1.0);
-  const [fit, setFit] = useState(false);
+  const [zoom, setZoom] = useState(FIRST_ZOOM);
   const modalCloseRef = useRef<HTMLButtonElement>(null);
   const modalStageRef = useRef<HTMLDivElement>(null);
   const modalPageRef = useRef<HTMLDivElement>(null);
 
-  const zoomed = !fit;
+  useEffect(() => {
+    if (modalOpen) {
+      setZoom(FIRST_ZOOM);
+    }
+  }, [modalOpen]);
+
   const zoomIn = () => {
-    if (fit) {setFit(false); setZoom(FIRST_ZOOM); return;}
     const next = ZOOM_LADDER.find(step => step > zoom + 1e-9);
     if (next !== undefined) setZoom(next);
   };
   const zoomOut = () => {
-    if (fit) return;
     const previous = [...ZOOM_LADDER].reverse().find(step => step < zoom - 1e-9);
-    if (previous === undefined) {setFit(true); setZoom(1); return;}
-    setZoom(previous);
+    if (previous !== undefined) setZoom(previous);
   };
-  const showWidth = () => {setFit(false); setZoom(1);};
-  const showFit = () => {setFit(true); setZoom(1);};
 
   useEffect(() => {
     if (!modalOpen) return;
@@ -509,15 +508,13 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
       if (event.key === 'Escape') closeModal();
       else if (event.key === '+' || event.key === '=') zoomIn();
       else if (event.key === '-') zoomOut();
-      else if (event.key === '0') showFit();
-      else if (event.key === 'w' || event.key === 'W') (zoomed && zoom === 1 ? showFit() : showWidth());
     };
     window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('keydown', onKey);
       document.body.style.overflow = previous;
     };
-  }, [modalOpen, zoom, fit, zoomed]);
+  }, [modalOpen, zoom]);
 
   const boxOf = (area: CleanArea) => {
     const box = area.area && area.area.length === 4 ? area.area : area.bbox;
@@ -675,14 +672,11 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
             <span className="grow">
               <b>پاک‌سازی متن اصلی (بزرگ‌نمایی)</b>
               {disabled && <span style={{color: '#00ffcc', fontSize: '13px', marginInlineStart: '12px'}}>در حال پاک‌سازی…</span>}
-              <span style={{color: '#7d9294', fontSize: '12px', marginInlineStart: '8px'}}>(Esc برای بستن)</span>
             </span>
             <span className="modal-actions">
-              <button type="button" onClick={zoomOut} disabled={!zoomed} aria-label="کوچک‌تر">−</button>
-              <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
-              <button type="button" onClick={zoomIn} disabled={zoomed && zoom >= LAST_ZOOM} aria-label="بزرگ‌تر">+</button>
-              <button type="button" onClick={showWidth} disabled={zoomed && zoom === 1}>عرض کامل</button>
-              <button type="button" onClick={showFit} disabled={fit}>تناسب صفحه</button>
+              <button type="button" onClick={zoomOut} disabled={zoom <= FIRST_ZOOM + 1e-9} aria-label="کوچک‌تر">−</button>
+              <span className="modal-zoom" aria-live="polite">{`${Math.round(zoom * 100)}٪`}</span>
+              <button type="button" onClick={zoomIn} disabled={zoom >= LAST_ZOOM - 1e-9} aria-label="بزرگ‌تر">+</button>
               <button
                 type="button"
                 className="ocr"
@@ -695,32 +689,18 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
               <button type="button" ref={modalCloseRef} onClick={closeModal}>بستن ✕</button>
             </span>
           </div>
-          <p className="modal-hint" aria-live="polite">
-            روی هر ناحیه کلیک کنید تا کادر و امکانات تغییر اندازه و پاک‌سازیِ مجدد همان بخش باز شود. با دکمهٔ «پاک‌سازی مجدد کل صفحه» کل تصویر دوباره پاک می‌شود.
-          </p>
-          <div className={`modal-stage${fit ? ' fit' : ''}`} ref={modalStageRef}>
+          <div className="modal-stage" ref={modalStageRef}>
             <div
               className="clean-canvas-page"
               ref={modalPageRef}
-              style={
-                fit
-                  ? {
-                      width: 'auto',
-                      height: '100%',
-                      maxHeight: 'calc(100vh - 120px)',
-                      aspectRatio: `${Math.max(1, pageWidth)} / ${Math.max(1, pageHeight)}`,
-                      position: 'relative',
-                      margin: '0 auto',
-                    }
-                  : {
-                      width: `${Math.round(zoom * 100)}%`,
-                      minWidth: '400px',
-                      maxWidth: 'none',
-                      aspectRatio: `${Math.max(1, pageWidth)} / ${Math.max(1, pageHeight)}`,
-                      position: 'relative',
-                      margin: '0 auto',
-                    }
-              }
+              style={{
+                width: `${Math.round(zoom * 100)}%`,
+                minWidth: '400px',
+                maxWidth: 'none',
+                aspectRatio: `${Math.max(1, pageWidth)} / ${Math.max(1, pageHeight)}`,
+                position: 'relative',
+                margin: '0 auto',
+              }}
               onClick={() => setPicked(null)}
             >
               <img

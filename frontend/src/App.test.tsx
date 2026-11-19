@@ -1590,6 +1590,11 @@ describe('ناحیه‌های پاک‌سازی در مرحلهٔ ۳', () => {
     expect(within(modal).getByRole('button', {name: 'پاک‌سازی مجدد کل صفحه'})).toBeInTheDocument();
     expect(within(modal).getByRole('button', {name: 'کوچک‌تر'})).toBeInTheDocument();
     expect(within(modal).getByRole('button', {name: 'بزرگ‌تر'})).toBeInTheDocument();
+    expect(within(modal).getByText('50٪')).toBeInTheDocument();
+    expect(within(modal).queryByRole('button', {name: 'تناسب صفحه'})).not.toBeInTheDocument();
+    expect(within(modal).queryByRole('button', {name: 'عرض کامل'})).not.toBeInTheDocument();
+    expect(within(modal).queryByText(/Esc برای بستن/)).not.toBeInTheDocument();
+    expect(within(modal).queryByText(/روی هر ناحیه کلیک کنید/)).not.toBeInTheDocument();
 
     // کلیک روی ناحیه در مودال و پاک‌سازی مجدد
     await user.click(within(modal).getByRole('button', {name: 'ناحیهٔ ۲'}));
