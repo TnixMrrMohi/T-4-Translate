@@ -1689,7 +1689,16 @@ export function App() {
       setMessage('پاک‌سازی انجام شد. با «ادامه» ترجمه روی تصویر درج می‌شود.');
       setStep(3);
       await loadCleanAreas(jobId);
-    } catch (error) {abortProgress(); fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');}
+    } catch (error) {
+      const isCancelled = cancelPending || (error instanceof Error && error.message.includes('لغو'));
+      abortProgress();
+      if (isCancelled) {
+        setStep(2);
+        setMessage('پردازش پاک‌سازی لغو شد.');
+      } else {
+        fail(error instanceof Error ? error.message : 'پاک‌سازی ناموفق بود.');
+      }
+    }
   }
 
   async function cleanImage() {
@@ -1903,8 +1912,9 @@ export function App() {
   async function cancelProcessing() {
     if (!job || !activeOperation.current || cancelPending) return;
     setCancelPending(true);
+    const op = activeOperation.current;
     try {
-      const response = await fetch(`/api/jobs/${job.jobId}/cancel?operation=${activeOperation.current}`, {method: 'POST'});
+      const response = await fetch(`/api/jobs/${job.jobId}/cancel?operation=${op}`, {method: 'POST'});
       const result = await response.json();
       if (!response.ok || !result.accepted) {
         setCancelPending(false);
@@ -1912,6 +1922,9 @@ export function App() {
         return;
       }
       setMessage('در حال توقف پردازش؛ خروجی ناقص ذخیره نمی‌شود…');
+      if (step === 3 || op === 'clean') {
+        setStep(2);
+      }
     } catch {
       setCancelPending(false);
       setMessage('ارسال درخواست لغو ناموفق بود؛ دوباره تلاش کنید.');
@@ -2404,12 +2417,8 @@ export function App() {
                 <p className="wizard-help">کاری باز نیست.</p>
               ) : !hasSaved ? (
                 <p className="wizard-help">اول ترجمه را در مرحلهٔ ۲ ذخیره کنید.</p>
-              ) : (
+              ) : !(ocrProgress && (ocrProgress.stage.startsWith('clean_') || ocrProgress.stage.startsWith('render_'))) && (
                 <>
-                  <p className="wizard-help">
-                    ناحیهٔ خطوط ترجمه‌شده پاک می‌شود تا متن فارسی جای آن بنشیند. پاک‌سازی با آخرین ترجمهٔ <b>ذخیره‌شده</b> انجام می‌شود، نه تغییرات ذخیره‌نشده.
-                    {cleanVersion > 0 && ' برای پاک‌سازی مجدد یک بخش، روی همان بخش از تصویر کلیک کنید.'}
-                  </p>
                   <div className="wizard-nav start">
                     {cleanVersion === 0 ? (
                       <button type="button" className="ocr" disabled={busy || loadingData} onClick={() => void cleanImage()}>
@@ -2427,10 +2436,6 @@ export function App() {
                       </button>
                     )}
                   </div>
-
-                  {cleanVersion === 0 && !ocrProgress && (
-                    <p className="wizard-note">{busy ? 'در حال پاک‌سازی…' : 'هنوز پاک‌سازی اجرا نشده است.'}</p>
-                  )}
 
                   {cleanVersion > 0 && (
                     <CleanCanvas
