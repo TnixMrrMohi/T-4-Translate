@@ -404,13 +404,14 @@ export function TextLayoutEditor({
     <div className={`layout-editor${tall ? ' is-tall' : ''}`}>
       {!floating && controls}
 
-      <div
-        className="layout-stage"
-        ref={stageRef}
-        style={stageHeight ? {height: `${stageHeight}px`} : undefined}
-      >
-        <img src={imageUrl} alt={imageAlt ?? 'تصویر پاک‌شده برای چیدمان متن'} draggable={false} />
-        {blocks.map(block => {
+      <div className="layout-scroll">
+        <div
+          className="layout-stage"
+          ref={stageRef}
+          style={stageHeight ? {height: `${stageHeight}px`} : undefined}
+        >
+          <img src={imageUrl} alt={imageAlt ?? 'تصویر پاک‌شده برای چیدمان متن'} draggable={false} />
+          {blocks.map(block => {
           const state = effective(block);
           const baseWidth = Math.max(4, block.box[2] - block.box[0]);
           const baseHeight = Math.max(4, block.box[3] - block.box[1]);
@@ -532,6 +533,7 @@ export function TextLayoutEditor({
             </div>
           );
         })()}
+      </div>
       </div>
       {selectedBlock && (
         <p className="layout-note" aria-live="polite">

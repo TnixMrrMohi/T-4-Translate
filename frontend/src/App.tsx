@@ -2182,17 +2182,6 @@ export function App() {
               downloadName={`t4-${job.jobId}-ocr.png`}
             />
           )}
-          {step === 4 && job && renderVersion > 0 && (
-            <ImagePreview
-              jobId={job.jobId}
-              kind="render"
-              version={renderVersion}
-              aspect={job.height / job.width}
-              alt="خروجی فارسی روی تصویر"
-              downloadName={`t4-${job.jobId}-fa.png`}
-              caption={<span>خروجی فارسی (آزمایشی)</span>}
-            />
-          )}
         </div>
         </aside>
 

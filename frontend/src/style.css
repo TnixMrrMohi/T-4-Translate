@@ -451,6 +451,11 @@
 .layout-actions{display:flex;gap:8px;flex-wrap:wrap;margin-inline-start:auto}
 .layout-actions button{font-size:12px;padding:9px 12px}
 .layout-hint{margin:0;color:#7d9294;font-size:12px;line-height:1.8}
+.layout-scroll{position:relative;display:block;height:clamp(300px,62vh,700px);overflow-y:auto;overflow-x:hidden;background:#050505;border:1px solid #00ffcc33;border-radius:12px;touch-action:pan-y;padding:0;scrollbar-width:thin;scrollbar-color:#00ffcc66 #0a0f12}
+.layout-scroll::-webkit-scrollbar{width:8px;height:8px}
+.layout-scroll::-webkit-scrollbar-thumb{background:#00ffcc55;border-radius:8px}
+.layout-scroll::-webkit-scrollbar-track{background:#0a0f12}
+.layout-scroll .layout-stage{border:none;border-radius:0;background:transparent}
 .layout-stage{position:relative;width:100%;overflow:hidden;border-radius:10px;background:#04090b;border:1px solid #ffffff1a;touch-action:none;user-select:none}
 .layout-stage img{display:block;width:100%;height:100%;object-fit:fill;pointer-events:none}
 .layout-box{position:absolute;display:flex;align-items:center;justify-content:center;border:1px dashed #00ffcc66;border-radius:6px;background:#00ffcc0f;color:#0c1a1a;cursor:grab;touch-action:none}
@@ -468,11 +473,13 @@
 .layout-handle.rotate::after{content:"";position:absolute;top:10px;left:50%;width:1px;height:18px;background:#ffce6b}
 .layout-note{margin:0;color:#7d9294;font-size:12px}
 .layout-modal-body{max-height:calc(100vh - 140px);overflow:auto;padding:4px 2px}
-.layout-editor.is-tall .layout-stage{max-height:none}
+.layout-editor.is-tall .layout-scroll{height:auto;max-height:none;overflow:visible;border:none;background:transparent}
+.layout-editor.is-tall .layout-stage{max-height:none;border:1px solid #ffffff1a;border-radius:10px;background:#04090b}
 @media(max-width:720px){
   .layout-toolbar{gap:8px}
   .layout-field{flex:1 1 100%;min-width:0}
   .layout-actions{margin-inline-start:0;width:100%}
+  .layout-scroll{height:clamp(240px,48vh,520px)}
 }
 
 /* --- نوار به‌روزرسانی (پرسش ۱۰ ثانیه‌ای از سرور محلی) --- */
