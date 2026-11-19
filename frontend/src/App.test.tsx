@@ -2063,7 +2063,8 @@ describe('بهبود رفتار نوار پیشرفت مراحل ۳ تا ۵', ()
     expect(bar).toHaveAttribute('aria-valuetext', expect.stringContaining('بخش ۲ از ۴'));
     expect(screen.queryByText('در حال پاک‌سازی…')).not.toBeInTheDocument();
     hold.resolve();
-    await screen.findByText(/پاک‌سازی انجام شد/);
+    await screen.findByRole('button', {name: 'پاک‌سازی مجدد کل صفحه'});
+    expect(screen.queryByText(/پاک‌سازی انجام شد/)).not.toBeInTheDocument();
   });
 
   it('دکمهٔ «درج دوبارهٔ ترجمه» در مرحلهٔ ۵ نوار پیشرفت را نمایش می‌دهد', async () => {

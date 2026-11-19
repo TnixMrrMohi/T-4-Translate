@@ -1090,6 +1090,7 @@ export function App() {
 
   function goToStep(target: number) {
     if (busy || loadingData) return;
+    if (target === 3) setMessage('');
     if (target >= 1 && target <= maxStep) setStep(target);
   }
 
@@ -1686,7 +1687,7 @@ export function App() {
       setCleanVersion(Date.now());
       setRenderVersion(0);  // خروجی قبلی با پاک‌سازی جدید معتبر نیست
       setAreaPick([]);
-      setMessage('پاک‌سازی انجام شد. با «ادامه» ترجمه روی تصویر درج می‌شود.');
+      setMessage('');
       setStep(3);
       await loadCleanAreas(jobId);
     } catch (error) {
