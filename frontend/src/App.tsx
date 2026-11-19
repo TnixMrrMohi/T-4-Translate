@@ -826,7 +826,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
             <span className="zoom-hint">{tall ? 'صفحهٔ بلند — بزرگ‌نمایی' : 'بزرگ‌نمایی'}</span>
           </button>
           )}
-          {caption && (
+          {(caption || scroll) && (
             <figcaption>
               {caption}
               {scroll && <button type="button" ref={thumbRef} className="ghost small" onClick={openModal} aria-label={`بزرگ‌نمایی: ${alt}`}>بزرگ‌نمایی</button>}
@@ -1923,7 +1923,7 @@ export function App() {
       setSource(updated); setCleanVersion(0); setRenderVersion(0);
       setOcrVersion(Date.now());
       if (nextStep !== null) setStep(nextStep);
-      setMessage('متن تشخیص داده شد. مرحلهٔ بعد: ترجمه.');
+      setMessage('');
     } catch (error) {
       abortProgress();
       fail(error instanceof Error ? error.message : 'OCR ناموفق بود.');
@@ -2010,7 +2010,6 @@ export function App() {
               alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
               scroll
               downloadName={`t4-${job.jobId}-ocr.png`}
-              caption={<span>کادر و شمارهٔ خطوط (همان شماره‌های متن کنار)</span>}
             />
           )}
           {step === 4 && job && renderVersion > 0 && (
