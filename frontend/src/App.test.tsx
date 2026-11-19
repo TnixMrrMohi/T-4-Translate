@@ -315,31 +315,6 @@ describe('فهرست کارها و حذف', () => {
   });
 });
 
-describe('تأییدهای عملیات', () => {
-  it('اجرای مجدد OCR در مرحلهٔ ترجمه با دیالوگ کاستوم تأیید می‌شود', async () => {
-    localStorage.setItem('t4-last-job', JOB_ID);
-    const {calls} = mockApi({
-      job: {jobId: JOB_ID, width: 800, height: 600, format: 'PNG', status: 'uploaded'},
-      source: {revision: 'r'.repeat(64), items: [{number: 1, text: 'Hello'}]},
-      translation: '[1] سلام',
-    });
-    const user = userEvent.setup();
-    render(<App />);
-
-    // کار ذخیره‌شده در مرحلهٔ پاک‌سازی باز می‌شود؛ برای اجرای مجدد OCR به ترجمه برمی‌گردیم.
-    await screen.findByRole('heading', {name: 'مرحله ۳: پاک‌سازی متن اصلی'});
-    await user.click(screen.getByRole('button', {name: 'مرحلهٔ قبل (ترجمه)'}));
-    await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'});
-    const ocrButton = await screen.findByRole('button', {name: 'اجرای دوبارهٔ OCR'});
-    await user.click(ocrButton);
-    const dialog = await screen.findByRole('alertdialog');
-    expect(within(dialog).getByText('اجرای مجدد OCR')).toBeInTheDocument();
-    await user.click(within(dialog).getByRole('button', {name: 'انصراف'}));
-
-    expect(calls.some(call => call.url.includes('/ocr') && !call.url.includes('/ocr-status'))).toBe(false);
-  });
-});
-
 describe('جادوگر مرحله‌به‌مرحله', () => {
   it('در شروع فقط مرحلهٔ ۱ فعال است و مراحل بعدی قفل‌اند', async () => {
     mockApi({jobs: []});
@@ -912,7 +887,7 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
     expect(dialog.closest('.wizard-card')).toBeNull();
 
     // همهٔ کنترل‌های کارت — از جمله «کپی متن» و «کپی با پرامپت» — بیرون از لایه‌اند.
-    for (const name of ['مرحلهٔ قبل', 'اجرای دوبارهٔ OCR', 'حذف کامل',
+    for (const name of ['مرحلهٔ قبل', 'حذف کامل',
                         'کپی متن', 'کپی با پرامپت']) {
       const button = screen.getByRole('button', {name});
       expect(dialog.contains(button)).toBe(false);
@@ -930,7 +905,7 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
     // بستن مودال، کارت و دکمه‌هایش را دست‌نخورده برمی‌گرداند.
     await user.click(within(dialog).getByRole('button', {name: 'بستن ✕'}));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', {name: 'اجرای دوبارهٔ OCR'})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'ذخیرهٔ ترجمه و ادامه'})).toBeInTheDocument();
   });
 
   it('در طول باز بودن لایه، محتوای پشت آن inert و از دید صفحه‌خوان پنهان است', async () => {

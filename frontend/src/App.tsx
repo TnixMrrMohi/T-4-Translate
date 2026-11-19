@@ -2269,7 +2269,6 @@ export function App() {
                       {warnings && <p className="wizard-note">{warnings}</p>}
                       <div className="wizard-nav">
                         <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
-                        <button type="button" className="ghost" disabled={busy || loadingData || ocrEngine?.ready === false} onClick={() => void runOcr()}>اجرای دوبارهٔ OCR</button>
                         <button type="button" className="ocr" disabled={busy || loadingData || !translation.trim()} onClick={() => void saveTranslation()}>
                           ذخیرهٔ ترجمه و ادامه
                         </button>
