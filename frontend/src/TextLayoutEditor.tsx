@@ -347,11 +347,11 @@ export function TextLayoutEditor({
         </label>
         <div className="layout-actions">
           <button type="button" className="ghost" disabled={disabled || selected === null} onClick={resetBlock}>
-            خودکار برای این متن
+            بازنشانی این متن
           </button>
           <button type="button" className="ghost"
             disabled={disabled || Object.keys(draft).length === 0} onClick={resetAll}>
-            خودکار برای همه
+            بازنشانی همه
           </button>
         </div>
       </div>

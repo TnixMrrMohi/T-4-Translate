@@ -1774,7 +1774,7 @@ describe('ویرایش تک‌تک متن‌های درج‌شده (چیدمان
       {timeout: 3000});
   });
 
-  it('«خودکار برای همه» چیدمان دستی را پاک می‌کند', async () => {
+  it('«بازنشانی همه» چیدمان دستی را پاک می‌کند', async () => {
     const {calls, user} = await openEditor();
 
     const picker = await screen.findByLabelText('انتخاب متن برای ویرایش');
@@ -1784,7 +1784,7 @@ describe('ویرایش تک‌تک متن‌های درج‌شده (چیدمان
     await user.type(rotation, '30');
     await waitFor(() => expect(lastLayoutPut(calls)?.blocks?.['2']?.rotation).toBe(30));
 
-    await user.click(screen.getByRole('button', {name: 'خودکار برای همه'}));
+    await user.click(screen.getByRole('button', {name: 'بازنشانی همه'}));
     await waitFor(() => expect(lastLayoutPut(calls)?.blocks).toEqual({}));
   });
 
