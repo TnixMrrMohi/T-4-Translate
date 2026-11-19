@@ -989,16 +989,33 @@ def _prefer(candidate: dict, current: dict) -> bool:
     return float(candidate.get('confidence', 0)) > float(current.get('confidence', 0))
 
 
+def _union_quad(q1: list, q2: list) -> list:
+    """ترکیب دو کادر چهارنقطه‌ای به یک مستطیل محاطی یکپارچه."""
+    pts = list(q1) + list(q2)
+    xs = [float(p[0]) for p in pts]
+    ys = [float(p[1]) for p in pts]
+    return [[min(xs), min(ys)], [max(xs), min(ys)], [max(xs), max(ys)], [min(xs), max(ys)]]
+
+
 def _dedupe(lines: list[dict]) -> list[dict]:
     kept: list[dict] = []
     for line in lines:
-        for index, other in enumerate(kept):
-            if _same_line(line, other):
-                if _prefer(line, other):
-                    kept[index] = line
-                break
-        else:
+        matches = [idx for idx, other in enumerate(kept) if _same_line(line, other)]
+        if not matches:
             kept.append(line)
+            continue
+
+        any_prefer = any(_prefer(line, kept[idx]) for idx in matches)
+        if any_prefer:
+            first_idx = matches[0]
+            winner = dict(line)
+            for idx in reversed(matches):
+                loser = kept.pop(idx)
+                winner['quad'] = _union_quad(winner['quad'], loser['quad'])
+            kept.insert(first_idx, winner)
+        else:
+            pref_idx = next((idx for idx in matches if _prefer(kept[idx], line)), matches[0])
+            kept[pref_idx]['quad'] = _union_quad(kept[pref_idx]['quad'], line['quad'])
     return kept
 
 

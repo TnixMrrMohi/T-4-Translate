@@ -36,6 +36,23 @@ def test_dedupe_merges_near_touching_ghost_substring():
     assert [line['text'] for line in result] == ['TSK. WHAT', 'A RIP OFF.']
 
 
+def test_dedupe_merges_multiple_split_fragments_into_full_line():
+    frag_tsk = _line('TSK', 298, 4382, 423, 4419, 0.98)
+    frag_what = _line('WHAT', 451, 4383, 628, 4417, 0.86)
+    full_line = _line('TSK. WHAT', 297, 4384, 628, 4443, 0.99)
+    other = _line('A RIP OFF.', 308, 4466, 615, 4528, 0.98)
+
+    result = ocr._dedupe([frag_tsk, frag_what, full_line, other])
+    assert [line['text'] for line in result] == ['TSK. WHAT', 'A RIP OFF.']
+    assert min(p[1] for p in result[0]['quad']) == 4382
+    assert max(p[1] for p in result[0]['quad']) == 4443
+
+    result2 = ocr._dedupe([full_line, frag_tsk, frag_what, other])
+    assert [line['text'] for line in result2] == ['TSK. WHAT', 'A RIP OFF.']
+    assert min(p[1] for p in result2[0]['quad']) == 4382
+    assert max(p[1] for p in result2[0]['quad']) == 4443
+
+
 
 def test_progress_write_retries_when_replace_is_denied(tmp_path, monkeypatch):
     target = tmp_path / 'progress.json'
