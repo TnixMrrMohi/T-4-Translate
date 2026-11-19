@@ -2191,25 +2191,49 @@ export function App() {
                 <>
                   {/* اعلام و تنظیم رفتار متن تبلیغاتی؛ همراه شماره‌گذاری انجام می‌شود */}
                   <div className="promo-setting" role="group" aria-label="رفتار متن تبلیغاتی">
-                    <span className="promo-setting-label">
-                      متن تبلیغاتی (آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال) در شماره‌گذاری:
-                    </span>
-                    <span className="promo-options">
-                      <button
-                        type="button"
-                        aria-pressed={promoAction === 'replace'}
-                        onClick={() => void choosePromo('replace')}
-                      >
-                        جایگزینی با {PROMO_SITE}
-                      </button>
-                      <button
-                        type="button"
-                        aria-pressed={promoAction === 'remove'}
-                        onClick={() => void choosePromo('remove')}
-                      >
-                        حذف کامل
-                      </button>
-                    </span>
+                    <div className="promo-setting-header">
+                      <div className="promo-setting-info">
+                        <span className="promo-setting-title">
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '6px'}}>
+                            <path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/>
+                            <path d="M7 7h.01"/>
+                          </svg>
+                          مدیریت واترمارک و متن‌های تبلیغاتی
+                        </span>
+                        <span className="promo-setting-desc">
+                          اگر در تصویر آدرس سایت قبلی، نام تیم اسکنر یا واترمارک باشد:
+                        </span>
+                      </div>
+                      <div className="promo-options">
+                        <button
+                          type="button"
+                          className={promoAction === 'remove' ? 'is-active' : ''}
+                          aria-pressed={promoAction === 'remove'}
+                          onClick={() => void choosePromo('remove')}
+                        >
+                          حذف کامل
+                        </button>
+                        <button
+                          type="button"
+                          className={promoAction === 'replace' ? 'is-active' : ''}
+                          aria-pressed={promoAction === 'replace'}
+                          onClick={() => void choosePromo('replace')}
+                        >
+                          جایگزینی با {PROMO_SITE}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="promo-hint">
+                      {promoAction === 'remove' ? (
+                        <span>
+                          <strong>حالت فعال:</strong> واترمارک‌ها و آدرس‌های سایت قبلی از متن شماره‌گذاری‌شده حذف می‌شوند تا ترجمه یا درج نشوند.
+                        </span>
+                      ) : (
+                        <span>
+                          <strong>حالت فعال:</strong> به‌جای متن‌های تبلیغاتی شناسایی‌شده، آدرس <code>{PROMO_SITE}</code> قرار می‌گیرد تا به‌عنوان واترمارک شما در تصویر درج شود.
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="copy-row">
                     <button

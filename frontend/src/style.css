@@ -311,14 +311,111 @@
 @media (max-width:600px){.text-box{min-height:150px;padding:12px;font-size:13px}}
 
 /* تنظیم رفتار متن تبلیغاتی در مرحلهٔ ۲ */
-.promo-setting{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px;padding:8px 12px;border:1px solid #ffce6b33;border-radius:10px;background:#141008}
-.promo-setting-label{color:#d8c9a6;font-size:12px;line-height:1.7}
-.promo-options{display:inline-flex;gap:6px;margin-inline-start:auto}
-.promo-options button{font:inherit;font-size:12px;font-weight:bold;padding:6px 12px;border-radius:8px;background:transparent;color:#ffce6b;border:1px solid #ffce6b44;cursor:pointer}
-.promo-options button:hover{background:#241c0c;border-color:#ffce6b}
-.promo-options button[aria-pressed="true"]{background:#ffce6b;color:#050505;border-color:#ffce6b}
-.promo-options button:focus-visible{outline:2px solid #ffce6b;outline-offset:2px}
-@media (max-width:600px){.promo-options{margin-inline-start:0}}
+.promo-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(0, 255, 204, 0.22);
+  border-radius: 12px;
+  background: #0b1518;
+}
+.promo-setting-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.promo-setting-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.promo-setting-title {
+  color: #eef9f4;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.promo-setting-desc {
+  color: #7e9a96;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.promo-options {
+  display: inline-flex;
+  align-items: center;
+  background: #060c0e;
+  border: 1px solid rgba(0, 255, 204, 0.3);
+  border-radius: 9px;
+  padding: 3px;
+  gap: 4px;
+}
+.promo-options button {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 7px;
+  background: transparent;
+  color: #8da4a1;
+  border: 0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.promo-options button:hover:not([aria-pressed="true"]) {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+.promo-options button[aria-pressed="true"] {
+  background: #00ffcc;
+  color: #050505;
+  font-weight: 700;
+  box-shadow: 0 0 10px rgba(0, 255, 204, 0.35);
+}
+.promo-options button:focus-visible {
+  outline: 2px solid #00ffcc;
+  outline-offset: 2px;
+}
+.promo-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #9cb8b5;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.promo-hint strong {
+  color: #00ffcc;
+  margin-inline-end: 4px;
+}
+.promo-hint code {
+  background: rgba(0, 255, 204, 0.15);
+  color: #00ffcc;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: inherit;
+  direction: ltr;
+  display: inline-block;
+}
+@media (max-width: 600px) {
+  .promo-setting-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .promo-options {
+    width: 100%;
+    justify-content: stretch;
+  }
+  .promo-options button {
+    flex: 1;
+    text-align: center;
+  }
+}
 
 /* --- ناحیه‌های پاک‌سازی (مرحلهٔ ۳): انتخاب تک‌تک برای پاک‌سازی مجدد --- */
 .area-list{display:flex;flex-direction:column;gap:6px;margin:10px 0 4px;max-height:280px;overflow:auto;padding-inline-end:4px}
