@@ -436,9 +436,10 @@ function Overlay({label, onBackdropClick, className = 'modal-backdrop', children
 /** تغییر اندازه/جای ناحیهٔ پاک‌سازی (پیکسلِ تصویر اصلی). */
 export type AreaAdjust = {grow?: Record<number, number>; shift?: Record<number, [number, number]>};
 
-export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disabled, onReclean}: {
+export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disabled, onReclean, isOpen, onClose}: {
   jobId: string; version: number; pageWidth: number; pageHeight: number;
   areas: CleanArea[]; disabled: boolean; onReclean: (numbers: number[], adjust?: AreaAdjust) => void;
+  isOpen?: boolean; onClose?: () => void;
 }) {
   const [picked, setPicked] = useState<number | null>(null);
   // تغییر اندازهٔ ناحیهٔ پاک‌سازی هر بالن (پیکسل؛ منفی = کوچک‌تر)
@@ -462,6 +463,62 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
   const bump = (number: number, delta: number) =>
     setGrows(old => ({...old, [number]: Math.max(-30, Math.min(80, (old[number] ?? 0) + delta))}));
   useEffect(() => {setPicked(null);}, [version]);
+
+  // مودال بزرگ‌نمایی پاک‌سازی
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = typeof isOpen === 'boolean';
+  const modalOpen = isControlled ? isOpen : internalOpen;
+  const setModalOpen = (val: boolean) => {
+    if (isControlled) {
+      if (!val) onClose?.();
+    } else {
+      setInternalOpen(val);
+    }
+  };
+  const closeModal = () => setModalOpen(false);
+
+  const [zoom, setZoom] = useState(1.0);
+  const [fit, setFit] = useState(false);
+  const modalCloseRef = useRef<HTMLButtonElement>(null);
+  const modalStageRef = useRef<HTMLDivElement>(null);
+  const modalPageRef = useRef<HTMLDivElement>(null);
+
+  const zoomed = !fit;
+  const zoomIn = () => {
+    if (fit) {setFit(false); setZoom(FIRST_ZOOM); return;}
+    const next = ZOOM_LADDER.find(step => step > zoom + 1e-9);
+    if (next !== undefined) setZoom(next);
+  };
+  const zoomOut = () => {
+    if (fit) return;
+    const previous = [...ZOOM_LADDER].reverse().find(step => step < zoom - 1e-9);
+    if (previous === undefined) {setFit(true); setZoom(1); return;}
+    setZoom(previous);
+  };
+  const showWidth = () => {setFit(false); setZoom(1);};
+  const showFit = () => {setFit(true); setZoom(1);};
+
+  useEffect(() => {
+    if (!modalOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    modalCloseRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      const tag = (event.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+      if (event.key === 'Escape') closeModal();
+      else if (event.key === '+' || event.key === '=') zoomIn();
+      else if (event.key === '-') zoomOut();
+      else if (event.key === '0') showFit();
+      else if (event.key === 'w' || event.key === 'W') (zoomed && zoom === 1 ? showFit() : showWidth());
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previous;
+    };
+  }, [modalOpen, zoom, fit, zoomed]);
+
   const boxOf = (area: CleanArea) => {
     const box = area.area && area.area.length === 4 ? area.area : area.bbox;
     if (!box || box.length !== 4) return null;
@@ -479,127 +536,205 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
   // پنجره زیر ناحیه باز می‌شود؛ اگر ناحیه پایین صفحه است، بالای آن.
   const below = activeBox ? activeBox[3] / Math.max(1, pageHeight) < 0.7 : true;
   const num = (value: number) => value.toLocaleString('fa-IR');
-  return (
-    <div className="clean-canvas" data-testid="clean-canvas">
-      <div className="clean-canvas-scroll">
-        <div
-          className="clean-canvas-page"
-          ref={pageRef}
-          style={{aspectRatio: `${Math.max(1, pageWidth)} / ${Math.max(1, pageHeight)}`}}
-          onClick={() => setPicked(null)}
+
+  const renderHotspots = (targetPageRef: React.RefObject<HTMLDivElement | null>) => (
+    areas.map(area => {
+      const box = boxOf(area);
+      if (!box) return null;
+      return (
+        <button
+          key={area.number}
+          type="button"
+          className={`clean-hotspot${picked === area.number ? ' is-active' : ''}`}
+          style={{
+            left: percent(box[0], pageWidth), top: percent(box[1], pageHeight),
+            width: percent(box[2] - box[0], pageWidth), height: percent(box[3] - box[1], pageHeight),
+          }}
+          aria-label={`ناحیهٔ ${num(area.number)}`}
+          aria-pressed={picked === area.number}
+          title="کلیک: انتخاب ناحیه — کشیدن (روی ناحیهٔ انتخاب‌شده): جابه‌جایی"
+          onPointerDown={event => {
+            if (picked !== area.number || disabled) return;
+            drag.current = {number: area.number, x: event.clientX, y: event.clientY, moved: false};
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+          }}
+          onPointerMove={event => {
+            const state = drag.current;
+            const rect = targetPageRef.current?.getBoundingClientRect();
+            if (!state || !rect || rect.width <= 0) return;
+            const scale = pageWidth / rect.width;
+            const dx = Math.round((event.clientX - state.x) * scale);
+            const dy = Math.round((event.clientY - state.y) * scale);
+            if (!state.moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+            state.moved = true;
+            state.x = event.clientX; state.y = event.clientY;
+            nudge(state.number, dx, dy);
+          }}
+          onPointerUp={() => {window.setTimeout(() => {drag.current = null;}, 0);}}
+          onClick={event => {
+            event.stopPropagation();
+            if (drag.current?.moved) return;   // کشیدن بود، نه کلیک
+            setPicked(area.number);
+          }}
         >
-          <img src={`/api/jobs/${jobId}/display/clean?width=1400&v=${version}`} alt="تصویر پاک‌سازی‌شده، بدون متن اصلی" />
-          {areas.map(area => {
-            const box = boxOf(area);
-            if (!box) return null;
-            return (
-              <button
-                key={area.number}
-                type="button"
-                className={`clean-hotspot${picked === area.number ? ' is-active' : ''}`}
-                style={{
-                  left: percent(box[0], pageWidth), top: percent(box[1], pageHeight),
-                  width: percent(box[2] - box[0], pageWidth), height: percent(box[3] - box[1], pageHeight),
-                }}
-                aria-label={`ناحیهٔ ${num(area.number)}`}
-                aria-pressed={picked === area.number}
-                title="کلیک: انتخاب ناحیه — کشیدن (روی ناحیهٔ انتخاب‌شده): جابه‌جایی"
-                onPointerDown={event => {
-                  if (picked !== area.number || disabled) return;
-                  drag.current = {number: area.number, x: event.clientX, y: event.clientY, moved: false};
-                  event.currentTarget.setPointerCapture?.(event.pointerId);
-                }}
-                onPointerMove={event => {
-                  const state = drag.current;
-                  const rect = pageRef.current?.getBoundingClientRect();
-                  if (!state || !rect || rect.width <= 0) return;
-                  const scale = pageWidth / rect.width;
-                  const dx = Math.round((event.clientX - state.x) * scale);
-                  const dy = Math.round((event.clientY - state.y) * scale);
-                  if (!state.moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
-                  state.moved = true;
-                  state.x = event.clientX; state.y = event.clientY;
-                  nudge(state.number, dx, dy);
-                }}
-                onPointerUp={() => {window.setTimeout(() => {drag.current = null;}, 0);}}
-                onClick={event => {
-                  event.stopPropagation();
-                  if (drag.current?.moved) return;   // کشیدن بود، نه کلیک
-                  setPicked(area.number);
-                }}
-              >
-                <span className="clean-hotspot-tag">{num(area.number)}</span>
-              </button>
-            );
-          })}
-          {active && activeBox && (
-            <div
-              className="clean-popover"
-              ref={popoverRef}
-              role="dialog"
-              aria-label={`ناحیهٔ ${num(active.number)}`}
-              style={{
-                left: `min(${percent(activeBox[0], pageWidth)}, calc(100% - 250px))`,
-                ...(below
-                  ? {top: `calc(${percent(activeBox[3], pageHeight)} + 6px)`}
-                  : {bottom: `calc(100% - ${percent(activeBox[1], pageHeight)} + 6px)`}),
-              }}
-              onClick={event => event.stopPropagation()}
-            >
-              <div className="clean-popover-head">
-                <b>ناحیهٔ {num(active.number)}</b>
-                <span>{active.kindLabel}</span>
-                <button type="button" className="ghost small" aria-label="بستن" onClick={() => setPicked(null)}>✕</button>
-              </div>
-              <p dir="rtl">{active.text}</p>
-              <div className="clean-size" role="group" aria-label="اندازهٔ ناحیهٔ پاک‌سازی">
-                <span>اندازهٔ ناحیه</span>
-                <button type="button" className="ghost small" aria-label="کوچک‌تر" disabled={disabled}
-                  onClick={() => bump(active.number, -4)}>−</button>
-                <output aria-live="polite">{num(growOf(active.number))}</output>
-                <button type="button" className="ghost small" aria-label="بزرگ‌تر" disabled={disabled}
-                  onClick={() => bump(active.number, 4)}>+</button>
-                {(growOf(active.number) !== 0 || moveOf(active.number).some(Boolean)) && (
-                  <button type="button" className="ghost small" disabled={disabled}
-                    onClick={() => {
-                      setGrows(old => ({...old, [active.number]: 0}));
-                      setMoves(old => ({...old, [active.number]: [0, 0]}));
-                    }}>بازنشانی</button>
-                )}
-              </div>
-              <div className="clean-size" role="group" aria-label="جای ناحیهٔ پاک‌سازی">
-                <span>جابه‌جایی</span>
-                <button type="button" className="ghost small" aria-label="بالا" disabled={disabled}
-                  onClick={() => nudge(active.number, 0, -4)}>↑</button>
-                <button type="button" className="ghost small" aria-label="پایین" disabled={disabled}
-                  onClick={() => nudge(active.number, 0, 4)}>↓</button>
-                <button type="button" className="ghost small" aria-label="چپ" disabled={disabled}
-                  onClick={() => nudge(active.number, -4, 0)}>←</button>
-                <button type="button" className="ghost small" aria-label="راست" disabled={disabled}
-                  onClick={() => nudge(active.number, 4, 0)}>→</button>
-                <span className="clean-size-hint">یا کادر را بکشید</span>
-              </div>
+          <span className="clean-hotspot-tag">{num(area.number)}</span>
+        </button>
+      );
+    })
+  );
+
+  const renderPopover = () => {
+    if (!active || !activeBox) return null;
+    return (
+      <div
+        className="clean-popover"
+        ref={popoverRef}
+        role="dialog"
+        aria-label={`ناحیهٔ ${num(active.number)}`}
+        style={{
+          left: `min(${percent(activeBox[0], pageWidth)}, calc(100% - 250px))`,
+          ...(below
+            ? {top: `calc(${percent(activeBox[3], pageHeight)} + 6px)`}
+            : {bottom: `calc(100% - ${percent(activeBox[1], pageHeight)} + 6px)`}),
+        }}
+        onClick={event => event.stopPropagation()}
+      >
+        <div className="clean-popover-head">
+          <b>ناحیهٔ {num(active.number)}</b>
+          <span>{active.kindLabel}</span>
+          <button type="button" className="ghost small" aria-label="بستن" onClick={() => setPicked(null)}>✕</button>
+        </div>
+        <p dir="rtl">{active.text}</p>
+        <div className="clean-size" role="group" aria-label="اندازهٔ ناحیهٔ پاک‌سازی">
+          <span>اندازهٔ ناحیه</span>
+          <button type="button" className="ghost small" aria-label="کوچک‌تر" disabled={disabled}
+            onClick={() => bump(active.number, -4)}>−</button>
+          <output aria-live="polite">{num(growOf(active.number))}</output>
+          <button type="button" className="ghost small" aria-label="بزرگ‌تر" disabled={disabled}
+            onClick={() => bump(active.number, 4)}>+</button>
+          {(growOf(active.number) !== 0 || moveOf(active.number).some(Boolean)) && (
+            <button type="button" className="ghost small" disabled={disabled}
+              onClick={() => {
+                setGrows(old => ({...old, [active.number]: 0}));
+                setMoves(old => ({...old, [active.number]: [0, 0]}));
+              }}>بازنشانی</button>
+          )}
+        </div>
+        <div className="clean-size" role="group" aria-label="جای ناحیهٔ پاک‌سازی">
+          <span>جابه‌جایی</span>
+          <button type="button" className="ghost small" aria-label="بالا" disabled={disabled}
+            onClick={() => nudge(active.number, 0, -4)}>↑</button>
+          <button type="button" className="ghost small" aria-label="پایین" disabled={disabled}
+            onClick={() => nudge(active.number, 0, 4)}>↓</button>
+          <button type="button" className="ghost small" aria-label="چپ" disabled={disabled}
+            onClick={() => nudge(active.number, -4, 0)}>←</button>
+          <button type="button" className="ghost small" aria-label="راست" disabled={disabled}
+            onClick={() => nudge(active.number, 4, 0)}>→</button>
+          <span className="clean-size-hint">یا کادر را بکشید</span>
+        </div>
+        <button
+          type="button"
+          className="ocr"
+          disabled={disabled}
+          onClick={() => {
+            const g = growOf(active.number);
+            const move = moveOf(active.number);
+            const adjust: AreaAdjust = {};
+            if (g) adjust.grow = {[active.number]: g};
+            if (move[0] || move[1]) adjust.shift = {[active.number]: move};
+            onReclean([active.number], g || move[0] || move[1] ? adjust : undefined);
+            setPicked(null);
+          }}
+        >
+          پاک‌سازی مجدد این ناحیه
+        </button>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <div className="clean-canvas" data-testid="clean-canvas">
+        <div className="clean-canvas-scroll">
+          <div
+            className="clean-canvas-page"
+            ref={pageRef}
+            style={{aspectRatio: `${Math.max(1, pageWidth)} / ${Math.max(1, pageHeight)}`}}
+            onClick={() => setPicked(null)}
+          >
+            <img src={`/api/jobs/${jobId}/display/clean?width=1400&v=${version}`} alt="تصویر پاک‌سازی‌شده، بدون متن اصلی" />
+            {renderHotspots(pageRef)}
+            {renderPopover()}
+          </div>
+        </div>
+      </div>
+
+      {modalOpen && (
+        <Overlay label="بزرگ‌نمایی پاک‌سازی متن اصلی" onBackdropClick={closeModal}>
+          <div className="modal-bar">
+            <span className="grow">
+              <b>پاک‌سازی متن اصلی (بزرگ‌نمایی)</b>
+              {disabled && <span style={{color: '#00ffcc', fontSize: '13px', marginInlineStart: '12px'}}>در حال پاک‌سازی…</span>}
+              <span style={{color: '#7d9294', fontSize: '12px', marginInlineStart: '8px'}}>(Esc برای بستن)</span>
+            </span>
+            <span className="modal-actions">
+              <button type="button" onClick={zoomOut} disabled={!zoomed} aria-label="کوچک‌تر">−</button>
+              <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
+              <button type="button" onClick={zoomIn} disabled={zoomed && zoom >= LAST_ZOOM} aria-label="بزرگ‌تر">+</button>
+              <button type="button" onClick={showWidth} disabled={zoomed && zoom === 1}>عرض کامل</button>
+              <button type="button" onClick={showFit} disabled={fit}>تناسب صفحه</button>
               <button
                 type="button"
                 className="ocr"
-                disabled={disabled}
-                onClick={() => {
-                  const g = growOf(active.number);
-                  const move = moveOf(active.number);
-                  const adjust: AreaAdjust = {};
-                  if (g) adjust.grow = {[active.number]: g};
-                  if (move[0] || move[1]) adjust.shift = {[active.number]: move};
-                  onReclean([active.number], g || move[0] || move[1] ? adjust : undefined);
-                  setPicked(null);
-                }}
+                disabled={disabled || areas.length === 0}
+                title="روی همین تصویرِ پاک‌شده دوباره اجرا می‌شود؛ جایگزین نتیجهٔ فعلی نمی‌شود"
+                onClick={() => onReclean(areas.map(area => area.number))}
               >
-                پاک‌سازی مجدد این ناحیه
+                پاک‌سازی مجدد کل صفحه
               </button>
+              <button type="button" ref={modalCloseRef} onClick={closeModal}>بستن ✕</button>
+            </span>
+          </div>
+          <p className="modal-hint" aria-live="polite">
+            روی هر ناحیه کلیک کنید تا کادر و امکانات تغییر اندازه و پاک‌سازیِ مجدد همان بخش باز شود. با دکمهٔ «پاک‌سازی مجدد کل صفحه» کل تصویر دوباره پاک می‌شود.
+          </p>
+          <div className={`modal-stage${fit ? ' fit' : ''}`} ref={modalStageRef}>
+            <div
+              className="clean-canvas-page"
+              ref={modalPageRef}
+              style={
+                fit
+                  ? {
+                      width: 'auto',
+                      height: '100%',
+                      maxHeight: 'calc(100vh - 120px)',
+                      aspectRatio: `${Math.max(1, pageWidth)} / ${Math.max(1, pageHeight)}`,
+                      position: 'relative',
+                      margin: '0 auto',
+                    }
+                  : {
+                      width: `${Math.round(zoom * 100)}%`,
+                      minWidth: '400px',
+                      maxWidth: 'none',
+                      aspectRatio: `${Math.max(1, pageWidth)} / ${Math.max(1, pageHeight)}`,
+                      position: 'relative',
+                      margin: '0 auto',
+                    }
+              }
+              onClick={() => setPicked(null)}
+            >
+              <img
+                src={`/api/jobs/${jobId}/display/clean?width=1800&v=${version}`}
+                alt="تصویر پاک‌سازی‌شده، بدون متن اصلی"
+                style={{display: 'block', width: '100%', height: '100%', objectFit: 'fill'}}
+              />
+              {renderHotspots(modalPageRef)}
+              {renderPopover()}
             </div>
-          )}
-        </div>
-      </div>
-    </div>
+          </div>
+        </Overlay>
+      )}
+    </>
   );
 }
 
@@ -1008,6 +1143,7 @@ export function App() {
   const layoutRenderTimer = useRef<number | null>(null);
   const [sourceVersion, setSourceVersion] = useState(0);
   const [sourceModalOpen, setSourceModalOpen] = useState(false);
+  const [cleanModalOpen, setCleanModalOpen] = useState(false);
   const [ocrVersion, setOcrVersion] = useState(0);
   const [bubbles, setBubbles] = useState<BubbleDoc | null>(null);
   const [bubbleVersion, setBubbleVersion] = useState(0);
@@ -1091,6 +1227,7 @@ export function App() {
   function goToStep(target: number) {
     if (busy || loadingData) return;
     if (target === 3) setMessage('');
+    setCleanModalOpen(false);
     if (target >= 1 && target <= maxStep) setStep(target);
   }
 
@@ -2426,15 +2563,25 @@ export function App() {
                         اجرای پاک‌سازی
                       </button>
                     ) : (
-                      <button
-                        type="button"
-                        className="ocr"
-                        disabled={busy || areasBusy || loadingData || translatedAreas.length === 0}
-                        title="روی همین تصویرِ پاک‌شده دوباره اجرا می‌شود؛ جایگزین نتیجهٔ فعلی نمی‌شود"
-                        onClick={() => void recleanAreas(translatedAreas.map(area => area.number))}
-                      >
-                        پاک‌سازی مجدد کل صفحه
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          className="ocr"
+                          disabled={busy || areasBusy || loadingData || translatedAreas.length === 0}
+                          title="روی همین تصویرِ پاک‌شده دوباره اجرا می‌شود؛ جایگزین نتیجهٔ فعلی نمی‌شود"
+                          onClick={() => void recleanAreas(translatedAreas.map(area => area.number))}
+                        >
+                          پاک‌سازی مجدد کل صفحه
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={busy || loadingData}
+                          onClick={() => setCleanModalOpen(true)}
+                        >
+                          بزرگ‌نمایی تصویر
+                        </button>
+                      </>
                     )}
                   </div>
 
@@ -2447,6 +2594,8 @@ export function App() {
                       areas={translatedAreas}
                       disabled={busy || areasBusy || loadingData}
                       onReclean={(numbers, adjust) => void recleanAreas(numbers, adjust)}
+                      isOpen={cleanModalOpen}
+                      onClose={() => setCleanModalOpen(false)}
                     />
                   )}
 

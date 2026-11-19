@@ -1579,6 +1579,34 @@ describe('ناحیه‌های پاک‌سازی در مرحلهٔ ۳', () => {
     await user.click(within(screen.getByRole('dialog', {name: 'ناحیهٔ ۱'})).getByRole('button', {name: 'بستن'}));
     expect(screen.queryByRole('dialog', {name: 'ناحیهٔ ۱'})).not.toBeInTheDocument();
   });
+
+  it('دکمهٔ بزرگ‌نمایی تصویر در مرحلهٔ ۳ مودال بزرگ‌نمایی پاک‌سازی را باز می‌کند و امکانات پاک‌سازی در آن فعال است', async () => {
+    const {api, user} = await openCleaning();
+    const zoomBtn = screen.getByRole('button', {name: 'بزرگ‌نمایی تصویر'});
+    expect(zoomBtn).toBeInTheDocument();
+    await user.click(zoomBtn);
+
+    const modal = await screen.findByRole('dialog', {name: 'بزرگ‌نمایی پاک‌سازی متن اصلی'});
+    expect(within(modal).getByRole('button', {name: 'پاک‌سازی مجدد کل صفحه'})).toBeInTheDocument();
+    expect(within(modal).getByRole('button', {name: 'کوچک‌تر'})).toBeInTheDocument();
+    expect(within(modal).getByRole('button', {name: 'بزرگ‌تر'})).toBeInTheDocument();
+
+    // کلیک روی ناحیه در مودال و پاک‌سازی مجدد
+    await user.click(within(modal).getByRole('button', {name: 'ناحیهٔ ۲'}));
+    const popover = await within(modal).findByRole('dialog', {name: 'ناحیهٔ ۲'});
+    expect(within(popover).getByText('به‌زودی می‌بینمت.')).toBeInTheDocument();
+    await user.click(within(popover).getByRole('button', {name: 'پاک‌سازی مجدد این ناحیه'}));
+
+    await waitFor(() => {
+      const post = api.calls.filter(call => call.method === 'POST' && call.url.endsWith('/clean') && call.body);
+      expect(post).toHaveLength(1);
+      expect(post[0].body).toEqual({areas: [2]});
+    });
+
+    // بستن مودال
+    await user.click(within(modal).getByRole('button', {name: 'بستن ✕'}));
+    expect(screen.queryByRole('dialog', {name: 'بزرگ‌نمایی پاک‌سازی متن اصلی'})).not.toBeInTheDocument();
+  });
 });
 
 describe('focusAreaView — زوم و پیمایش روی یک ناحیه', () => {
