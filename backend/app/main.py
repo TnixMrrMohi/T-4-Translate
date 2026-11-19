@@ -1779,6 +1779,12 @@ def _layout_blocks(job_id: str, workspace: Path, translation: dict, blocks: list
         override = layout.get(str(entry["number"])) or {}
         entry_path = entry.get("path")
         default_font_id = path_to_id.get(entry_path) if entry_path else None
+        color_tuple = entry.get("color")
+        hex_color = (
+            f"#{color_tuple[0]:02x}{color_tuple[1]:02x}{color_tuple[2]:02x}"
+            if isinstance(color_tuple, (tuple, list)) and len(color_tuple) >= 3
+            else "#111111"
+        )
         result.append({
             "number": entry["number"],
             "kind": entry["kind"],
@@ -1791,6 +1797,8 @@ def _layout_blocks(job_id: str, workspace: Path, translation: dict, blocks: list
             "size": entry["size"],
             "center": entry["center"],
             "rotation": entry["rotation"],
+            "color": override.get("color") or hex_color,
+            "defaultColor": hex_color,
             "font": override.get("font"),
             "defaultFont": default_font_id,
             "auto": entry["auto"],

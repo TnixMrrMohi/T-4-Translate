@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 
 FILE_NAME = "layout.json"
@@ -95,6 +96,15 @@ def sanitize(value) -> dict:
         font = font.strip()[:MAX_FONT_ID]
         if font:
             result["font"] = font
+    color = value.get("color")
+    if isinstance(color, str):
+        color = color.strip()
+        m = re.match(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$", color)
+        if m:
+            hex_digits = m.group(1)
+            if len(hex_digits) == 3:
+                hex_digits = "".join(c * 2 for c in hex_digits)
+            result["color"] = f"#{hex_digits.lower()}"
     return result
 
 

@@ -557,6 +557,30 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
             center_y = float(override["y"])
         rotation = override.get("rotation")
         rotation = float(rotation) if isinstance(rotation, (int, float)) else 0.0
+        contrast = _contrast_color(image, (int(left_b), int(top_b),
+                                           int(right_b), int(bottom_b)))
+        chosen_color = override.get("color")
+        text_color = None
+        if isinstance(chosen_color, str) and chosen_color.strip():
+            try:
+                from PIL import ImageColor
+                text_color = ImageColor.getrgb(chosen_color.strip())[:3]
+            except Exception:
+                text_color = None
+        elif isinstance(chosen_color, (list, tuple)) and len(chosen_color) >= 3:
+            try:
+                text_color = tuple(int(c) for c in chosen_color[:3])
+            except Exception:
+                text_color = None
+
+        if text_color is None:
+            text_color = contrast
+
+        stroke_color = block.get("stroke_color")
+        if stroke_color is None:
+            luminance = 0.299 * text_color[0] + 0.587 * text_color[1] + 0.114 * text_color[2]
+            stroke_color = (255, 255, 255) if luminance < 128 else (0, 0, 0)
+
         entries.append({
             "number": number,
             "kind": kind,
@@ -572,10 +596,9 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
             "wrapped": list(wrapped),
             "center": [round(center_x, 2), round(center_y, 2)],
             "rotation": round(rotation, 2),
-            "color": _contrast_color(image, (int(left_b), int(top_b),
-                                             int(right_b), int(bottom_b))),
+            "color": text_color,
             "stroke": block.get("stroke") if block.get("stroke") is not None else (1 if kind in ("solar", "shout") else 0),
-            "stroke_color": block.get("stroke_color") or ((255, 255, 255) if _contrast_color(image, (int(left_b), int(top_b), int(right_b), int(bottom_b)))[0] < 128 else (0, 0, 0)),
+            "stroke_color": stroke_color,
             "auto": not override,
         })
         if on_progress and total_blocks:

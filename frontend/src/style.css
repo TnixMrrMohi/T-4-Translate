@@ -451,6 +451,16 @@
 .layout-field select,.layout-field input{font:inherit;font-size:13px;padding:8px 10px;border-radius:9px;border:1px solid #ffffff26;background:#050505;color:#e8fbf7;width:100%}
 .layout-field select:focus-visible,.layout-field input:focus-visible{outline:2px solid #00ffcc;outline-offset:1px}
 .layout-field select:disabled,.layout-field input:disabled{opacity:.5;cursor:wait}
+.layout-field.layout-color-field{min-width:140px;flex:0 1 150px}
+.layout-color-row{display:flex;align-items:center;gap:6px}
+.layout-color-row input[type="color"]{width:36px;min-width:36px;height:36px;padding:2px;border-radius:8px;border:1px solid #ffffff33;background:#050505;cursor:pointer;box-sizing:border-box}
+.color-swatch-btn{width:26px;height:26px;border-radius:50%;border:1px solid #ffffff55;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;transition:transform .15s,border-color .15s,box-shadow .15s}
+.color-swatch-btn.is-white{background:#ffffff}
+.color-swatch-btn.is-black{background:#000000;border-color:#ffffff44}
+.color-swatch-btn.is-auto{background:transparent;color:#00ffcc;border-color:#00ffcc66;font-size:14px;font-weight:bold}
+.color-swatch-btn.is-selected{box-shadow:0 0 0 2px #00ffcc;border-color:#00ffcc}
+.color-swatch-btn:hover:not(:disabled){transform:scale(1.1);border-color:#00ffcc}
+.color-swatch-btn:disabled{opacity:.4;cursor:not-allowed}
 .layout-actions{display:flex;gap:8px;flex-wrap:wrap;margin-inline-start:auto}
 .layout-actions button{font-size:12px;padding:9px 12px}
 .layout-hint{margin:0;color:#7d9294;font-size:12px;line-height:1.8}

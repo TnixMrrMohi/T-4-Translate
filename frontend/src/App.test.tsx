@@ -1758,6 +1758,27 @@ describe('ویرایش تک‌تک متن‌های درج‌شده (چیدمان
     expect(lastLayoutPut(calls)?.blocks?.['2']).toBeUndefined();
   });
 
+  it('رنگ متن با دکمه‌های پیش‌تنظیم یا انتخاب‌گر تغییر می‌کند و ذخیره می‌شود', async () => {
+    const {calls, user} = await openEditor();
+
+    const picker = await screen.findByLabelText('انتخاب متن برای ویرایش');
+    await user.selectOptions(picker, '1');
+    const colorInput = screen.getByLabelText('رنگ این متن');
+    expect(colorInput).toBeEnabled();
+
+    // کلیک روی دکمهٔ پیش‌تنظیم سفید
+    await user.click(screen.getByRole('button', {name: 'رنگ سفید'}));
+    await waitFor(() => expect(lastLayoutPut(calls)?.blocks?.['1']?.color).toBe('#ffffff'));
+
+    // تغییر مستقیم رنگ با انتخاب‌گر
+    fireEvent.change(colorInput, {target: {value: '#ff0000'}});
+    await waitFor(() => expect(lastLayoutPut(calls)?.blocks?.['1']?.color).toBe('#ff0000'));
+
+    // کلیک روی دکمهٔ پیش‌تنظیم مشکی
+    await user.click(screen.getByRole('button', {name: 'رنگ مشکی'}));
+    await waitFor(() => expect(lastLayoutPut(calls)?.blocks?.['1']?.color).toBe('#000000'));
+  });
+
   it('هر متن روی تصویر انتخاب می‌شود و با کلید جهت جابه‌جا می‌شود', async () => {
     const {calls, user} = await openEditor();
 

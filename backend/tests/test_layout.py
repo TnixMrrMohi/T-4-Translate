@@ -143,3 +143,34 @@ def test_font_file_is_served_for_the_editor():
         assert response.status_code == 200
         assert response.content[:4] in (b'\x00\x01\x00\x00', b'true', b'OTTO', b'ttcf')
         assert client.get('/api/fonts/no-such-font/file').status_code == 404
+
+
+@needs_cv2
+def test_layout_custom_text_color(tmp_path, monkeypatch):
+    pytest.importorskip('arabic_reshaper')
+    monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: [
+        {'text': 'Hello', 'confidence': .9, 'quad': [[20, 30], [140, 30], [140, 80], [20, 80]]}])
+    with TestClient(app) as client:
+        job = _job(client)
+        layout = client.get(f'/api/jobs/{job}/layout').json()
+        assert 'color' in layout['blocks'][0]
+
+        # تنظیم رنگ سفید دستی
+        saved = client.put(f'/api/jobs/{job}/layout',
+                           json={'blocks': {'1': {'color': '#ffffff'}}})
+        assert saved.status_code == 200
+        assert saved.json()['layout']['1']['color'] == '#ffffff'
+
+        # بازیابی مجدد چیدمان
+        updated = client.get(f'/api/jobs/{job}/layout').json()
+        assert updated['blocks'][0]['color'] == '#ffffff'
+
+        # درج دوباره روی تصویر با رنگ سفارشی
+        assert client.post(f'/api/jobs/{job}/render').status_code == 200
+
+        # رنگ نامعتبر در ضدعفونی‌سازی حذف می‌شود
+        bad = client.put(f'/api/jobs/{job}/layout',
+                         json={'blocks': {'1': {'color': 'invalid-color'}}})
+        assert bad.status_code == 200
+        assert 'color' not in bad.json()['layout'].get('1', {})

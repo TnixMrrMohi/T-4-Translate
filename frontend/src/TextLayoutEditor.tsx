@@ -1,7 +1,15 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 
-/** تنظیم دستی یک متن: اندازه، مرکز، چرخش و فونت. */
-export type TextOverride = {size?: number; x?: number; y?: number; rotation?: number; font?: string; text?: string};
+/** تنظیم دستی یک متن: اندازه، مرکز، چرخش، فونت و رنگ. */
+export type TextOverride = {
+  size?: number;
+  x?: number;
+  y?: number;
+  rotation?: number;
+  font?: string;
+  text?: string;
+  color?: string;
+};
 export type TextOverrides = Record<string, TextOverride>;
 
 export type LayoutBlock = {
@@ -16,6 +24,8 @@ export type LayoutBlock = {
   size: number;
   center: [number, number];
   rotation: number;
+  color?: string | null;
+  defaultColor?: string | null;
   font: string | null;
   defaultFont?: string | null;
   auto: boolean;
@@ -69,6 +79,20 @@ function fontFamily(fontId: string | null | undefined, defaultFontId?: string | 
   const effective = fontId || defaultFontId;
   if (!effective) return 'Vazirmatn, Tahoma, sans-serif';
   return `"t4-font-${effective}", Vazirmatn, Tahoma, sans-serif`;
+}
+
+/** تبدیل رنگ به قالب استاندارد ۶رقمی hex برای مقدار فیلد رنگ HTML */
+function toHex6(color?: string | null): string {
+  if (!color) return '#000000';
+  let hex = color.trim().toLowerCase();
+  if (hex.startsWith('#')) hex = hex.slice(1);
+  if (hex.length === 3) {
+    hex = hex.split('').map(c => c + c).join('');
+  }
+  if (hex.length === 6 && /^[0-9a-f]{6}$/.test(hex)) {
+    return `#${hex}`;
+  }
+  return '#000000';
 }
 
 /**
@@ -153,8 +177,12 @@ export function TextLayoutEditor({
       rotation: current.rotation ?? 0,
       ...(current.font ? {font: current.font} : {}),
       ...(current.text ? {text: current.text} : {}),
+      ...(current.color ? {color: current.color} : {}),
       ...change,
     };
+    if (change.color === undefined && 'color' in change) {
+      delete merged.color;
+    }
     const next: TextOverrides = {...previous, [String(number)]: merged};
     draftRef.current = next;
     setDraft(next);
@@ -242,6 +270,7 @@ export function TextLayoutEditor({
       center: [override.x ?? block.center[0], override.y ?? block.center[1]] as [number, number],
       rotation: override.rotation ?? 0,
       font: override.font ?? null,
+      color: override.color ?? block.color ?? '#101b1b',
     };
   };
 
@@ -345,6 +374,58 @@ export function TextLayoutEditor({
             }}
           />
         </label>
+        <div className="layout-field is-narrow layout-color-field">
+          <span>رنگ</span>
+          <div className="layout-color-row">
+            <input
+              type="color"
+              value={selectedBlock ? toHex6(effective(selectedBlock).color) : '#000000'}
+              disabled={disabled || !selectedBlock}
+              aria-label="رنگ این متن"
+              onChange={event => {
+                if (!selectedBlock) return;
+                patch(selectedBlock.number, {color: event.target.value}, selectedBlock, true);
+              }}
+            />
+            <button
+              type="button"
+              className={`color-swatch-btn is-white${selectedBlock && toHex6(effective(selectedBlock).color) === '#ffffff' ? ' is-selected' : ''}`}
+              disabled={disabled || !selectedBlock}
+              title="سفید"
+              aria-label="رنگ سفید"
+              onClick={() => {
+                if (!selectedBlock) return;
+                patch(selectedBlock.number, {color: '#ffffff'}, selectedBlock, true);
+              }}
+            />
+            <button
+              type="button"
+              className={`color-swatch-btn is-black${selectedBlock && toHex6(effective(selectedBlock).color) === '#000000' ? ' is-selected' : ''}`}
+              disabled={disabled || !selectedBlock}
+              title="مشکی"
+              aria-label="رنگ مشکی"
+              onClick={() => {
+                if (!selectedBlock) return;
+                patch(selectedBlock.number, {color: '#000000'}, selectedBlock, true);
+              }}
+            />
+            {Boolean(selectedBlock && draft[String(selectedBlock.number)]?.color) && (
+              <button
+                type="button"
+                className="color-swatch-btn is-auto"
+                disabled={disabled}
+                title="بازگشت به رنگ خودکار"
+                aria-label="بازگشت به رنگ خودکار"
+                onClick={() => {
+                  if (!selectedBlock) return;
+                  patch(selectedBlock.number, {color: undefined}, selectedBlock, true);
+                }}
+              >
+                ↻
+              </button>
+            )}
+          </div>
+        </div>
         <div className="layout-actions">
           <button type="button" className="ghost" disabled={disabled || selected === null} onClick={resetBlock}>
             بازنشانی این متن
@@ -463,6 +544,7 @@ export function TextLayoutEditor({
                   fontFamily: fontFamily(state.font, block.defaultFont),
                   lineHeight: 1.2,
                   whiteSpace: 'pre-line',
+                  color: state.color,
                   ...(ghost ? {color: 'transparent', textShadow: 'none'} : {}),
                 }}
               >
