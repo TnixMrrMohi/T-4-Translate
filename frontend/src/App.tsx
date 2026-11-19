@@ -2097,7 +2097,7 @@ export function App() {
               </div>
               )}
 
-              {job && sourceVersion > 0 && (
+              {job && sourceVersion > 0 && !ocrProgress && !busy && (
                 <>
                   <p className="wizard-note">
                     تصویر فعلی: <span dir="ltr">{job.width} × {job.height} · {job.format}</span>
@@ -2120,20 +2120,23 @@ export function App() {
                       بزرگ‌نمایی تصویر
                     </button>
                   </div>
-                  <ImagePreview
-                    jobId={job.jobId}
-                    kind="source"
-                    version={sourceVersion}
-                    aspect={job.height / job.width}
-                    alt="نمایش تصویر اصلی"
-                    downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
-                    isOpen={sourceModalOpen}
-                    onClose={() => setSourceModalOpen(false)}
-                    hideThumbnail
-                    defaultZoom={0.5}
-                    defaultFit={false}
-                  />
                 </>
+              )}
+
+              {job && sourceVersion > 0 && (
+                <ImagePreview
+                  jobId={job.jobId}
+                  kind="source"
+                  version={sourceVersion}
+                  aspect={job.height / job.width}
+                  alt="نمایش تصویر اصلی"
+                  downloadName={`t4-${job.jobId}-source.${job.format === 'JPEG' ? 'jpg' : job.format.toLowerCase()}`}
+                  isOpen={sourceModalOpen}
+                  onClose={() => setSourceModalOpen(false)}
+                  hideThumbnail
+                  defaultZoom={0.5}
+                  defaultFit={false}
+                />
               )}
 
               {previousJobs.length > 0 && (

@@ -1243,6 +1243,9 @@ describe('نوار پیشرفت تشخیص خودکار متن', () => {
     const bar = await screen.findByRole('progressbar', {name: 'پیشرفت تشخیص خودکار متن'});
     expect(bar).toHaveAttribute('aria-valuemin', '0');
     expect(bar).toHaveAttribute('aria-valuemax', '100');
+    // دکمه‌های ادامه و بزرگ‌نمایی در حین پردازش مخفی هستند
+    expect(screen.queryByRole('button', {name: 'ادامه (تشخیص خودکار متن)'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: 'بزرگ‌نمایی تصویر'})).not.toBeInTheDocument();
     // درصد واقعیِ سرور روی نوار می‌نشیند (نه متن سادهٔ «در حال پردازش…»).
     await waitFor(() => expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(62));
     expect(screen.queryByText('در حال پردازش…')).not.toBeInTheDocument();
