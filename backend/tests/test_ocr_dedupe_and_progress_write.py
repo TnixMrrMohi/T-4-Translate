@@ -28,6 +28,15 @@ def test_dedupe_keeps_adjacent_lines():
     assert len(ocr._dedupe([first, second])) == 2
 
 
+def test_dedupe_merges_near_touching_ghost_substring():
+    full = _line('TSK. WHAT', 297, 4401, 628, 4443, 0.98)
+    ghost = _line('WHAT', 451, 4383, 628, 4400, 0.86)
+    other = _line('A RIP OFF.', 308, 4466, 615, 4528, 0.98)
+    result = ocr._dedupe([full, ghost, other])
+    assert [line['text'] for line in result] == ['TSK. WHAT', 'A RIP OFF.']
+
+
+
 def test_progress_write_retries_when_replace_is_denied(tmp_path, monkeypatch):
     target = tmp_path / 'progress.json'
     real = Path.replace

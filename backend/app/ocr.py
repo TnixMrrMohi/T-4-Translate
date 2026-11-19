@@ -955,7 +955,24 @@ def _same_line(first: dict, second: dict) -> bool:
     inter = max(0.0, min(ax1, bx1) - max(ax0, bx0)) * max(0.0, min(ay1, by1) - max(ay0, by0))
     smaller = min((ax1 - ax0) * (ay1 - ay0), (bx1 - bx0) * (by1 - by0))
     # نسبت به کادر کوچک‌تر: خواندنِ ناقصِ یک خط (مثل «OEHIKUE») داخل خواندن کامل می‌افتد.
-    return smaller > 0 and inter / smaller >= 0.6
+    if smaller > 0 and inter / smaller >= 0.6:
+        return True
+
+    # کادرهای شبح/برش‌خورده در لبهٔ بالایی یا پایینی حروف (مانند نوک حروف WHAT بالای TSK. WHAT):
+    # متن یکی زیررشتهٔ اکید دیگری است، کادر کوچک‌تر ارتفاع باریکی دارد، در راستای افقی هم‌پوشانی کامل دارد و فاصلهٔ عمودی نزدیک به صفر است.
+    t1 = (first.get("text") or "").strip().upper()
+    t2 = (second.get("text") or "").strip().upper()
+    if t1 and t2 and t1 != t2 and (t1 in t2 or t2 in t1):
+        x_inter = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+        min_w = min(ax1 - ax0, bx1 - bx0)
+        if min_w > 0 and x_inter / min_w >= 0.8:
+            y_gap = max(ay0, by0) - min(ay1, by1)
+            min_h = min(ay1 - ay0, by1 - by0)
+            max_h = max(ay1 - ay0, by1 - by0)
+            if y_gap <= 4.0 and min_h <= max_h * 0.65:
+                return True
+
+    return False
 
 
 def _area(line: dict) -> float:
