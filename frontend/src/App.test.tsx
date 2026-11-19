@@ -619,7 +619,7 @@ describe('تشخیص نوع بالن‌ها در مرحلهٔ ترجمه', () =>
     // فقط یک پیش‌نمایش (OCR) در ستون کنار می‌ماند؛ پیش‌نمایش دومِ بالن‌ها حذف شده…
     expect(await screen.findByAltText('پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده')).toBeInTheDocument();
     expect(screen.queryByAltText('پیش‌نمایش تشخیص بالن‌ها و دستهٔ هرکدام')).not.toBeInTheDocument();
-    expect(document.querySelectorAll('.sidebar-previews .preview-card')).toHaveLength(1);
+    expect(document.querySelectorAll('.wizard-card .preview-card')).toHaveLength(1);
     // …ولی هیچ متنی دربارهٔ نوع/دسته/فونت بالن در کارت نیست.
     const card = within(document.querySelector('.workspace') as HTMLElement);
     expect(card.queryByRole('heading', {name: 'نوع بالن‌ها'})).not.toBeInTheDocument();
@@ -1095,9 +1095,8 @@ describe('چیدمان دو ستونی', () => {
     const steps = within(sidebar).getByRole('list', {name: 'مراحل کار'});
     expect(within(steps).getAllByRole('listitem')).toHaveLength(5);
 
-    // پیش‌نمایش مرحلهٔ جاری هم در همان ستون است، نه داخل کارت.
-    expect(within(sidebar).getByRole('button', {name: /بزرگ‌نمایی:/})).toBeInTheDocument();
-    expect(within(workspace).queryByRole('button', {name: /بزرگ‌نمایی:/})).not.toBeInTheDocument();
+    // پیش‌نمایش تصویر در کارت وسط قرار دارد.
+    expect(within(workspace).getByRole('button', {name: /بزرگ‌نمایی/})).toBeInTheDocument();
   });
 
   it('پیش از انتخاب تصویر، متن‌های توضیحی و پیام پیش‌نمایش خالی نشان داده نمی‌شوند', async () => {
@@ -1323,7 +1322,7 @@ describe('پیش‌نمایش‌های مرحلهٔ ۲', () => {
     const image = box.querySelector('img') as HTMLImageElement;
     // نسخهٔ نمایشی با عرض کافی، نه بندانگشتیِ کوچک.
     expect(image.getAttribute('src')).toContain('/display/ocr?width=');
-    expect(container.querySelectorAll('.sidebar-previews .preview-card')).toHaveLength(1);
+    expect(container.querySelectorAll('.wizard-card .preview-card')).toHaveLength(1);
   });
 });
 

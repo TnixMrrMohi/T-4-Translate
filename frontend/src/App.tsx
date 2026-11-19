@@ -890,7 +890,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
           {(caption || scroll) && (
             <figcaption>
               {caption}
-              {scroll && <button type="button" ref={thumbRef} className="ghost small" onClick={openModal} aria-label={`بزرگ‌نمایی: ${alt}`}>بزرگ‌نمایی</button>}
+              {scroll && <button type="button" ref={thumbRef} className="ghost small" onClick={openModal} aria-label={`بزرگ‌نمایی: ${alt}`}>بزرگ‌نمایی تصویر</button>}
             </figcaption>
           )}
         </figure>
@@ -2116,17 +2116,6 @@ export function App() {
         </ol>
 
         <div className="sidebar-previews" aria-label="پیش‌نمایش مرحلهٔ جاری">
-          {step === 2 && source && ocrVersion > 0 && job && (
-            <ImagePreview
-              jobId={job.jobId}
-              kind="ocr"
-              version={ocrVersion}
-              aspect={job.height / job.width}
-              alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
-              scroll
-              downloadName={`t4-${job.jobId}-ocr.png`}
-            />
-          )}
         </div>
         </aside>
 
@@ -2303,9 +2292,6 @@ export function App() {
                           </svg>
                           مدیریت واترمارک و متن‌های تبلیغاتی
                         </span>
-                        <span className="promo-setting-desc">
-                          اگر در تصویر آدرس سایت قبلی، نام تیم اسکنر یا واترمارک باشد:
-                        </span>
                       </div>
                       <div className="promo-options">
                         <button
@@ -2326,17 +2312,23 @@ export function App() {
                         </button>
                       </div>
                     </div>
-                    <div className="promo-hint">
-                      {promoAction === 'remove' ? (
-                        <span>
-                          <strong>حالت فعال:</strong> واترمارک‌ها و آدرس‌های سایت قبلی از متن شماره‌گذاری‌شده حذف می‌شوند.
-                        </span>
-                      ) : (
-                        <span>
-                          <strong>حالت فعال:</strong> به‌جای متن‌های تبلیغاتی شناسایی‌شده، آدرس <code>{PROMO_SITE}</code> قرار می‌گیرد تا به‌عنوان واترمارک شما در تصویر درج شود.
-                        </span>
-                      )}
-                    </div>
+                    <details className="promo-details">
+                      <summary>توضیحات</summary>
+                      <p className="promo-setting-desc">
+                        اگر در تصویر آدرس سایت قبلی، نام تیم اسکنر یا واترمارک باشد:
+                      </p>
+                      <div className="promo-hint">
+                        {promoAction === 'remove' ? (
+                          <span>
+                            <strong>حالت فعال:</strong> واترمارک‌ها و آدرس‌های سایت قبلی از متن شماره‌گذاری‌شده حذف می‌شوند.
+                          </span>
+                        ) : (
+                          <span>
+                            <strong>حالت فعال:</strong> به‌جای متن‌های تبلیغاتی شناسایی‌شده، آدرس <code>{PROMO_SITE}</code> قرار می‌گیرد تا به‌عنوان واترمارک شما در تصویر درج شود.
+                          </span>
+                        )}
+                      </div>
+                    </details>
                   </div>
                   {/* فیلتر متن‌های مایل و کج (جلوه‌های صوتی) */}
                   <div className="promo-setting" role="group" aria-label="فیلتر متن‌های مایل و کج">
@@ -2348,9 +2340,6 @@ export function App() {
                             <path d="m4.93 4.93 14.14 14.14"/>
                           </svg>
                           فیلتر جلوه‌های صوتی مایل (کج)
-                        </span>
-                        <span className="promo-setting-desc">
-                          متون با زاویهٔ مایل (صداهای بلعیدن، عطسه، سرفه و افکت‌ها):
                         </span>
                       </div>
                       <div className="promo-options">
@@ -2372,18 +2361,36 @@ export function App() {
                         </button>
                       </div>
                     </div>
-                    <div className="promo-hint">
-                      {filterSlanted ? (
-                        <span>
-                          <strong>حالت فعال:</strong> کادرهایی که با زاویهٔ مایل نوشته شده‌اند (مثل جلوه‌های صوتی و صداهای پس‌زمینه) نادیده گرفته می‌شوند و در تصویر و فهرست ترجمه لحاظ نمی‌شوند.
-                        </span>
-                      ) : (
-                        <span>
-                          <strong>حالت غیرفعال:</strong> تمام کادرها حتی با زاویهٔ مایل تشخیص داده شده و شماره‌گذاری می‌شوند.
-                        </span>
-                      )}
-                    </div>
+                    <details className="promo-details">
+                      <summary>توضیحات</summary>
+                      <p className="promo-setting-desc">
+                        متون با زاویهٔ مایل (صداهای بلعیدن، عطسه، سرفه و افکت‌ها):
+                      </p>
+                      <div className="promo-hint">
+                        {filterSlanted ? (
+                          <span>
+                            <strong>حالت فعال:</strong> کادرهایی که با زاویهٔ مایل نوشته شده‌اند (مثل جلوه‌های صوتی و صداهای پس‌زمینه) نادیده گرفته می‌شوند و در تصویر و فهرست ترجمه لحاظ نمی‌شوند.
+                          </span>
+                        ) : (
+                          <span>
+                            <strong>حالت غیرفعال:</strong> تمام کادرها حتی با زاویهٔ مایل تشخیص داده شده و شماره‌گذاری می‌شوند.
+                          </span>
+                        )}
+                      </div>
+                    </details>
                   </div>
+
+                  {job && ocrVersion > 0 && (
+                    <ImagePreview
+                      jobId={job.jobId}
+                      kind="ocr"
+                      version={ocrVersion}
+                      aspect={job.height / job.width}
+                      alt="پیش‌نمایش کادرها و شمارهٔ خطوط تشخیص‌داده‌شده"
+                      scroll
+                      downloadName={`t4-${job.jobId}-ocr.png`}
+                    />
+                  )}
                   <div className="copy-row">
                     <button
                       type="button"
