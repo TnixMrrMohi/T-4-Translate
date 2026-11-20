@@ -1960,12 +1960,57 @@ export function BatchPanel({
                 />
               )}
 
-              <div className="chapter-view" aria-label="نمای فصل">
-                {pages.filter(page => page.state === 'done').map(page => (
-                  <ChapterPage key={page.jobId} jobId={page.jobId} label={page.name} index={page.page}
-                    version={chapterVersion} plain={isPlainPage(page)} />
-                ))}
-              </div>
+              {pages.length > 0 && (
+                <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
+                  <figcaption>
+                    <button
+                      type="button"
+                      className="ghost small"
+                      onClick={() => {
+                        setPreviewModalKind('render');
+                        setPreviewModalOpen(true);
+                      }}
+                      aria-label="بزرگ‌نمایی"
+                      title="بزرگ‌نمایی پیوستهٔ خروجی فصل"
+                    >
+                      بزرگ‌نمایی تصویر
+                    </button>
+                    <span className="fonts-note">
+                      {pages.filter(p => p.state === 'done').length} تصویر آمادهٔ خروجی
+                    </span>
+                  </figcaption>
+                  <div
+                    className="preview-thumb is-scroll batch-stream"
+                    tabIndex={0}
+                    role="region"
+                    aria-label="پیش‌نمایش پیوستهٔ خروجی ترجمه‌شدهٔ فصل"
+                    onClick={() => {
+                      setPreviewModalKind('render');
+                      setPreviewModalOpen(true);
+                    }}
+                  >
+                    {pages.map((p, idx) => (
+                      <div key={p.jobId} className="batch-stream-item">
+                        <span className="batch-stream-tag">
+                          {idx + 1}. {p.name}
+                          {p.state === 'done' ? (isPlainPage(p) ? ' (بدون متن)' : ' ✓') : ''}
+                        </span>
+                        <img
+                          src={
+                            p.state === 'done'
+                              ? (isPlainPage(p)
+                                  ? `/api/jobs/${p.jobId}/display/source?width=800&v=${chapterVersion}`
+                                  : `/api/jobs/${p.jobId}/display/render?width=800&v=${chapterVersion}`)
+                              : `/api/jobs/${p.jobId}/display/clean?width=800&v=${chapterVersion}`
+                          }
+                          alt={`صفحهٔ ${p.page}: ${p.name}`}
+                          loading="lazy"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </figure>
+              )}
 
               {!busy && (
                 <div className="wizard-nav">
