@@ -143,10 +143,12 @@ KIND_COLORS = {
 # نشانه‌های متن تبلیغاتی: آدرس سایت، آی‌دی شبکه‌های اجتماعی، نام اسکنر/مترجم و
 # دعوت به کانال. الگوها محافظه‌کارانه‌اند تا دیالوگ عادی به‌اشتباه تبلیغ شمرده نشود.
 PROMO_PATTERNS = (
-    r"https?://", r"www\.", r"\b[a-z0-9-]+\.(com|net|org|ir|me|xyz|tv|co|io|info|site|online|link)\b",
+    r"https?://", r"www\.",
+    r"\b[a-z0-9-]+\.(com|net|org|ofg|orn|orq|c0m|con|ir|me|xyz|tv|co|io|info|site|online|link|top|vip)\b",
     r"\bt\.me/", r"\bdiscord\.gg/", r"@[a-z0-9_]{4,}\b",
     r"instagram", r"telegram", r"facebook", r"twitter", r"patreon", r"ko-?fi",
     r"translated by", r"translation (by|group)", r"scanlat", r"scans? by", r"scan team",
+    r"\b[a-z0-9_-]*(scans?|scanlat|comics?|webtoon|manga)\b",
     r"read (more|online|at)", r"follow us", r"join (us|our)", r"subscribe",
     r"free webtoon", r"raw provider", r"proofreader",
     r"تبلیغ", r"کانال", r"تلگرام", r"اینستاگرام", r"تخفیف", r"خرید", r"فروش",
@@ -272,9 +274,12 @@ def _classify(features: dict) -> tuple[str, float, str]:
 
     # دندانه‌های زیاد و ریز = تفکر خورشیدی؛ دندانه‌های کم و بزرگ = فریاد.
     if solidity < 0.86 and deep >= 4:
-        if deep >= 14 and solidity >= 0.78:
-            return "solar", 0.62, "دندانه‌های ریز و یکنواخت دور بالن."
-        return "shout", 0.66, "برآمدگی‌های تیز و عمیق روی لبه."
+        # کانتورهای پیچ‌درپیچ با محیط بسیار بزرگ نسبت به مساحت (circularity < 0.08)
+        # متعلق به پس‌زمینهٔ ساختمان‌ها، شاخه‌ها یا ترک‌ها هستند، نه بالن فریاد.
+        if circularity >= 0.08:
+            if deep >= 14 and solidity >= 0.78:
+                return "solar", 0.62, "دندانه‌های ریز و یکنواخت دور بالن."
+            return "shout", 0.66, "برآمدگی‌های تیز و عمیق روی لبه."
 
     if roughness >= 1.12 and circularity >= 0.35 and solidity >= 0.86:
         return "fear", 0.58, "لبهٔ لرزان نسبت به نسخهٔ هموار."
@@ -290,6 +295,8 @@ def _classify(features: dict) -> tuple[str, float, str]:
         return "square", 0.70, "چهار ضلع با گوشه‌های تیز."
 
     if solidity < 0.80:
+        if circularity < 0.08:
+            return "outside", 0.40, "کانتور پیچ‌درپیچ پس‌زمینه."
         return "monster", 0.50, "شکل بی‌قاعده و نامنظم."
 
     if circularity >= 0.55 or (vertices <= 10 and solidity >= 0.90):
@@ -602,6 +609,18 @@ def _analyze_crop(gray, lines: list, image_source, np, cv2) -> tuple[list[dict],
             shared = int((left & right).sum())
             smaller = min(int(left.sum()), int(right.sum()))
             if smaller and shared / smaller >= 0.5:
+                # خطوط یک بالن دیالوگ نمی‌توانند فاصلهٔ عمودی نامتعارف داشته باشند.
+                # فاصلهٔ بیشتر از ۳ برابر ارتفاع خط یعنی دو نوشتهٔ دور از هم روی یک پس‌زمینهٔ مشترک‌اند.
+                line1 = lines[found[first]["line"] - 1]
+                line2 = lines[found[second]["line"] - 1]
+                b1 = _line_bbox(line1.get("quad") if isinstance(line1, dict) else None, width, height)
+                b2 = _line_bbox(line2.get("quad") if isinstance(line2, dict) else None, width, height)
+                if b1 is not None and b2 is not None:
+                    h1 = max(1.0, float(b1[3] - b1[1]))
+                    h2 = max(1.0, float(b2[3] - b2[1]))
+                    v_gap = max(0.0, float(b2[1] - b1[3])) if b2[1] >= b1[3] else max(0.0, float(b1[1] - b2[3]))
+                    if v_gap > max(90.0, 3.0 * min(h1, h2)):
+                        continue
                 parent[find(second)] = find(first)
 
     groups: dict[int, list[int]] = {}
@@ -1162,26 +1181,50 @@ def is_junk_text(text: str, confidence: float | None = None) -> bool:
 
 # ------------------------------------------------ صداواژه‌ها و افکت‌های صوتی (SFX)
 # کلماتی مثل slurp, gulp (قورت دادن/هورت کشیدن)، cough, sneeze (سرفه/عطسه)، haha (خنده)،
-# sigh, gasp (نفس/آه) و افکت‌های صوتی ضربه/محیطی که بیرون بالن نوشته شده‌اند نباید
-# به عنوان متن گفتگو ترجمه شوند و باید دست‌نخورده روی نقاشی باقی بمانند.
+# sigh, gasp (نفس/آه) و افکت‌های صوتی ضربه/محیطی که نباید به عنوان متن گفتگو ترجمه شوند
+# و باید دست‌نخورده روی نقاشی باقی بمانند.
 SFX_WORDS = {
     # خوردن، نوشیدن و قورت دادن
-    "slurp", "gulp", "sip", "munch", "crunch", "chew", "chomp", "nom", "burp", "glug",
+    "slurp", "slurf", "slurr", "gulp", "gulr", "gulf", "glup", "glub", "sip", "munch",
+    "crunch", "chew", "chomp", "nom", "burp", "glug", "gurgle", "swallow", "slosh",
     # سرفه، عطسه، گلو و نفس
-    "cough", "koff", "coff", "ahem", "sneeze", "achoo", "sniff", "snort", "hic", "hiccup",
-    "gasp", "pant", "wheeze", "phew", "whew", "sigh", "yawn",
+    "cough", "koff", "coff", "ahem", "sneeze", "achoo", "atchoo", "sniff", "snort", "hic", "hiccup",
+    "gasp", "pant", "wheeze", "phew", "whew", "sigh", "yawn", "huff", "puff",
     # خنده و پوزخند
     "haha", "hahaha", "hehe", "hehehe", "kuku", "kukuku", "fufu", "fufufu",
-    "chuckle", "giggle", "snicker", "pfft", "bwahaha", "wahaha", "muahaha",
+    "chuckle", "giggle", "snicker", "pfft", "pff", "bwahaha", "wahaha", "muahaha", "cackle",
     # حرکات بدنی و واکنش‌های حسی کمیک
     "shiver", "tremble", "twitch", "flinch", "shudder", "blink", "stare", "glare",
     "peek", "nod", "shrug", "smirk", "sob", "whimper", "groan", "grunt", "tsk", "tch",
+    "gah", "ack", "gahh", "urgh", "argh", "ugh", "eek", "kya", "eep", "gawd",
     # ضربه، برخورد و صداهای محیطی
-    "boom", "bang", "crash", "thud", "smack", "slam", "clatter", "rustle", "rumble",
+    "boom", "bang", "crash", "thud", "smack", "slam", "clatter", "chter", "chatter", "uter", "ulter", "rustle", "rumble",
     "click", "clack", "clink", "tap", "taptap", "drip", "splash", "sizzle", "whoosh",
-    "swish", "zap", "buzz", "crackle", "squeak", "creak", "screech", "shriek", "snap",
-    "rattle", "thump", "plop", "ding", "dong", "vroom", "stagger", "dash", "woosh",
+    "swish", "swoosh", "fwoosh", "zap", "buzz", "crackle", "squeak", "creak", "screech", "shriek", "snap",
+    "rattle", "thump", "bump", "bonk", "wham", "plop", "ding", "dong", "vroom", "stagger", "dash", "woosh",
 }
+
+
+def _is_one_edit_from_sfx(w: str) -> bool:
+    """آیا کلمه با خطای ۱ حرفی OCR به یکی از صداواژه‌ها می‌رسد؟ (مثل gulr -> gulp)"""
+    if len(w) < 4:
+        return False
+    for sfx in SFX_WORDS:
+        if abs(len(w) - len(sfx)) > 1:
+            continue
+        if len(w) == len(sfx):
+            diffs = sum(c1 != c2 for c1, c2 in zip(w, sfx))
+            if diffs <= 1:
+                return True
+        elif len(w) == len(sfx) + 1:
+            for i in range(len(w)):
+                if w[:i] + w[i + 1:] == sfx:
+                    return True
+        elif len(w) + 1 == len(sfx):
+            for i in range(len(sfx)):
+                if sfx[:i] + sfx[i + 1:] == w:
+                    return True
+    return False
 
 
 def is_sfx_text(text: str) -> bool:
@@ -1203,6 +1246,9 @@ def is_sfx_text(text: str) -> bool:
         # تکرار الگوهای خنده: hahahaha, hehehe, kukuku
         if re.fullmatch(r"(ha|he|ku|fu|ah|oh)+", w) and len(w) >= 4:
             continue
+        # خطاهای املایی OCR روی کلمات افکت صوتی (مثل gulr به‌جای gulp)
+        if _is_one_edit_from_sfx(w) or _is_one_edit_from_sfx(collapsed):
+            continue
         return False
     return True
 
@@ -1221,8 +1267,14 @@ def drop_junk_blocks(block_list: list, lines: list) -> list:
         text = item.get("text", "")
         if is_junk_text(text, confidence):
             continue
-        # صداواژه‌ها و افکت‌های صوتی بیرون بالن از فهرست ترجمه کنار گذاشته می‌شوند
-        if item.get("kind") in ("outside", "unknown") and is_sfx_text(text):
-            continue
+        # صداواژه‌ها و افکت‌های صوتی از فهرست ترجمه کنار گذاشته می‌شوند:
+        # ۱. در بیرون بالن، بالن‌های فریاد/نامشخص (shout, outside, unknown, square): تمام صداواژه‌ها و افکت‌ها حذف می‌شوند.
+        # ۲. در بالن صحبت (speech): صداهای بدنی و محیطی (قورت دادن، هورت کشیدن، سرفه، عطسه و...) حذف می‌شوند،
+        #    اما خنده‌های بیانی شخصیت‌ها (مثل Haha!) باقی می‌مانند.
+        if is_sfx_text(text):
+            if item.get("kind") in ("outside", "unknown", "shout", "square"):
+                continue
+            if not re.fullmatch(r"[\s*]*(ha|he|ku|fu|ah|oh)+[\s*!.]*", text, re.I):
+                continue
         kept.append(item)
     return kept

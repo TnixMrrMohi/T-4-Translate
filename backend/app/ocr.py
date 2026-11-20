@@ -1136,7 +1136,7 @@ def _union_quad(q1: list, q2: list) -> list:
     return [[min(xs), min(ys)], [max(xs), min(ys)], [max(xs), max(ys)], [min(xs), max(ys)]]
 
 
-def is_slanted_quad(quad: list, max_angle_deg: float = 14.0) -> bool:
+def is_slanted_quad(quad: list, max_angle_deg: float = 8.0) -> bool:
     """محاسبهٔ زاویهٔ چرخش کادر نسبت به افق؛ آیا مایل و کج است؟"""
     if not quad or len(quad) < 4:
         return False

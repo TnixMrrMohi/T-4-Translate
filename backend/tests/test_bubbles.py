@@ -397,3 +397,44 @@ def test_sfx_outside_bubble_is_dropped_from_blocks():
     assert "Haha!" in texts  # در بالن صحبت باقی می‌ماند
     assert "I am fine." in texts
 
+
+def test_gulp_and_gulr_and_sfx_dropped():
+    assert bubbles.is_sfx_text("GULP")
+    assert bubbles.is_sfx_text("GULR")
+    assert bubbles.is_sfx_text("COUGH")
+    assert bubbles.is_sfx_text("SNEEZE")
+    assert bubbles.is_sfx_text("CHTER")
+    assert bubbles.is_sfx_text("CLATTER")
+    assert bubbles.is_sfx_text("UTER ULTER")
+    assert bubbles.is_promotional("VORTEXSCANS.OFG")
+    assert bubbles.is_promotional("STORM AT VORTEXSCANS.ORG")
+
+    # کانتور پیچ‌درپیچ پس‌زمینه (مثل آسمان بین برج‌ها با دندانه‌های عمیق اما circularity بسیار پایین)
+    bg_features = {
+        "vertices": 4, "deviation": 0.15, "solidity": 0.54, "circularity": 0.0202,
+        "extent": 0.46, "deepDefects": 11, "midDefects": 0, "roughness": 2.4,
+        "hasCompanion": False,
+    }
+    kind, _, _ = bubbles._classify(bg_features)
+    assert kind == "outside"
+
+    lines = [
+        {"text": "GULP", "confidence": 0.95, "quad": [[10, 10], [50, 10], [50, 30], [10, 30]]},
+        {"text": "GULR", "confidence": 0.85, "quad": [[10, 60], [50, 60], [50, 80], [10, 80]]},
+        {"text": "POLICE", "confidence": 0.99, "quad": [[10, 100], [80, 100], [80, 120], [10, 120]]},
+        {"text": "UTER ULTER", "confidence": 0.74, "quad": [[10, 140], [80, 140], [80, 160], [10, 160]]},
+    ]
+    raw_blocks = [
+        {"number": 1, "text": "GULP", "kind": "shout", "lines": [1]},
+        {"number": 2, "text": "GULR", "kind": "outside", "lines": [2]},
+        {"number": 3, "text": "POLICE", "kind": "shout", "lines": [3]},
+        {"number": 4, "text": "UTER ULTER", "kind": "outside", "lines": [4]},
+    ]
+    filtered = bubbles.drop_junk_blocks(raw_blocks, lines)
+    texts = [b["text"] for b in filtered]
+    assert "GULP" not in texts
+    assert "GULR" not in texts
+    assert "UTER ULTER" not in texts
+    assert "POLICE" in texts
+
+
