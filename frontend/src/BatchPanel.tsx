@@ -138,6 +138,67 @@ function saveBlob(blob: Blob, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function hasDirectoryEntry(dataTransfer: DataTransfer): boolean {
+  const items = dataTransfer.items;
+  if (!items || items.length === 0) return false;
+  for (let i = 0; i < items.length; i++) {
+    try {
+      const entry = (items[i] as any).webkitGetAsEntry?.();
+      if (entry?.isDirectory) return true;
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
+
+async function extractDroppedFiles(dataTransfer: DataTransfer): Promise<File[]> {
+  const items = dataTransfer.items;
+  if (items && items.length > 0) {
+    const entries: any[] = [];
+    for (let i = 0; i < items.length; i++) {
+      try {
+        const item = items[i] as any;
+        if (typeof item.webkitGetAsEntry === 'function') {
+          const entry = item.webkitGetAsEntry();
+          if (entry) entries.push(entry);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (entries.length > 0) {
+      const readEntry = async (entry: any): Promise<File[]> => {
+        if (entry.isFile) {
+          return new Promise<File[]>(resolve => {
+            entry.file((file: File) => resolve([file]), () => resolve([]));
+          });
+        }
+        if (entry.isDirectory) {
+          const reader = entry.createReader();
+          const allEntries: any[] = [];
+          const readBatch = async (): Promise<any[]> => {
+            return new Promise(resolve => {
+              reader.readEntries((batch: any[]) => resolve(batch), () => resolve([]));
+            });
+          };
+          let batch: any[];
+          do {
+            batch = await readBatch();
+            allEntries.push(...batch);
+          } while (batch.length > 0);
+          const subFiles = await Promise.all(allEntries.map(readEntry));
+          return subFiles.flat();
+        }
+        return [];
+      };
+      const files = (await Promise.all(entries.map(readEntry))).flat();
+      if (files.length > 0) return files;
+    }
+  }
+  return Array.from(dataTransfer.files ?? []);
+}
+
 /** توضیح اضافهٔ پرامپت برای حالت چندصفحه‌ای. */
 export const BATCH_PROMPT_NOTE = [
   '',
@@ -270,12 +331,15 @@ export function BatchPanel({
     onBusyChange?.(busy !== null);
   }, [busy, onBusyChange]);
   const picker = useRef<HTMLInputElement>(null);
+  const folderPicker = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
   /** تصویرهای تازه به فهرست اضافه می‌شوند (بدون تکرار) و به ترتیب شمارهٔ نام مرتب می‌شوند. */
   function addFiles(list: FileList | File[] | null) {
     if (busy !== null) return;
-    const incoming = Array.from(list ?? []).filter(file => /^image\/(png|jpe?g|webp)$/.test(file.type));
+    const incoming = Array.from(list ?? []).filter(file =>
+      /^image\/(png|jpe?g|webp)$/.test(file.type) || /\.(png|jpe?g|webp)$/i.test(file.name)
+    );
     if (!incoming.length) {
       setMessage('فقط تصویر PNG، JPG یا WebP پذیرفته می‌شود.');
       return;
@@ -789,11 +853,11 @@ export function BatchPanel({
                 role="button"
                 tabIndex={0}
                 aria-label="ناحیهٔ انداختن یا چسباندن تصویرها"
-                onClick={() => busy === null && picker.current?.click()}
+                onClick={() => busy === null && (folderPicker.current?.click() ?? picker.current?.click())}
                 onKeyDown={event => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
-                    if (busy === null) picker.current?.click();
+                    if (busy === null) (folderPicker.current?.click() ?? picker.current?.click());
                   }
                 }}
                 onDragOver={event => {event.preventDefault(); if (busy === null) setDragOver(true);}}
@@ -801,9 +865,24 @@ export function BatchPanel({
                 onDrop={event => {
                   event.preventDefault();
                   setDragOver(false);
-                  addFiles(event.dataTransfer.files);
+                  if (busy !== null) return;
+                  if (hasDirectoryEntry(event.dataTransfer)) {
+                    void extractDroppedFiles(event.dataTransfer).then(addFiles);
+                  } else {
+                    addFiles(event.dataTransfer.files);
+                  }
                 }}
               >
+                <input
+                  ref={folderPicker}
+                  type="file"
+                  multiple
+                  aria-label="انتخاب فولدر"
+                  hidden
+                  disabled={busy !== null}
+                  {...({webkitdirectory: '', directory: ''} as React.InputHTMLAttributes<HTMLInputElement>)}
+                  onChange={event => {addFiles(event.target.files); event.target.value = '';}}
+                />
                 <input
                   ref={picker}
                   type="file"
@@ -814,8 +893,12 @@ export function BatchPanel({
                   disabled={busy !== null}
                   onChange={event => {addFiles(event.target.files); event.target.value = '';}}
                 />
-                <strong>تصویرها را اینجا بکشید یا برای انتخاب کلیک کنید</strong>
-                <small>پشتیبانی از PNG ،JPG و WebP — با کلید میان‌بر Ctrl+V نیز تصویر چسبانده می‌شود</small>
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9bf3cc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                <span>{busy !== null ? 'در حال پردازش…' : 'انتخاب فولدر یا رها کردن تصاویر'}</span>
               </div>
 
               {files.length > 0 && (

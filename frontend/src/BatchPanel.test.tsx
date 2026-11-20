@@ -27,6 +27,13 @@ import {BatchPanel} from './BatchPanel';
 describe('ناحیهٔ انداختن تصویر', () => {
   const png = (name: string) => new File(['x'], name, {type: 'image/png'});
 
+  it('کادر آپلود دسته‌ای با متن سادهٔ انتخاب فولدر یا رها کردن تصاویر و ورودی فولدر نمایش داده می‌شود', () => {
+    render(<BatchPanel onClose={() => {}} prompt="p" />);
+    expect(screen.getByText('انتخاب فولدر یا رها کردن تصاویر')).toBeInTheDocument();
+    const folderInput = screen.getByLabelText('انتخاب فولدر');
+    expect(folderInput).toHaveAttribute('webkitdirectory', '');
+  });
+
   it('تصویرهای انداخته‌شده اضافه و مرتب می‌شوند و فایل غیرتصویر رد می‌شود', () => {
     render(<BatchPanel onClose={() => {}} prompt="p" />);
     const zone = screen.getByRole('button', {name: 'ناحیهٔ انداختن یا چسباندن تصویرها'});

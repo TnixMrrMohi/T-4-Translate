@@ -584,10 +584,10 @@
 @media(max-width:720px){
   .mode-seg-btn{padding:4px 8px;font-size:11px}
 }
-.batch-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:130px;padding:18px;margin:8px 0;text-align:center;border:2px dashed #00ffcc88;border-radius:14px;background:#050b0c;color:#9bf3cc;cursor:pointer;transition:background .15s,border-color .15s,box-shadow .15s}
-.batch-drop strong{font-size:16px;color:#00ffcc}.batch-drop span{font-size:13px;color:#a0ffe0}
-.batch-drop:hover,.batch-drop:focus-visible,.batch-drop.is-over{outline:none;background:#0b1a1d;border-color:#00ffcc;box-shadow:0 0 14px rgba(0,255,204,.3)}
-.batch-drop.is-busy{opacity:.5;cursor:wait}
+.batch-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:160px;padding:16px;margin:8px 0;text-align:center;border:2px dashed #9bf3cc;border-radius:12px;background:#0b171d;color:#9bf3cc;cursor:pointer;transition:background .15s,border-color .15s,box-shadow .15s}
+.batch-drop span{font-size:14px;color:#9bf3cc}
+.batch-drop:hover,.batch-drop:focus-visible,.batch-drop.drag-over,.batch-drop.is-over{outline:none;background:#0b1a1d;border-color:#00ffcc;box-shadow:0 0 14px rgba(0,255,204,.3)}
+.batch-drop.busy,.batch-drop.is-busy{opacity:.5;cursor:wait}
 
 /* پیش‌نمایش پیوستهٔ کادرهای OCR در سایدبار پردازش دسته‌ای */
 .batch-preview-header{display:flex;align-items:center;justify-content:space-between;margin:0 0 6px;gap:8px}
