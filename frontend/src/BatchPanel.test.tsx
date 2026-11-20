@@ -147,7 +147,7 @@ describe('ناحیهٔ انداختن تصویر', () => {
     localStorage.removeItem('t4-batch-v2');
   });
 
-  it('در مرحلهٔ ۲ در ستون راست باکسی پیوسته از همهٔ تصاویر فصل با پیش‌نمایش OCR نمایش داده می‌شود', async () => {
+  it('در مرحلهٔ ۲ در کارت اصلی باکسی پیوسته از همهٔ تصاویر فصل با پیش‌نمایش OCR و قابلیت زوم نمایش داده می‌شود', async () => {
     localStorage.setItem('t4-batch-v2', JSON.stringify({
       pages: [
         {page: 1, name: 'page1.png', jobId: 'job-p1', revision: 'r1', text: '[1] Line 1', state: 'extracted'},
@@ -161,9 +161,13 @@ describe('ناحیهٔ انداختن تصویر', () => {
     }));
 
     render(<BatchPanel onClose={() => {}} prompt="p" />);
-    // باکس پیش‌نمایش در سایدبار حضور دارد
+    // سایدبار نباید پیش‌نمایش داشته باشد
+    expect(document.querySelector('.sidebar .sidebar-previews')).toBeNull();
+
+    // باکس پیش‌نمایش در کارت اصلی حضور دارد
     const previewRegion = screen.getByRole('region', {name: 'پیش‌نمایش پیوستهٔ صفحات با کادرهای OCR'});
     expect(previewRegion).toBeInTheDocument();
+    expect(previewRegion.closest('.wizard-card')).not.toBeNull();
 
     // تمام تصاویر چسبیده به هم رندر شده‌اند
     const images = screen.getAllByRole('img');
@@ -177,9 +181,32 @@ describe('ناحیهٔ انداختن تصویر', () => {
     fireEvent.click(zoomBtn);
     expect(screen.getByRole('dialog', {name: 'پیش‌نمایش پیوستهٔ کادرهای OCR فصل'})).toBeInTheDocument();
 
-    // بستن مودال
-    const closeBtn = screen.getByRole('button', {name: 'بستن ✕'});
-    fireEvent.click(closeBtn);
+    // زوم اولیه ۵۰٪ است
+    expect(screen.getByText('50٪')).toBeInTheDocument();
+
+    // بزرگ‌تر (+) به ۷۵٪ می‌رود
+    const zoomInBtn = screen.getByRole('button', {name: 'بزرگ‌تر'});
+    fireEvent.click(zoomInBtn);
+    expect(screen.getByText('75٪')).toBeInTheDocument();
+
+    // کوچک‌تر (−) به ۵۰٪ برمی‌گردد
+    const zoomOutBtn = screen.getByRole('button', {name: 'کوچک‌تر'});
+    fireEvent.click(zoomOutBtn);
+    expect(screen.getByText('50٪')).toBeInTheDocument();
+
+    // دکمهٔ «عرض کامل» به ۱۰۰٪ می‌برد
+    const fullWidthBtn = screen.getByRole('button', {name: 'عرض کامل'});
+    fireEvent.click(fullWidthBtn);
+    expect(screen.getByText('100٪')).toBeInTheDocument();
+
+    // دکمهٔ «تناسب صفحه» به حالت fit می‌برد
+    const fitBtn = screen.getByRole('button', {name: 'تناسب صفحه'});
+    fireEvent.click(fitBtn);
+    expect(fitBtn).toBeDisabled();
+    expect(document.querySelector('.modal-zoom')?.textContent).toBe('تناسب صفحه');
+
+    // بستن مودال با کلید Escape
+    fireEvent.keyDown(window, {key: 'Escape'});
     expect(screen.queryByRole('dialog', {name: 'پیش‌نمایش پیوستهٔ کادرهای OCR فصل'})).not.toBeInTheDocument();
 
     localStorage.removeItem('t4-batch-v2');

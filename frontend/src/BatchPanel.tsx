@@ -1,6 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
-import {createPortal} from 'react-dom';
 import {ChapterPage} from './ChapterPage';
+import {Overlay} from './Overlay';
 import {copyToClipboard} from './clipboard';
 
 const WEBP_QUALITY = 90;
@@ -264,6 +264,123 @@ function BatchProgressBar({
   );
 }
 
+const FIRST_ZOOM = 0.5;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = 0.25;
+const ZOOM_LADDER: number[] = (() => {
+  const steps: number[] = [];
+  for (let value = FIRST_ZOOM; value <= MAX_ZOOM + 1e-9; value += ZOOM_STEP) {
+    steps.push(Math.round(value * 100) / 100);
+  }
+  return steps;
+})();
+const LAST_ZOOM = ZOOM_LADDER[ZOOM_LADDER.length - 1];
+
+function BatchOcrModal({
+  open,
+  onClose,
+  pages,
+  chapterVersion,
+}: {
+  open: boolean;
+  onClose: () => void;
+  pages: BatchPage[];
+  chapterVersion: number;
+}) {
+  const [zoom, setZoom] = useState(FIRST_ZOOM);
+  const [fit, setFit] = useState(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      setZoom(FIRST_ZOOM);
+      setFit(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setTimeout(() => closeRef.current?.focus(), 50);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+      else if (event.key === '+' || event.key === '=') zoomIn();
+      else if (event.key === '-') zoomOut();
+      else if (event.key === '0') showFit();
+      else if (event.key === 'w' || event.key === 'W') (!fit && zoom === 1 ? showFit() : showWidth());
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open, fit, zoom]);
+
+  if (!open) return null;
+
+  const zoomIn = () => {
+    if (fit) {setFit(false); setZoom(FIRST_ZOOM); return;}
+    const next = ZOOM_LADDER.find(step => step > zoom + 1e-9);
+    if (next !== undefined) setZoom(next);
+  };
+  const zoomOut = () => {
+    if (fit) return;
+    const previous = [...ZOOM_LADDER].reverse().find(step => step < zoom - 1e-9);
+    if (previous === undefined) {setFit(true); setZoom(1); return;}
+    setZoom(previous);
+  };
+  const showWidth = () => {setFit(false); setZoom(1);};
+  const showFit = () => {setFit(true); setZoom(1);};
+
+  return (
+    <Overlay label="پیش‌نمایش پیوستهٔ کادرهای OCR فصل" onBackdropClick={onClose}>
+      <div className="modal-bar">
+        <span className="grow">
+          پیش‌نمایش پیوستهٔ صفحات فصل ({pages.length} تصویر) — همراه کادر و شمارهٔ خطوط OCR
+          <span style={{color: '#7d9294', fontSize: '12px', marginInlineStart: '8px'}}>(Esc برای بستن)</span>
+        </span>
+        <span className="modal-actions">
+          <button type="button" onClick={zoomOut} disabled={!fit && zoom <= FIRST_ZOOM + 1e-9} aria-label="کوچک‌تر">−</button>
+          <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
+          <button type="button" onClick={zoomIn} disabled={!fit && zoom >= LAST_ZOOM - 1e-9} aria-label="بزرگ‌تر">+</button>
+          <button type="button" onClick={showWidth} disabled={!fit && zoom === 1}>عرض کامل</button>
+          <button type="button" onClick={showFit} disabled={fit}>تناسب صفحه</button>
+          <button type="button" ref={closeRef} onClick={onClose}>بستن ✕</button>
+        </span>
+      </div>
+      <p className="modal-hint" aria-live="polite">
+        {fit
+          ? 'تناسب صفحه — برای بزرگ‌نمایی از دکمه‌های بالا یا کلیدهای + و − استفاده کنید'
+          : `${Math.round(zoom * 100)}٪ — پله‌های زوم از ۵۰٪ تا ۴۰۰٪`}
+      </p>
+      <div className={`modal-stage${fit ? ' fit' : ''}`} ref={stageRef} style={{display: 'block', overflowY: 'auto', maxHeight: 'calc(100vh - 100px)'}}>
+        <div
+          style={{
+            width: fit ? '100%' : `${Math.round(zoom * 100)}%`,
+            maxWidth: fit ? '850px' : 'none',
+            margin: '0 auto',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 0,
+            transition: 'width 0.15s ease-out',
+          }}
+        >
+          {pages.map((p, idx) => (
+            <div key={p.jobId} style={{position: 'relative', width: '100%', lineHeight: 0}}>
+              <span className="batch-stream-tag">{idx + 1}. {p.name}</span>
+              <img
+                src={`/api/jobs/${p.jobId}/display/ocr?width=1200&v=${chapterVersion}`}
+                alt={`صفحهٔ ${p.page}: ${p.name}`}
+                style={{width: '100%', height: 'auto', display: 'block'}}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+
 export function BatchPanel({
   onClose,
   prompt,
@@ -322,14 +439,6 @@ export function BatchPanel({
   const [chapterVersion, setChapterVersion] = useState(() => Date.now());
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
 
-  useEffect(() => {
-    if (!previewModalOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPreviewModalOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [previewModalOpen]);
   // پس از برگشت از ویرایشگر، خروجی‌های تغییرکرده دوباره بارگذاری می‌شوند.
   useEffect(() => {
     if (visible) setChapterVersion(Date.now());
@@ -955,45 +1064,6 @@ export function BatchPanel({
           )}
         </div>
 
-        {batchStep >= 2 && pages.length > 0 && (
-          <div className="sidebar-previews" aria-label="پیش‌نمایش پیوستهٔ کادرهای OCR">
-            <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
-              <div className="batch-preview-header">
-                <span className="batch-preview-title">پیش‌نمایش OCR فصل ({pages.length} تصویر)</span>
-                <button
-                  type="button"
-                  className="ghost small"
-                  onClick={() => setPreviewModalOpen(true)}
-                  title="بزرگ‌نمایی پیوستهٔ فصل"
-                >
-                  بزرگ‌نمایی
-                </button>
-              </div>
-              <div
-                className="preview-thumb is-scroll batch-stream"
-                tabIndex={0}
-                role="region"
-                aria-label="پیش‌نمایش پیوستهٔ صفحات با کادرهای OCR"
-                onClick={() => setPreviewModalOpen(true)}
-              >
-                {pages.map((p, idx) => (
-                  <div key={p.jobId} className="batch-stream-item">
-                    <span className="batch-stream-tag">{idx + 1}. {p.name}</span>
-                    <img
-                      src={`/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`}
-                      alt={`صفحهٔ ${p.page}: ${p.name}`}
-                      loading="lazy"
-                    />
-                  </div>
-                ))}
-              </div>
-              <figcaption>
-                <span>تصاویر پیوستهٔ فصل با کادرهای متن و شماره‌ها</span>
-              </figcaption>
-            </figure>
-          </div>
-        )}
-
         <details className="batch-legend">
           <summary>راهنمای کد مرحله‌ها</summary>
           <ul>
@@ -1150,6 +1220,41 @@ export function BatchPanel({
           {batchStep === 2 && (
             <>
               <h2 className="wizard-title">مرحله ۲: ترجمهٔ فارسی</h2>
+
+              {pages.length > 0 && (
+                <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
+                  <figcaption>
+                    <button
+                      type="button"
+                      className="ghost small"
+                      onClick={() => setPreviewModalOpen(true)}
+                      aria-label="بزرگ‌نمایی"
+                      title="بزرگ‌نمایی پیوستهٔ فصل"
+                    >
+                      بزرگ‌نمایی تصویر
+                    </button>
+                    <span>پیش‌نمایش OCR فصل ({pages.length} تصویر) — همراه کادر و شمارهٔ خطوط</span>
+                  </figcaption>
+                  <div
+                    className="preview-thumb is-scroll batch-stream"
+                    tabIndex={0}
+                    role="region"
+                    aria-label="پیش‌نمایش پیوستهٔ صفحات با کادرهای OCR"
+                    onClick={() => setPreviewModalOpen(true)}
+                  >
+                    {pages.map((p, idx) => (
+                      <div key={p.jobId} className="batch-stream-item">
+                        <span className="batch-stream-tag">{idx + 1}. {p.name}</span>
+                        <img
+                          src={`/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`}
+                          alt={`صفحهٔ ${p.page}: ${p.name}`}
+                          loading="lazy"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </figure>
+              )}
 
               <div className="wizard-nav start">
                 <button
@@ -1365,31 +1470,12 @@ export function BatchPanel({
         </section>
       </section>
 
-      {previewModalOpen && createPortal(
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="پیش‌نمایش پیوستهٔ کادرهای OCR فصل">
-          <div className="modal-bar">
-            <span className="grow">پیش‌نمایش پیوستهٔ صفحات فصل ({pages.length} تصویر) — همراه کادر و شمارهٔ خطوط OCR</span>
-            <div className="modal-actions">
-              <button type="button" className="ghost" onClick={() => setPreviewModalOpen(false)}>بستن ✕</button>
-            </div>
-          </div>
-          <div className="modal-stage" style={{display: 'block', overflowY: 'auto', maxHeight: 'calc(100vh - 80px)'}}>
-            <div style={{maxWidth: '900px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 0}}>
-              {pages.map((p, idx) => (
-                <div key={p.jobId} style={{position: 'relative', width: '100%', lineHeight: 0}}>
-                  <span className="batch-stream-tag">{idx + 1}. {p.name}</span>
-                  <img
-                    src={`/api/jobs/${p.jobId}/display/ocr?width=1200&v=${chapterVersion}`}
-                    alt={`صفحهٔ ${p.page}: ${p.name}`}
-                    style={{width: '100%', height: 'auto', display: 'block'}}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+      <BatchOcrModal
+        open={previewModalOpen}
+        onClose={() => setPreviewModalOpen(false)}
+        pages={pages}
+        chapterVersion={chapterVersion}
+      />
     </div>
   );
 }
