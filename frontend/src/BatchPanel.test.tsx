@@ -277,6 +277,35 @@ describe('ناحیهٔ انداختن تصویر', () => {
     localStorage.removeItem('t4-promo');
     localStorage.removeItem('t4-filter-slanted');
   });
+
+  it('در مرحلهٔ ۳ دکمه‌های متناقض و متن‌های توضیحی اضافه حذف شده و دکمه‌های اقدام در ناوبری پایین قرار دارند', () => {
+    localStorage.setItem('t4-batch-v2', JSON.stringify({
+      pages: [
+        {page: 1, name: 'page1.png', jobId: 'job-p1', revision: 'r1', text: '[1] Line 1', state: 'extracted'},
+      ],
+      files: [{name: 'page1.png', pieces: [{jobId: 'job-p1', top: 0, bottom: 500}]}],
+      translated: '=== 001 | page1.png ===\n[1] ترجمه',
+    }));
+
+    render(<BatchPanel onClose={() => {}} prompt="p" />);
+
+    // قبلاً ترجمه وجود داشته بنابراین مستقیماً در مرحله ۳ است
+    expect(screen.getByRole('heading', {name: 'مرحله ۳: پاک‌سازی'})).toBeInTheDocument();
+
+    // هیچ پاراگراف توضیحی پر سر و صدایی نباید باشد
+    expect(document.querySelector('.wizard-help')).toBeNull();
+
+    // هیچ دکمهٔ تکراری در بالای لیست نباید باشد
+    expect(screen.queryByRole('button', {name: 'اجرای پاک‌سازی دسته‌ای'})).toBeNull();
+    expect(screen.queryByRole('button', {name: 'اجرای کامل (پاک‌سازی و درج ترجمه)'})).toBeNull();
+
+    // دکمه‌های ناوبری پایین کارت
+    expect(screen.getByRole('button', {name: '→ مرحلهٔ قبل: ترجمهٔ فارسی'})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'فقط پاک‌سازی'})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'پاک‌سازی و درج ترجمه ←'})).toBeInTheDocument();
+
+    localStorage.removeItem('t4-batch-v2');
+  });
 });
 
 import {isPlainPage} from './BatchPanel';

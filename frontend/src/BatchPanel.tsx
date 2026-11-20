@@ -459,6 +459,10 @@ export function BatchPanel({
   useEffect(() => {
     if (visible) setChapterVersion(Date.now());
   }, [visible]);
+  // با تغییر مرحله، پیام‌های وضعیت مراحل قبل پاک می‌شوند تا فضای کاربری خلوت بماند.
+  useEffect(() => {
+    setMessage('');
+  }, [batchStep]);
   // نتیجهٔ دسته‌ای با بستن برنامه از بین نرود (فایل‌ها روی سیستم می‌مانند).
   const restored = useRef(false);
   useEffect(() => {
@@ -1099,7 +1103,10 @@ export function BatchPanel({
       ? 'پرامپت و متن همهٔ صفحه‌ها کپی شد؛ در هوش مصنوعی بچسبانید.'
       : 'متن استخراج‌شدهٔ همهٔ صفحه‌ها کپی شد.');
     if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
-    copiedTimer.current = window.setTimeout(() => setCopied(null), 2500);
+    copiedTimer.current = window.setTimeout(() => {
+      setCopied(null);
+      setMessage('');
+    }, 2500);
   }
 
   return (
@@ -1500,24 +1507,13 @@ export function BatchPanel({
           {batchStep === 3 && (
             <>
               <h2 className="wizard-title">مرحله ۳: پاک‌سازی</h2>
-              <p className="wizard-help">
-                پاک‌سازی خودکار متن اصلی از روی تصاویر تمام صفحات فصل با هوش مصنوعی (Inpaint).
-              </p>
 
-              {!busy && (
+              {!busy && failedPages.length > 0 && (
                 <div className="wizard-nav start">
-                  <button type="button" className="ocr" disabled={!translated.trim()} onClick={() => void run(undefined, 'clean')}>
-                    اجرای پاک‌سازی دسته‌ای
+                  <button type="button" className="ghost" disabled={!translated.trim()}
+                    onClick={() => void run(failedPages.map(page => page.jobId), 'clean')}>
+                    تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
                   </button>
-                  <button type="button" className="ghost" disabled={!translated.trim()} onClick={() => void run(undefined, 'full')}>
-                    اجرای کامل (پاک‌سازی و درج ترجمه)
-                  </button>
-                  {failedPages.length > 0 && (
-                    <button type="button" className="ghost" disabled={!translated.trim()}
-                      onClick={() => void run(failedPages.map(page => page.jobId), 'clean')}>
-                      تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
-                    </button>
-                  )}
                 </div>
               )}
 
@@ -1548,12 +1544,35 @@ export function BatchPanel({
               </ul>
 
               <div className="wizard-nav">
-                <button type="button" className="ghost" onClick={() => setBatchStep(2)}>
+                <button type="button" className="ghost" disabled={busy !== null} onClick={() => setBatchStep(2)}>
                   → مرحلهٔ قبل: ترجمهٔ فارسی
                 </button>
-                <button type="button" className="ocr" onClick={() => setBatchStep(4)}>
-                  مرحلهٔ بعد: درج ترجمه ←
-                </button>
+                {pages.every(p => p.state === 'done') ? (
+                  <button type="button" className="ocr" disabled={busy !== null} onClick={() => setBatchStep(4)}>
+                    مرحلهٔ بعد: درج ترجمه ←
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={busy !== null || !translated.trim()}
+                      onClick={() => void run(undefined, 'clean')}
+                      title="فقط پاک‌سازی متن اصلی از روی تصاویر"
+                    >
+                      فقط پاک‌سازی
+                    </button>
+                    <button
+                      type="button"
+                      className="ocr"
+                      disabled={busy !== null || !translated.trim()}
+                      onClick={() => void run(undefined, 'full')}
+                      title="پاک‌سازی متن اصلی، درج ترجمه و انتقال مستقیم به مقایسه"
+                    >
+                      پاک‌سازی و درج ترجمه ←
+                    </button>
+                  </>
+                )}
               </div>
             </>
           )}
@@ -1561,21 +1580,13 @@ export function BatchPanel({
           {batchStep === 4 && (
             <>
               <h2 className="wizard-title">مرحله ۴: درج ترجمه</h2>
-              <p className="wizard-help">
-                درج خودکار متون ترجمه‌شده روی تصاویر پاک‌شدهٔ فصل با فونت و تنظیمات استاندارد.
-              </p>
 
-              {!busy && (
+              {!busy && failedPages.length > 0 && (
                 <div className="wizard-nav start">
-                  <button type="button" className="ocr" disabled={!translated.trim()} onClick={() => void run(undefined, 'render')}>
-                    درج ترجمه روی همهٔ صفحه‌ها
+                  <button type="button" className="ghost" disabled={!translated.trim()}
+                    onClick={() => void run(failedPages.map(page => page.jobId), 'render')}>
+                    تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
                   </button>
-                  {failedPages.length > 0 && (
-                    <button type="button" className="ghost" disabled={!translated.trim()}
-                      onClick={() => void run(failedPages.map(page => page.jobId), 'render')}>
-                      تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
-                    </button>
-                  )}
                 </div>
               )}
 
@@ -1606,11 +1617,19 @@ export function BatchPanel({
               </ul>
 
               <div className="wizard-nav">
-                <button type="button" className="ghost" onClick={() => setBatchStep(3)}>
+                <button type="button" className="ghost" disabled={busy !== null} onClick={() => setBatchStep(3)}>
                   → مرحلهٔ قبل: پاک‌سازی
                 </button>
+                <button
+                  type="button"
+                  className="ocr"
+                  disabled={busy !== null || !translated.trim()}
+                  onClick={() => void run(undefined, 'render')}
+                >
+                  درج ترجمه روی همهٔ صفحه‌ها ←
+                </button>
                 {doneCount > 0 && (
-                  <button type="button" className="ocr" onClick={() => setBatchStep(5)}>
+                  <button type="button" className="ghost" disabled={busy !== null} onClick={() => setBatchStep(5)}>
                     مرحلهٔ بعد: مقایسه و خروجی ←
                   </button>
                 )}
@@ -1621,10 +1640,6 @@ export function BatchPanel({
           {batchStep === 5 && (
             <>
               <h2 className="wizard-title">مرحله ۵: مقایسه</h2>
-              <p className="wizard-help">
-                همهٔ صفحه‌ها به ترتیب زیر هم‌اند. روی هر متنِ تصویر کلیک کنید: فونت، اندازه، چرخش، جا، متن و
-                خط‌بندی‌اش را عوض کنید یا پشتش را دوباره پاک کنید. تغییرها همان لحظه ذخیره و درج می‌شوند.
-              </p>
 
               {!busy && (
                 <div className="wizard-nav start">
