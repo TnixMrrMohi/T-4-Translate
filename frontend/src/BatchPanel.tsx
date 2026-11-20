@@ -4,7 +4,13 @@ import {Overlay} from './Overlay';
 import {copyToClipboard} from './clipboard';
 
 const WEBP_QUALITY = 90;
-const HEADER = /^===\s*(\d+)\s*\|\s*(.+?)\s*===\s*$/;
+const HEADER = /^===\s*([0-9۰-۹٠-٩]+)(?:\s*\|\s*.+?)?\s*===\s*$/;
+
+export function toEnglishDigits(text: string): string {
+  return text
+    .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)));
+}
 
 /** تکه‌ای از خروجی یک کار که بخشی از فایل نهایی است. */
 export type BatchPiece = {jobId: string; top: number; bottom: number};
@@ -38,7 +44,7 @@ export const PROMO_RULES: Record<PromoAction, string> = {
 };
 
 /** متن همهٔ صفحه‌ها با تیتر هر صفحه؛ همین قالب برای ترجمه برگردانده می‌شود. */
-export const isPlainPage = (page: BatchPage) => page.noText ?? page.text.trim() === '';
+export const isPlainPage = (page: BatchPage) => Boolean(page.noText || !(page.text || '').trim());
 
 export function buildBatchText(pages: BatchPage[]): string {
   // صفحه‌های بدون متن در فهرست ترجمه نمی‌آیند (چیزی برای ترجمه ندارند).
@@ -52,11 +58,14 @@ export function splitBatchText(text: string): Map<number, string> {
   for (const line of text.split(/\r?\n/)) {
     const match = HEADER.exec(line.trim());
     if (match) {
-      current = Number(match[1]);
+      current = Number(toEnglishDigits(match[1]));
       result.set(current, []);
     } else if (current !== null) {
       result.get(current)!.push(line);
     }
+  }
+  if (result.size === 0 && text.trim()) {
+    result.set(1, [text.trim()]);
   }
   return new Map([...result].map(([page, lines]) => [page, lines.join('\n').trim()]));
 }
@@ -985,18 +994,52 @@ export function BatchPanel({
       try {
         const text = parts.get(page.page);
         if (!text) throw new Error('ترجمهٔ این صفحه در متن نیست (تیتر === ... === را نگه دارید).');
-        if (phase === 'clean' || phase === 'full') {
-          const saveMsg = stage('save', tag);
-          setProgress(saveMsg);
-          setBatchProgress({
-            fraction: frac + (0.5 / targets.length) * 0.2,
-            label: `در حال ثبت ترجمه — صفحه ${(at + 1).toLocaleString('fa-IR')} از ${targets.length.toLocaleString('fa-IR')}…`,
-            detail: saveMsg,
-          });
+
+        // ۱. همیشه ترجمهٔ صفحه را در سرور ذخیره و همگام می‌کنیم (هم پاک‌سازی و هم درج ترجمه به translations.json نیاز دارند)
+        const saveMsg = stage('save', tag);
+        setProgress(saveMsg);
+        setBatchProgress({
+          fraction: frac + (0.5 / targets.length) * 0.2,
+          label: `در حال ثبت ترجمه — صفحه ${(at + 1).toLocaleString('fa-IR')} از ${targets.length.toLocaleString('fa-IR')}…`,
+          detail: saveMsg,
+        });
+
+        const saveTranslations = async (rev: string) => {
           await call(`/api/jobs/${page.jobId}/translations`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({sourceRevision: page.revision, text, promo: promoAction}),
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({sourceRevision: rev, text, promo: promoAction}),
           }, 'ذخیرهٔ ترجمه');
+        };
+
+        try {
+          await saveTranslations(page.revision);
+        } catch (saveErr) {
+          if (saveErr instanceof HttpError && saveErr.status === 409 && saveErr.message.includes('OCR')) {
+            const res = await call(`/api/jobs/${page.jobId}/translation-source?promo=${promoAction}`, undefined, 'منبع ترجمه');
+            const freshSource = await res.json();
+            await saveTranslations(freshSource.revision);
+            page.revision = freshSource.revision;
+          } else {
+            throw saveErr;
+          }
+        }
+
+        // ۲. آیا پاک‌سازی نیاز است؟
+        let needClean = phase === 'clean' || phase === 'full';
+        if (!needClean && phase === 'render') {
+          try {
+            const artRes = await call(`/api/jobs/${page.jobId}/artifacts`, undefined, 'بررسی وضعیت خروجی‌ها');
+            const art = await artRes.json();
+            if (!art.clean) {
+              needClean = true;
+            }
+          } catch {
+            needClean = true;
+          }
+        }
+
+        const executeClean = async () => {
           const cleanMsg = stage('clean', tag);
           setProgress(cleanMsg);
           setBatchProgress({
@@ -1005,7 +1048,13 @@ export function BatchPanel({
             detail: cleanMsg,
           });
           await retrying('پاک‌سازی', () => call(`/api/jobs/${page.jobId}/clean`, {method: 'POST'}, 'پاک‌سازی'));
+        };
+
+        if (needClean) {
+          await executeClean();
         }
+
+        // ۳. درج ترجمه
         if (phase === 'render' || phase === 'full') {
           const renderMsg = stage('render', tag);
           setProgress(renderMsg);
@@ -1014,9 +1063,24 @@ export function BatchPanel({
             label: `در حال درج ترجمه — صفحه ${(at + 1).toLocaleString('fa-IR')} از ${targets.length.toLocaleString('fa-IR')}…`,
             detail: renderMsg,
           });
-          await retrying('درج ترجمه', () => call(`/api/jobs/${page.jobId}/render`, {method: 'POST'}, 'درج ترجمه'));
+
+          const executeRender = async () => {
+            await retrying('درج ترجمه', () => call(`/api/jobs/${page.jobId}/render`, {method: 'POST'}, 'درج ترجمه'));
+          };
+
+          try {
+            await executeRender();
+          } catch (renderErr) {
+            // در صورتی که پاک‌سازی قبلی با ترجمهٔ جدید مطابقت نداشت (۴۰۹)، پاک‌سازی را خودکار انجام داده و مجدد رندر می‌کنیم
+            if (renderErr instanceof HttpError && renderErr.status === 409 && renderErr.message.includes('پاک‌سازی')) {
+              await executeClean();
+              await executeRender();
+            } else {
+              throw renderErr;
+            }
+          }
         }
-        update(index, {state: 'done'});
+        update(index, {state: 'done', error: undefined});
         ok += 1;
       } catch (error) {
         update(index, {state: 'failed', error: error instanceof Error ? error.message : 'خطا'});
@@ -1027,6 +1091,9 @@ export function BatchPanel({
     setCancelPending(false);
     setProgress('');
     setBatchProgress({fraction: 0, label: '', detail: ''});
+    if (ok > 0) {
+      setChapterVersion(Date.now());
+    }
     if (cancel.current) {
       setMessage(`عملیات متوقف شد (${ok} صفحه تکمیل شده بود).`);
       return;

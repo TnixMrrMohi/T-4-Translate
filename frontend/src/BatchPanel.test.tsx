@@ -18,6 +18,15 @@ describe('قالب متن دسته‌ای', () => {
     expect([...parts.keys()]).toEqual([3]);
     expect(parts.get(3)).toBe('[1] الف');
   });
+
+  it('اعداد فارسی، تیتر بدون نام فایل و متن تک‌صفحهٔ بدون تیتر پشتیبانی می‌شوند', () => {
+    const persianParts = splitBatchText('=== ۰۰۲ | b.png ===\r\n[1] متن ۲\r\n=== ۳ ===\r\n[1] متن ۳');
+    expect(persianParts.get(2)).toBe('[1] متن ۲');
+    expect(persianParts.get(3)).toBe('[1] متن ۳');
+
+    const fallbackParts = splitBatchText('[1] متن صفحه اول');
+    expect(fallbackParts.get(1)).toBe('[1] متن صفحه اول');
+  });
 });
 
 import {fireEvent, render, screen, waitFor} from '@testing-library/react';
