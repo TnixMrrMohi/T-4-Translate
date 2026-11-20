@@ -28,6 +28,15 @@ export type BatchPage = {
   error?: string;
 };
 
+export type PromoAction = 'replace' | 'remove';
+export const PROMO_KEY = 't4-promo';
+export const SLANTED_KEY = 't4-filter-slanted';
+export const PROMO_SITE = 'moonb.ir';
+export const PROMO_RULES: Record<PromoAction, string> = {
+  replace: `- اگر شماره‌ای متن تبلیغاتی بود (واترمارک، آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال یا شبکهٔ اجتماعی)، آن را ترجمه نکن و به‌جای ترجمه فقط «${PROMO_SITE}» بنویس.`,
+  remove: '- اگر شماره‌ای متن تبلیغاتی بود (واترمارک، آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال یا شبکهٔ اجتماعی)، آن شماره را کاملاً حذف کن و در پاسخ نیاور.',
+};
+
 /** متن همهٔ صفحه‌ها با تیتر هر صفحه؛ همین قالب برای ترجمه برگردانده می‌شود. */
 export const isPlainPage = (page: BatchPage) => page.noText ?? page.text.trim() === '';
 
@@ -438,6 +447,13 @@ export function BatchPanel({
   }, []);
   const [chapterVersion, setChapterVersion] = useState(() => Date.now());
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [promoAction, setPromoAction] = useState<PromoAction>(
+    () => (localStorage.getItem(PROMO_KEY) === 'remove' ? 'remove' : 'replace')
+  );
+  const [filterSlanted, setFilterSlanted] = useState<boolean>(
+    () => localStorage.getItem(SLANTED_KEY) !== 'false'
+  );
+  const [updatingSettings, setUpdatingSettings] = useState(false);
 
   // پس از برگشت از ویرایشگر، خروجی‌های تغییرکرده دوباره بارگذاری می‌شوند.
   useEffect(() => {
@@ -456,6 +472,14 @@ export function BatchPanel({
         const trans = typeof saved.translated === 'string' ? saved.translated : '';
         setTranslated(trans);
         if (Array.isArray(saved.files)) setOutFiles(saved.files);
+        if (saved.promo === 'remove' || saved.promo === 'replace') {
+          setPromoAction(saved.promo);
+          localStorage.setItem(PROMO_KEY, saved.promo);
+        }
+        if (typeof saved.filterSlanted === 'boolean') {
+          setFilterSlanted(saved.filterSlanted);
+          localStorage.setItem(SLANTED_KEY, saved.filterSlanted ? 'true' : 'false');
+        }
         const done = loaded.filter(p => p.state === 'done').length;
         if (done > 0) setBatchStep(5);
         else if (trans.trim()) setBatchStep(3);
@@ -468,11 +492,11 @@ export function BatchPanel({
   useEffect(() => {
     if (!restored.current) return;
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({pages, translated, files: outFiles}));
+      localStorage.setItem(STORE_KEY, JSON.stringify({pages, translated, files: outFiles, promo: promoAction, filterSlanted}));
     } catch {
       // حافظهٔ مرورگر پر یا بسته است.
     }
-  }, [pages, translated, outFiles]);
+  }, [pages, translated, outFiles, promoAction, filterSlanted]);
 
   const doReset = () => {
     if (busy !== null) return;
@@ -560,9 +584,75 @@ export function BatchPanel({
   const toText = (items: {number: number; text: string; tone?: string}[]) =>
     items.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
 
+  async function choosePromo(action: PromoAction) {
+    if (action === promoAction || updatingSettings) return;
+    setPromoAction(action);
+    localStorage.setItem(PROMO_KEY, action);
+    if (pages.length === 0) return;
+    setUpdatingSettings(true);
+    setMessage('در حال به‌روزرسانی متن و تنظیمات واترمارک…');
+    try {
+      const updated = await Promise.all(
+        pages.map(async p => {
+          try {
+            const res = await call(`/api/jobs/${p.jobId}/translation-source?promo=${action}`, undefined, 'منبع ترجمه');
+            const source = await res.json();
+            const text = toText(source.items);
+            return {...p, revision: source.revision, text, noText: text.trim() === ''};
+          } catch {
+            return p;
+          }
+        })
+      );
+      setPages(updated);
+      setMessage('تنظیمات واترمارک اعمال شد.');
+      setTimeout(() => setMessage(''), 2500);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'خطا در به‌روزرسانی تنظیمات واترمارک');
+    } finally {
+      setUpdatingSettings(false);
+    }
+  }
+
+  async function chooseFilterSlanted(active: boolean) {
+    if (active === filterSlanted || updatingSettings) return;
+    setFilterSlanted(active);
+    localStorage.setItem(SLANTED_KEY, active ? 'true' : 'false');
+    if (pages.length === 0) return;
+    setUpdatingSettings(true);
+    setMessage(active ? 'در حال حذف متن‌های کج و به‌روزرسانی پیش‌نمایش…' : 'در حال شناسایی همهٔ متن‌ها و به‌روزرسانی پیش‌نمایش…');
+    try {
+      const updated = await Promise.all(
+        pages.map(async p => {
+          try {
+            await call(`/api/jobs/${p.jobId}/ocr-settings`, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({filterSlanted: active}),
+            }, 'تنظیمات OCR');
+            const res = await call(`/api/jobs/${p.jobId}/translation-source?promo=${promoAction}`, undefined, 'منبع ترجمه');
+            const source = await res.json();
+            const text = toText(source.items);
+            return {...p, revision: source.revision, text, noText: text.trim() === ''};
+          } catch {
+            return p;
+          }
+        })
+      );
+      setPages(updated);
+      setChapterVersion(Date.now());
+      setMessage('فیلتر متن‌های کج با موفقیت اعمال شد.');
+      setTimeout(() => setMessage(''), 2500);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'خطا در به‌روزرسانی فیلتر متن‌های کج');
+    } finally {
+      setUpdatingSettings(false);
+    }
+  }
+
   const loadPage = async (jobId: string, name: string, height: number): Promise<BatchPage> => {
     const source = await (await call(
-      `/api/jobs/${jobId}/translation-source?promo=replace`, undefined, 'منبع ترجمه')).json();
+      `/api/jobs/${jobId}/translation-source?promo=${promoAction}`, undefined, 'منبع ترجمه')).json();
     const text = toText(source.items);
     return {page: 0, name, jobId, revision: source.revision, text, state: 'extracted', height, noText: text.trim() === ''};
   };
@@ -624,7 +714,7 @@ export function BatchPanel({
       const where = `${tag} ${file.name}` + (units.length > 1 ? ` · برش ${part + 1} از ${units.length}` : '');
       const ocrFrac = 0.25 + 0.7 * ((part + 0.5) / units.length);
       updateStage('ocr', ocrFrac, where);
-      await retrying('OCR', () => call(`/api/jobs/${unit.jobId}/ocr`, {method: 'POST'}, 'OCR'));
+      await retrying('OCR', () => call(`/api/jobs/${unit.jobId}/ocr?filter_slanted=${filterSlanted}`, {method: 'POST'}, 'OCR'));
       if (cancel.current) break;
       const label = units.length > 1 ? `${file.name} [${part + 1}]` : file.name;
       added.push(await loadPage(unit.jobId, label, unit.height));
@@ -687,7 +777,7 @@ export function BatchPanel({
           body: JSON.stringify({upper: upperPage.jobId, lower: lowerPage.jobId}),
         }, 'ساخت نوار مرزی')).json();
         setProgress(stage('seamOcr', `${upperPage.name} ↔ ${lowerPage.name}`));
-        await retrying('OCR نوار مرزی', () => call(`/api/jobs/${cut.seam.jobId}/ocr`, {method: 'POST'}, 'OCR نوار مرزی'));
+        await retrying('OCR نوار مرزی', () => call(`/api/jobs/${cut.seam.jobId}/ocr?filter_slanted=${filterSlanted}`, {method: 'POST'}, 'OCR نوار مرزی'));
         const upperNew = await loadPage(cut.upper.jobId, upperPage.name, cut.upper.height);
         const seamNew = await loadPage(cut.seam.jobId, `${upperPage.name} ↔ ${lowerPage.name} (مرز)`, cut.seam.height);
         const lowerNew = await loadPage(cut.lower.jobId, lowerPage.name, cut.lower.height);
@@ -901,7 +991,7 @@ export function BatchPanel({
           });
           await call(`/api/jobs/${page.jobId}/translations`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({sourceRevision: page.revision, text, promo: 'replace'}),
+            body: JSON.stringify({sourceRevision: page.revision, text, promo: promoAction}),
           }, 'ذخیرهٔ ترجمه');
           const cleanMsg = stage('clean', tag);
           setProgress(cleanMsg);
@@ -997,7 +1087,8 @@ export function BatchPanel({
   }
 
   async function copyPrompt(withPrompt = true) {
-    const payload = withPrompt ? `${prompt}${BATCH_PROMPT_NOTE}\n${combined}` : combined;
+    const promoNote = `\n${PROMO_RULES[promoAction]}\n- پرانتز لحن را در پاسخ تکرار نکن`;
+    const payload = withPrompt ? `${prompt}${promoNote}${BATCH_PROMPT_NOTE}\n${combined}` : combined;
     const ok = await copyToClipboard(payload);
     if (!ok) {
       setMessage('کپی در کلیپ‌بورد ممکن نشد؛ متن را دستی از کادر زیر انتخاب و کپی کنید.');
@@ -1220,6 +1311,110 @@ export function BatchPanel({
           {batchStep === 2 && (
             <>
               <h2 className="wizard-title">مرحله ۲: ترجمهٔ فارسی</h2>
+
+              {/* اعلام و تنظیم رفتار متن تبلیغاتی؛ همراه شماره‌گذاری انجام می‌شود */}
+              <div className="promo-setting" role="group" aria-label="رفتار متن تبلیغاتی">
+                <div className="promo-setting-header">
+                  <div className="promo-setting-info">
+                    <span className="promo-setting-title">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '6px'}}>
+                        <path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/>
+                        <path d="M7 7h.01"/>
+                      </svg>
+                      مدیریت واترمارک و متن‌های تبلیغاتی
+                    </span>
+                  </div>
+                  <div className="promo-options">
+                    <button
+                      type="button"
+                      disabled={busy !== null || updatingSettings}
+                      className={promoAction === 'remove' ? 'is-active' : ''}
+                      aria-pressed={promoAction === 'remove'}
+                      onClick={() => void choosePromo('remove')}
+                    >
+                      حذف کامل
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy !== null || updatingSettings}
+                      className={promoAction === 'replace' ? 'is-active' : ''}
+                      aria-pressed={promoAction === 'replace'}
+                      onClick={() => void choosePromo('replace')}
+                    >
+                      جایگزینی با {PROMO_SITE}
+                    </button>
+                  </div>
+                </div>
+                <details className="promo-details">
+                  <summary>توضیحات</summary>
+                  <p className="promo-setting-desc">
+                    اگر در تصویر آدرس سایت قبلی، نام تیم اسکنر یا واترمارک باشد:
+                  </p>
+                  <div className="promo-hint">
+                    {promoAction === 'remove' ? (
+                      <span>
+                        <strong>حالت فعال:</strong> واترمارک‌ها و آدرس‌های سایت قبلی از متن شماره‌گذاری‌شده حذف می‌شوند.
+                      </span>
+                    ) : (
+                      <span>
+                        <strong>حالت فعال:</strong> به‌جای متن‌های تبلیغاتی شناسایی‌شده، آدرس <code>{PROMO_SITE}</code> قرار می‌گیرد تا به‌عنوان واترمارک شما در تصویر درج شود.
+                      </span>
+                    )}
+                  </div>
+                </details>
+              </div>
+
+              {/* فیلتر متن‌های مایل و کج (جلوه‌های صوتی) */}
+              <div className="promo-setting" role="group" aria-label="فیلتر متن‌های مایل و کج">
+                <div className="promo-setting-header">
+                  <div className="promo-setting-info">
+                    <span className="promo-setting-title">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '6px'}}>
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="m4.93 4.93 14.14 14.14"/>
+                      </svg>
+                      فیلتر جلوه‌های صوتی مایل (کج)
+                    </span>
+                  </div>
+                  <div className="promo-options">
+                    <button
+                      type="button"
+                      disabled={busy !== null || updatingSettings}
+                      className={filterSlanted ? 'is-active' : ''}
+                      aria-pressed={filterSlanted}
+                      onClick={() => void chooseFilterSlanted(true)}
+                    >
+                      حذف متن‌های کج
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy !== null || updatingSettings}
+                      className={!filterSlanted ? 'is-active' : ''}
+                      aria-pressed={!filterSlanted}
+                      onClick={() => void chooseFilterSlanted(false)}
+                    >
+                      شناسایی همه
+                    </button>
+                  </div>
+                </div>
+                <details className="promo-details">
+                  <summary>توضیحات</summary>
+                  <p className="promo-setting-desc">
+                    متون با زاویهٔ مایل (صداهای بلعیدن، عطسه، سرفه و افکت‌ها):
+                  </p>
+                  <div className="promo-hint">
+                    {filterSlanted ? (
+                      <span>
+                        <strong>حالت فعال:</strong> کادرهایی که با زاویهٔ مایل نوشته شده‌اند (مثل جلوه‌های صوتی و صداهای پس‌زمینه) نادیده گرفته می‌شوند و در تصویر و فهرست ترجمه لحاظ نمی‌شوند.
+                      </span>
+                    ) : (
+                      <span>
+                        <strong>حالت غیرفعال:</strong> تمام کادرها حتی با زاویهٔ مایل تشخیص داده شده و شماره‌گذاری می‌شوند.
+                      </span>
+                    )}
+                  </div>
+                </details>
+              </div>
 
               {pages.length > 0 && (
                 <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>

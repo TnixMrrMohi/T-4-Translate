@@ -211,6 +211,72 @@ describe('ناحیهٔ انداختن تصویر', () => {
 
     localStorage.removeItem('t4-batch-v2');
   });
+
+  it('در مرحلهٔ ۲ تنظیمات واترمارک و متن‌های کج با کلیک عوض شده و درخواست مناسب ارسال می‌شود', async () => {
+    localStorage.setItem('t4-batch-v2', JSON.stringify({
+      pages: [
+        {page: 1, name: 'page1.png', jobId: 'job-p1', revision: 'r1', text: '[1] Line 1', state: 'extracted'},
+      ],
+      files: [{name: 'page1.png', pieces: [{jobId: 'job-p1', top: 0, bottom: 500}]}],
+      translated: '',
+    }));
+
+    const fetchCalls: {url: string; body?: any}[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      let parsedBody: any = undefined;
+      if (typeof init?.body === 'string') {
+        try { parsedBody = JSON.parse(init.body); } catch {}
+      }
+      fetchCalls.push({url, body: parsedBody});
+      if (url.includes('/translation-source')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            revision: 'rev-updated',
+            items: [{number: 1, text: 'Line updated'}],
+          }),
+        };
+      }
+      if (url.includes('/ocr-settings')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ok: true, filterSlanted: parsedBody?.filterSlanted ?? true}),
+        };
+      }
+      return {ok: true, status: 200, json: async () => ({})};
+    }));
+
+    render(<BatchPanel onClose={() => {}} prompt="p" />);
+
+    // وجود هر دو تنظیم
+    expect(screen.getByRole('group', {name: 'رفتار متن تبلیغاتی'})).toBeInTheDocument();
+    expect(screen.getByRole('group', {name: 'فیلتر متن‌های مایل و کج'})).toBeInTheDocument();
+
+    // کلیک روی «حذف کامل» واترمارک
+    const removePromoBtn = screen.getByRole('button', {name: 'حذف کامل'});
+    fireEvent.click(removePromoBtn);
+
+    await waitFor(() => {
+      expect(fetchCalls.some(c => c.url.includes('/translation-source?promo=remove'))).toBe(true);
+    });
+    expect(localStorage.getItem('t4-promo')).toBe('remove');
+
+    // کلیک روی «شناسایی همه» در فیلتر کج
+    const allowSlantedBtn = screen.getByRole('button', {name: 'شناسایی همه'});
+    fireEvent.click(allowSlantedBtn);
+
+    await waitFor(() => {
+      expect(fetchCalls.some(c => c.url.includes('/ocr-settings') && c.body?.filterSlanted === false)).toBe(true);
+    });
+    expect(localStorage.getItem('t4-filter-slanted')).toBe('false');
+
+    vi.unstubAllGlobals();
+    localStorage.removeItem('t4-batch-v2');
+    localStorage.removeItem('t4-promo');
+    localStorage.removeItem('t4-filter-slanted');
+  });
 });
 
 import {isPlainPage} from './BatchPanel';
