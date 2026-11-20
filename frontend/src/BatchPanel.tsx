@@ -1635,6 +1635,17 @@ export function BatchPanel({
                   >
                     پاک‌سازی مجدد همهٔ صفحه‌ها
                   </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      setPreviewModalKind('clean');
+                      setPreviewModalOpen(true);
+                    }}
+                    title="نمایش پیوستهٔ تصویرهای پاک‌شدهٔ تمام صفحات"
+                  >
+                    بزرگ‌نمایی تصویرهای پاک‌شده
+                  </button>
                   {failedPages.length > 0 && (
                     <button
                       type="button"
@@ -1658,32 +1669,83 @@ export function BatchPanel({
                 />
               )}
 
-              <ul className="batch-list">
-                {pages.map(page => (
-                  <li key={page.jobId} className={`batch-row is-${page.state}`}>
-                    <span>{page.page}. {page.name}</span>
-                    <span className="batch-row-state">
-                      {page.state === 'done'
-                        ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده ✓')
-                        : page.state === 'running'
-                        ? 'در حال کار…'
-                        : page.state === 'failed'
-                        ? `ناموفق: ${page.error}`
-                        : (busy === 'apply' ? 'در صف انتظار…' : 'متن استخراج شد')}
-                      {page.state === 'failed' && (
-                        <button
-                          type="button"
-                          className="ghost small"
-                          disabled={busy !== null || (needsTranslation && !translated.trim())}
-                          onClick={() => void run([page.jobId], 'clean')}
-                        >
-                          تلاش دوباره
-                        </button>
-                      )}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              {(busy === 'apply' || failedPages.length > 0) && (
+                <ul className="batch-list">
+                  {pages.map(page => (
+                    <li key={page.jobId} className={`batch-row is-${page.state}`}>
+                      <span>{page.page}. {page.name}</span>
+                      <span className="batch-row-state">
+                        {page.state === 'done'
+                          ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده ✓')
+                          : page.state === 'running'
+                          ? 'در حال کار…'
+                          : page.state === 'failed'
+                          ? `ناموفق: ${page.error}`
+                          : (busy === 'apply' ? 'در صف انتظار…' : 'متن استخراج شد')}
+                        {page.state === 'failed' && (
+                          <button
+                            type="button"
+                            className="ghost small"
+                            disabled={busy !== null || (needsTranslation && !translated.trim())}
+                            onClick={() => void run([page.jobId], 'clean')}
+                          >
+                            تلاش دوباره
+                          </button>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {pages.length > 0 && (
+                <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
+                  <figcaption>
+                    <button
+                      type="button"
+                      className="ghost small"
+                      onClick={() => {
+                        setPreviewModalKind('clean');
+                        setPreviewModalOpen(true);
+                      }}
+                      aria-label="بزرگ‌نمایی"
+                      title="بزرگ‌نمایی پیوستهٔ فصل"
+                    >
+                      بزرگ‌نمایی تصویر
+                    </button>
+                  </figcaption>
+                  <div
+                    className="preview-thumb is-scroll batch-stream"
+                    tabIndex={0}
+                    role="region"
+                    aria-label="پیش‌نمایش پیوستهٔ تصویرهای پاک‌شدهٔ فصل"
+                    onClick={() => {
+                      setPreviewModalKind('clean');
+                      setPreviewModalOpen(true);
+                    }}
+                  >
+                    {pages.map((p, idx) => (
+                      <div key={p.jobId} className="batch-stream-item">
+                        <span className="batch-stream-tag">
+                          {idx + 1}. {p.name}
+                          {p.state === 'done' ? (isPlainPage(p) ? ' (بدون متن)' : ' ✓') : ''}
+                        </span>
+                        <img
+                          src={
+                            p.state === 'done'
+                              ? (isPlainPage(p)
+                                  ? `/api/jobs/${p.jobId}/display/source?width=800&v=${chapterVersion}`
+                                  : `/api/jobs/${p.jobId}/display/clean?width=800&v=${chapterVersion}`)
+                              : `/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`
+                          }
+                          alt={`صفحهٔ ${p.page}: ${p.name}`}
+                          loading="lazy"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </figure>
+              )}
 
               {!busy && (
                 <div className="wizard-nav">
@@ -1715,6 +1777,15 @@ export function BatchPanel({
                   <button
                     type="button"
                     className="ghost"
+                    disabled={needsTranslation && !translated.trim()}
+                    onClick={() => void run(undefined, 'render')}
+                    title="اجرای مجدد درج ترجمه برای همهٔ صفحات"
+                  >
+                    درج دوبارهٔ ترجمه روی همهٔ صفحه‌ها
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
                     onClick={() => {
                       setPreviewModalKind('render');
                       setPreviewModalOpen(true);
@@ -1722,15 +1793,6 @@ export function BatchPanel({
                     title="نمایش پیوستهٔ تصویرهای ترجمه‌شدهٔ تمام صفحات"
                   >
                     بزرگ‌نمایی تصویرهای ترجمه‌شده
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost"
-                    disabled={needsTranslation && !translated.trim()}
-                    onClick={() => void run(undefined, 'render')}
-                    title="اجرای مجدد درج ترجمه برای همهٔ صفحات"
-                  >
-                    درج دوبارهٔ ترجمه روی همهٔ صفحه‌ها
                   </button>
                   {failedPages.length > 0 && (
                     <button
@@ -1755,32 +1817,83 @@ export function BatchPanel({
                 />
               )}
 
-              <ul className="batch-list">
-                {pages.map(page => (
-                  <li key={page.jobId} className={`batch-row is-${page.state}`}>
-                    <span>{page.page}. {page.name}</span>
-                    <span className="batch-row-state">
-                      {page.state === 'done'
-                        ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده ✓')
-                        : page.state === 'running'
-                        ? 'در حال کار…'
-                        : page.state === 'failed'
-                        ? `ناموفق: ${page.error}`
-                        : (busy === 'apply' ? 'در صف انتظار…' : 'متن استخراج شد')}
-                      {page.state === 'failed' && (
-                        <button
-                          type="button"
-                          className="ghost small"
-                          disabled={busy !== null || (needsTranslation && !translated.trim())}
-                          onClick={() => void run([page.jobId], 'render')}
-                        >
-                          تلاش دوباره
-                        </button>
-                      )}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              {(busy === 'apply' || failedPages.length > 0) && (
+                <ul className="batch-list">
+                  {pages.map(page => (
+                    <li key={page.jobId} className={`batch-row is-${page.state}`}>
+                      <span>{page.page}. {page.name}</span>
+                      <span className="batch-row-state">
+                        {page.state === 'done'
+                          ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده ✓')
+                          : page.state === 'running'
+                          ? 'در حال کار…'
+                          : page.state === 'failed'
+                          ? `ناموفق: ${page.error}`
+                          : (busy === 'apply' ? 'در صف انتظار…' : 'متن استخراج شد')}
+                        {page.state === 'failed' && (
+                          <button
+                            type="button"
+                            className="ghost small"
+                            disabled={busy !== null || (needsTranslation && !translated.trim())}
+                            onClick={() => void run([page.jobId], 'render')}
+                          >
+                            تلاش دوباره
+                          </button>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {pages.length > 0 && (
+                <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
+                  <figcaption>
+                    <button
+                      type="button"
+                      className="ghost small"
+                      onClick={() => {
+                        setPreviewModalKind('render');
+                        setPreviewModalOpen(true);
+                      }}
+                      aria-label="بزرگ‌نمایی"
+                      title="بزرگ‌نمایی پیوستهٔ فصل"
+                    >
+                      بزرگ‌نمایی تصویر
+                    </button>
+                  </figcaption>
+                  <div
+                    className="preview-thumb is-scroll batch-stream"
+                    tabIndex={0}
+                    role="region"
+                    aria-label="پیش‌نمایش پیوستهٔ تصویرهای ترجمه‌شدهٔ فصل"
+                    onClick={() => {
+                      setPreviewModalKind('render');
+                      setPreviewModalOpen(true);
+                    }}
+                  >
+                    {pages.map((p, idx) => (
+                      <div key={p.jobId} className="batch-stream-item">
+                        <span className="batch-stream-tag">
+                          {idx + 1}. {p.name}
+                          {p.state === 'done' ? (isPlainPage(p) ? ' (بدون متن)' : ' ✓') : ''}
+                        </span>
+                        <img
+                          src={
+                            p.state === 'done'
+                              ? (isPlainPage(p)
+                                  ? `/api/jobs/${p.jobId}/display/source?width=800&v=${chapterVersion}`
+                                  : `/api/jobs/${p.jobId}/display/render?width=800&v=${chapterVersion}`)
+                              : `/api/jobs/${p.jobId}/display/clean?width=800&v=${chapterVersion}`
+                          }
+                          alt={`صفحهٔ ${p.page}: ${p.name}`}
+                          loading="lazy"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </figure>
+              )}
 
               {!busy && (
                 <div className="wizard-nav">

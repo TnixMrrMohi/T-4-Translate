@@ -313,8 +313,8 @@ describe('ناحیهٔ انداختن تصویر', () => {
     expect(screen.queryByRole('button', {name: 'اجرای کامل (پاک‌سازی و درج ترجمه)'})).toBeNull();
     expect(screen.queryByRole('button', {name: 'فقط پاک‌سازی'})).toBeNull();
 
-    // دکمه‌های تکراری یا بی‌استفاده در بالای کارت نباید باشند
-    expect(screen.queryByRole('button', {name: 'بزرگ‌نمایی تصویرهای پاک‌شده'})).toBeNull();
+    // دکمه‌های بالای کارت
+    expect(screen.getByRole('button', {name: 'بزرگ‌نمایی تصویرهای پاک‌شده'})).toBeInTheDocument();
     expect(screen.getByRole('button', {name: 'پاک‌سازی مجدد همهٔ صفحه‌ها'})).toBeInTheDocument();
 
     // دکمه‌های ناوبری پایین کارت
