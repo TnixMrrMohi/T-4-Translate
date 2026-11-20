@@ -318,6 +318,14 @@ describe('ناحیهٔ انداختن تصویر', () => {
     expect(screen.getByRole('button', {name: 'پاک‌سازی مجدد همهٔ صفحه‌ها'})).toBeInTheDocument();
     expect(screen.getByRole('button', {name: 'بزرگ‌نمایی'})).toBeInTheDocument();
 
+    // ابزارهای پاک‌سازی و ترمیم دستی
+    expect(screen.getByRole('button', {name: '🖌️ قلم‌مو'})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: '🔲 کادر انتخابی'})).toBeInTheDocument();
+
+    // فعال‌کردن قلم‌مو
+    fireEvent.click(screen.getByRole('button', {name: '🖌️ قلم‌مو'}));
+    expect(screen.getByRole('button', {name: '✕ غیرفعال‌سازی'})).toBeInTheDocument();
+
     // دکمه‌های ناوبری پایین کارت
     expect(screen.getByRole('button', {name: '→ مرحلهٔ قبل: ترجمهٔ فارسی'})).toBeInTheDocument();
     expect(screen.getByRole('button', {name: 'ادامه و درج ترجمه ←'})).toBeInTheDocument();

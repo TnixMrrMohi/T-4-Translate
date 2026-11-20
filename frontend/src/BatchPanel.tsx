@@ -1,5 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {ChapterPage} from './ChapterPage';
+import {ManualCleanOverlay} from './ManualCleanOverlay';
 import {Overlay} from './Overlay';
 import {copyToClipboard} from './clipboard';
 
@@ -300,15 +301,19 @@ function BatchOcrModal({
   pages,
   chapterVersion,
   kind = 'ocr',
+  onCleanDone,
 }: {
   open: boolean;
   onClose: () => void;
   pages: BatchPage[];
   chapterVersion: number;
   kind?: 'ocr' | 'clean' | 'render';
+  onCleanDone?: () => void;
 }) {
   const [zoom, setZoom] = useState(FIRST_ZOOM);
   const [fit, setFit] = useState(false);
+  const [modalTool, setModalTool] = useState<'brush' | 'box' | 'none'>('none');
+  const [modalBrushSize, setModalBrushSize] = useState(35);
   const closeRef = useRef<HTMLButtonElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
 
@@ -316,6 +321,7 @@ function BatchOcrModal({
     if (open) {
       setZoom(FIRST_ZOOM);
       setFit(false);
+      setModalTool('none');
     }
   }, [open]);
 
@@ -372,6 +378,40 @@ function BatchOcrModal({
           <span style={{color: '#7d9294', fontSize: '12px', marginInlineStart: '8px'}}>(Esc برای بستن)</span>
         </span>
         <span className="modal-actions">
+          {kind === 'clean' && (
+            <div className="manual-toolbar" style={{margin: '0 8px', padding: '2px 8px', display: 'inline-flex'}} role="toolbar" aria-label="ابزارهای ترمیم دستی در بزرگ‌نمایی">
+              <span className="manual-toolbar-label">ترمیم دستی:</span>
+              <button
+                type="button"
+                className={`ghost small ${modalTool === 'brush' ? 'is-active' : ''}`}
+                onClick={() => setModalTool(modalTool === 'brush' ? 'none' : 'brush')}
+                title="قلم‌موی موضعی"
+              >
+                🖌️ قلم‌مو
+              </button>
+              <button
+                type="button"
+                className={`ghost small ${modalTool === 'box' ? 'is-active' : ''}`}
+                onClick={() => setModalTool(modalTool === 'box' ? 'none' : 'box')}
+                title="کادر مستطیلی"
+              >
+                🔲 کادر انتخابی
+              </button>
+              {modalTool === 'brush' && (
+                <label className="manual-brush-slider">
+                  اندازه:
+                  <input
+                    type="range"
+                    min="10"
+                    max="100"
+                    value={modalBrushSize}
+                    onChange={e => setModalBrushSize(Number(e.target.value))}
+                  />
+                  <span>{modalBrushSize}px</span>
+                </label>
+              )}
+            </div>
+          )}
           <button type="button" onClick={zoomOut} disabled={!fit && zoom <= FIRST_ZOOM + 1e-9} aria-label="کوچک‌تر">−</button>
           <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
           <button type="button" onClick={zoomIn} disabled={!fit && zoom >= LAST_ZOOM - 1e-9} aria-label="بزرگ‌تر">+</button>
@@ -409,6 +449,16 @@ function BatchOcrModal({
                 alt={`صفحهٔ ${p.page}: ${p.name}`}
                 style={{width: '100%', height: 'auto', display: 'block'}}
               />
+              {kind === 'clean' && !isPlainPage(p) && modalTool !== 'none' && (
+                <ManualCleanOverlay
+                  jobId={p.jobId}
+                  tool={modalTool}
+                  brushSize={modalBrushSize}
+                  onCleanDone={() => {
+                    if (onCleanDone) onCleanDone();
+                  }}
+                />
+              )}
             </div>
           ))}
         </div>
@@ -475,6 +525,8 @@ export function BatchPanel({
   const [chapterVersion, setChapterVersion] = useState(() => Date.now());
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewModalKind, setPreviewModalKind] = useState<'ocr' | 'clean' | 'render'>('ocr');
+  const [manualTool, setManualTool] = useState<'brush' | 'box' | 'none'>('none');
+  const [brushSize, setBrushSize] = useState(35);
   const [promoAction, setPromoAction] = useState<PromoAction>(
     () => (localStorage.getItem(PROMO_KEY) === 'remove' ? 'remove' : 'replace')
   );
@@ -1684,52 +1736,105 @@ export function BatchPanel({
               )}
 
               {pages.length > 0 && (
-                <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
-                  <figcaption>
+                <>
+                  <div className="manual-toolbar" role="toolbar" aria-label="ابزارهای پاک‌سازی و ترمیم دستی">
+                    <span className="manual-toolbar-label">ترمیم دستی:</span>
                     <button
                       type="button"
-                      className="ghost small"
+                      className={`ghost small ${manualTool === 'brush' ? 'is-active' : ''}`}
+                      onClick={() => setManualTool(manualTool === 'brush' ? 'none' : 'brush')}
+                      title="رنگ‌آمیزی آزاد روی متن‌ها و واترمارک‌های جا مانده"
+                    >
+                      🖌️ قلم‌مو
+                    </button>
+                    <button
+                      type="button"
+                      className={`ghost small ${manualTool === 'box' ? 'is-active' : ''}`}
+                      onClick={() => setManualTool(manualTool === 'box' ? 'none' : 'box')}
+                      title="کشیدن کادر مستطیلی دور واترمارک"
+                    >
+                      🔲 کادر انتخابی
+                    </button>
+                    {manualTool === 'brush' && (
+                      <label className="manual-brush-slider">
+                        اندازه:
+                        <input
+                          type="range"
+                          min="10"
+                          max="100"
+                          value={brushSize}
+                          onChange={e => setBrushSize(Number(e.target.value))}
+                        />
+                        <span>{brushSize}px</span>
+                      </label>
+                    )}
+                    {manualTool !== 'none' && (
+                      <button
+                        type="button"
+                        className="ghost small"
+                        onClick={() => setManualTool('none')}
+                      >
+                        ✕ غیرفعال‌سازی
+                      </button>
+                    )}
+                  </div>
+
+                  <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
+                    <figcaption>
+                      <button
+                        type="button"
+                        className="ghost small"
+                        onClick={() => {
+                          setPreviewModalKind('clean');
+                          setPreviewModalOpen(true);
+                        }}
+                        aria-label="بزرگ‌نمایی"
+                        title="بزرگ‌نمایی پیوستهٔ فصل"
+                      >
+                        بزرگ‌نمایی تصویر
+                      </button>
+                    </figcaption>
+                    <div
+                      className="preview-thumb is-scroll batch-stream"
+                      tabIndex={0}
+                      role="region"
+                      aria-label="پیش‌نمایش پیوستهٔ تصویرهای پاک‌شدهٔ فصل"
                       onClick={() => {
+                        if (manualTool !== 'none') return;
                         setPreviewModalKind('clean');
                         setPreviewModalOpen(true);
                       }}
-                      aria-label="بزرگ‌نمایی"
-                      title="بزرگ‌نمایی پیوستهٔ فصل"
                     >
-                      بزرگ‌نمایی تصویر
-                    </button>
-                  </figcaption>
-                  <div
-                    className="preview-thumb is-scroll batch-stream"
-                    tabIndex={0}
-                    role="region"
-                    aria-label="پیش‌نمایش پیوستهٔ تصویرهای پاک‌شدهٔ فصل"
-                    onClick={() => {
-                      setPreviewModalKind('clean');
-                      setPreviewModalOpen(true);
-                    }}
-                  >
-                    {pages.map((p, idx) => (
-                      <div key={p.jobId} className="batch-stream-item">
-                        <span className="batch-stream-tag">
-                          {idx + 1}. {p.name}
-                          {p.state === 'done' ? (isPlainPage(p) ? ' (بدون متن)' : ' ✓') : ''}
-                        </span>
-                        <img
-                          src={
-                            p.state === 'done'
-                              ? (isPlainPage(p)
-                                  ? `/api/jobs/${p.jobId}/display/source?width=800&v=${chapterVersion}`
-                                  : `/api/jobs/${p.jobId}/display/clean?width=800&v=${chapterVersion}`)
-                              : `/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`
-                          }
-                          alt={`صفحهٔ ${p.page}: ${p.name}`}
-                          loading="lazy"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </figure>
+                      {pages.map((p, idx) => (
+                        <div key={p.jobId} className="batch-stream-item" style={{position: 'relative'}}>
+                          <span className="batch-stream-tag">
+                            {idx + 1}. {p.name}
+                            {p.state === 'done' ? (isPlainPage(p) ? ' (بدون متن)' : ' ✓') : ''}
+                          </span>
+                          <img
+                            src={
+                              p.state === 'done'
+                                ? (isPlainPage(p)
+                                    ? `/api/jobs/${p.jobId}/display/source?width=800&v=${chapterVersion}`
+                                    : `/api/jobs/${p.jobId}/display/clean?width=800&v=${chapterVersion}`)
+                                : `/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`
+                            }
+                            alt={`صفحهٔ ${p.page}: ${p.name}`}
+                            loading="lazy"
+                          />
+                          {manualTool !== 'none' && !isPlainPage(p) && (
+                            <ManualCleanOverlay
+                              jobId={p.jobId}
+                              tool={manualTool}
+                              brushSize={brushSize}
+                              onCleanDone={() => setChapterVersion(Date.now())}
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </figure>
+                </>
               )}
 
               {!busy && (
@@ -2018,6 +2123,7 @@ export function BatchPanel({
         pages={pages}
         chapterVersion={chapterVersion}
         kind={previewModalKind}
+        onCleanDone={() => setChapterVersion(Date.now())}
       />
     </div>
   );

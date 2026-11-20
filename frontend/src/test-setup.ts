@@ -18,6 +18,23 @@ if (typeof localStorage === 'undefined' || !localStorage.clear) {
   });
 }
 
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = function () {
+    return {
+      clearRect: () => {},
+      beginPath: () => {},
+      arc: () => {},
+      fill: () => {},
+      fillRect: () => {},
+      strokeRect: () => {},
+      stroke: () => {},
+    } as any;
+  };
+  HTMLCanvasElement.prototype.toDataURL = function () {
+    return 'data:image/png;base64,mockdata';
+  };
+}
+
 afterEach(() => {
   cleanup();
   try {
