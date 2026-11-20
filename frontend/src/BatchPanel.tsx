@@ -1624,19 +1624,8 @@ export function BatchPanel({
             <>
               <h2 className="wizard-title">مرحله ۳: پاک‌سازی</h2>
 
-              <div className="wizard-nav start">
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => {
-                    setPreviewModalKind('clean');
-                    setPreviewModalOpen(true);
-                  }}
-                  title="نمایش پیوستهٔ تصویرهای پاک‌شدهٔ تمام صفحات"
-                >
-                  بزرگ‌نمایی تصویرهای پاک‌شده
-                </button>
-                {!busy && (
+              {!busy && (
+                <div className="wizard-nav start">
                   <button
                     type="button"
                     className="ghost"
@@ -1646,18 +1635,18 @@ export function BatchPanel({
                   >
                     پاک‌سازی مجدد همهٔ صفحه‌ها
                   </button>
-                )}
-                {!busy && failedPages.length > 0 && (
-                  <button
-                    type="button"
-                    className="ghost"
-                    disabled={needsTranslation && !translated.trim()}
-                    onClick={() => void run(failedPages.map(page => page.jobId), 'clean')}
-                  >
-                    تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
-                  </button>
-                )}
-              </div>
+                  {failedPages.length > 0 && (
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={needsTranslation && !translated.trim()}
+                      onClick={() => void run(failedPages.map(page => page.jobId), 'clean')}
+                    >
+                      تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
+                    </button>
+                  )}
+                </div>
+              )}
 
               {busy === 'apply' && (
                 <BatchProgressBar
@@ -1719,19 +1708,19 @@ export function BatchPanel({
             <>
               <h2 className="wizard-title">مرحله ۴: درج ترجمه</h2>
 
-              <div className="wizard-nav start">
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => {
-                    setPreviewModalKind('render');
-                    setPreviewModalOpen(true);
-                  }}
-                  title="نمایش پیوستهٔ تصویرهای ترجمه‌شدهٔ تمام صفحات"
-                >
-                  بزرگ‌نمایی تصویرهای ترجمه‌شده
-                </button>
-                {!busy && (
+              {!busy && (
+                <div className="wizard-nav start">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      setPreviewModalKind('render');
+                      setPreviewModalOpen(true);
+                    }}
+                    title="نمایش پیوستهٔ تصویرهای ترجمه‌شدهٔ تمام صفحات"
+                  >
+                    بزرگ‌نمایی تصویرهای ترجمه‌شده
+                  </button>
                   <button
                     type="button"
                     className="ghost"
@@ -1741,18 +1730,18 @@ export function BatchPanel({
                   >
                     درج دوبارهٔ ترجمه روی همهٔ صفحه‌ها
                   </button>
-                )}
-                {!busy && failedPages.length > 0 && (
-                  <button
-                    type="button"
-                    className="ghost"
-                    disabled={needsTranslation && !translated.trim()}
-                    onClick={() => void run(failedPages.map(page => page.jobId), 'render')}
-                  >
-                    تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
-                  </button>
-                )}
-              </div>
+                  {failedPages.length > 0 && (
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={needsTranslation && !translated.trim()}
+                      onClick={() => void run(failedPages.map(page => page.jobId), 'render')}
+                    >
+                      تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
+                    </button>
+                  )}
+                </div>
+              )}
 
               {busy === 'apply' && (
                 <BatchProgressBar
