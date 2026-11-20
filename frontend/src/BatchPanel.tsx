@@ -1685,22 +1685,24 @@ export function BatchPanel({
                 ))}
               </ul>
 
-              <div className="wizard-nav">
-                <button type="button" className="ghost" disabled={busy !== null} onClick={() => setBatchStep(2)}>
-                  → مرحلهٔ قبل: ترجمهٔ فارسی
-                </button>
-                <button
-                  type="button"
-                  className="ocr"
-                  disabled={busy !== null || (needsTranslation && !translated.trim())}
-                  onClick={() => {
-                    setBatchStep(4);
-                    void run(undefined, 'render');
-                  }}
-                >
-                  ادامه و درج ترجمه ←
-                </button>
-              </div>
+              {!busy && (
+                <div className="wizard-nav">
+                  <button type="button" className="ghost" onClick={() => setBatchStep(2)}>
+                    → مرحلهٔ قبل: ترجمهٔ فارسی
+                  </button>
+                  <button
+                    type="button"
+                    className="ocr"
+                    disabled={needsTranslation && !translated.trim()}
+                    onClick={() => {
+                      setBatchStep(4);
+                      void run(undefined, 'render');
+                    }}
+                  >
+                    ادامه و درج ترجمه ←
+                  </button>
+                </div>
+              )}
             </>
           )}
 
@@ -1780,19 +1782,21 @@ export function BatchPanel({
                 ))}
               </ul>
 
-              <div className="wizard-nav">
-                <button type="button" className="ghost" disabled={busy !== null} onClick={() => setBatchStep(3)}>
-                  → مرحلهٔ قبل: پاک‌سازی
-                </button>
-                <button
-                  type="button"
-                  className="ocr"
-                  disabled={busy !== null || doneCount === 0}
-                  onClick={() => setBatchStep(5)}
-                >
-                  ادامه به مقایسه و خروجی ←
-                </button>
-              </div>
+              {!busy && (
+                <div className="wizard-nav">
+                  <button type="button" className="ghost" onClick={() => setBatchStep(3)}>
+                    → مرحلهٔ قبل: پاک‌سازی
+                  </button>
+                  <button
+                    type="button"
+                    className="ocr"
+                    disabled={doneCount === 0}
+                    onClick={() => setBatchStep(5)}
+                  >
+                    ادامه به مقایسه و خروجی ←
+                  </button>
+                </div>
+              )}
             </>
           )}
 
@@ -1836,14 +1840,16 @@ export function BatchPanel({
                 ))}
               </div>
 
-              <div className="wizard-nav">
-                <button type="button" className="ghost" onClick={() => setBatchStep(4)}>
-                  → مرحلهٔ قبل: درج ترجمه
-                </button>
-                <button type="button" className="ocr" disabled={busy !== null || doneCount === 0} onClick={() => void exportZip()}>
-                  دانلود خروجی WebP (ZIP)
-                </button>
-              </div>
+              {!busy && (
+                <div className="wizard-nav">
+                  <button type="button" className="ghost" onClick={() => setBatchStep(4)}>
+                    → مرحلهٔ قبل: درج ترجمه
+                  </button>
+                  <button type="button" className="ocr" disabled={doneCount === 0} onClick={() => void exportZip()}>
+                    دانلود خروجی WebP (ZIP)
+                  </button>
+                </div>
+              )}
             </>
           )}
         </section>
