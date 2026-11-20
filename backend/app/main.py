@@ -2149,6 +2149,13 @@ async def _preview_source(job_id: str, kind: str) -> Path:
                     return src
         except Exception:
             pass
+        if kind == "render":
+            clean_file = workspace / "clean.png"
+            if clean_file.is_file():
+                return clean_file
+        src = workspace / "source.img"
+        if src.is_file():
+            return src
     raise HTTPException(404, "پیش‌نمایش موجود نیست.")
 
 
@@ -2220,20 +2227,51 @@ DISPLAY_MAX_WIDTH = 2000
 
 def _write_display(source: Path, width: int, image_path: Path, meta_path: Path) -> None:
     """نسخهٔ نمایشی با کیفیت (WebP) در نخ کارگر ساخته و اتمی ذخیره می‌شود."""
-    image = preview.scaled_width(source, width)
-    tmp = image_path.with_name(image_path.name + ".tmp")
+    tmp = image_path.with_name(f"{image_path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        image.save(tmp, format="WEBP", quality=96, method=6)
-        os.replace(tmp, image_path)
+        image = preview.scaled_width(source, width)
+        try:
+            image.save(tmp, format="WEBP", quality=96, method=6)
+        finally:
+            image.close()
+
+        # در ویندوز ممکن است فایل مقصد حین خواندن توسط نخی دیگر قفل باشد؛ تلاش مجدد با تأخیر کوتاه
+        for attempt in range(5):
+            try:
+                os.replace(tmp, image_path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    if image_path.is_file():
+                        break
+                    raise
+                time.sleep(0.08)
     finally:
-        image.close()
         if tmp.exists():
-            tmp.unlink()
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
     stat = source.stat()
-    meta_tmp = meta_path.with_name(meta_path.name + ".tmp")
-    meta_tmp.write_text(json.dumps({"size": stat.st_size, "mtimeNs": stat.st_mtime_ns,
-                                    "width": width}), encoding="utf-8")
-    os.replace(meta_tmp, meta_path)
+    meta_tmp = meta_path.with_name(f"{meta_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        meta_tmp.write_text(json.dumps({"size": stat.st_size, "mtimeNs": stat.st_mtime_ns,
+                                        "width": width}), encoding="utf-8")
+        for attempt in range(5):
+            try:
+                os.replace(meta_tmp, meta_path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    break
+                time.sleep(0.05)
+    finally:
+        if meta_tmp.exists():
+            try:
+                meta_tmp.unlink()
+            except OSError:
+                pass
 
 
 @app.get("/api/jobs/{job_id}/display/{kind}")
@@ -2261,7 +2299,11 @@ async def get_display(job_id: str, kind: str, width: int = 1000):
         except Exception as exc:
             diagnostics.log_exception("preview.display.failed", jobId=job_id, kind=kind, width=width,
                                       errorType=type(exc).__name__, error=str(exc))
-            raise HTTPException(500, "ساخت نسخهٔ نمایشی ناموفق بود.") from None
+            if image_path.is_file():
+                return FileResponse(image_path, media_type="image/webp",
+                                    headers={"Cache-Control": "private, max-age=60"})
+            media_type = "image/png" if source.suffix.lower() == ".png" else "image/webp"
+            return FileResponse(source, media_type=media_type, headers={"Cache-Control": "no-store"})
         diagnostics.log_event(
             "preview.display.done",
             jobId=job_id,

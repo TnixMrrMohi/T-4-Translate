@@ -1846,7 +1846,21 @@ export function BatchPanel({
                 </ul>
               )}
 
-              {pages.length > 0 && (
+              {/* نمایش تعاملی صفحات فصل با امکان ویرایش چیدمان متن‌ها، فونت، اندازه و پاک‌سازی پشت متن */}
+              {!busy && pages.some(p => p.state === 'done') ? (
+                <div className="chapter-view" aria-label="نمای فصل و ویرایش متن‌ها">
+                  {pages.filter(page => page.state === 'done').map(page => (
+                    <ChapterPage
+                      key={page.jobId}
+                      jobId={page.jobId}
+                      label={page.name}
+                      index={page.page}
+                      version={chapterVersion}
+                      plain={isPlainPage(page)}
+                    />
+                  ))}
+                </div>
+              ) : pages.length > 0 && (
                 <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
                   <figcaption>
                     <button
