@@ -26,6 +26,10 @@ describe('قالب متن دسته‌ای', () => {
 
     const fallbackParts = splitBatchText('[1] متن صفحه اول');
     expect(fallbackParts.get(1)).toBe('[1] متن صفحه اول');
+
+    const emptyPageParts = splitBatchText('=== 001 | a.png ===\r\n=== 002 | b.png ===\r\n[1] متن');
+    expect(emptyPageParts.get(1)).toBe('');
+    expect(emptyPageParts.get(2)).toBe('[1] متن');
   });
 });
 

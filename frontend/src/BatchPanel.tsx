@@ -993,7 +993,16 @@ export function BatchPanel({
       update(index, {state: 'running', error: undefined});
       try {
         const text = parts.get(page.page);
-        if (!text) throw new Error('ترجمهٔ این صفحه در متن نیست (تیتر === ... === را نگه دارید).');
+        if (text === undefined) {
+          throw new Error('ترجمهٔ این صفحه در متن نیست (تیتر === ... === را نگه دارید).');
+        }
+
+        // اگر زیر تیتر متنی نوشته نشده باشد (کاربر صفحه را کلاً ترجمه نکرده):
+        if (!text.trim()) {
+          update(index, {state: 'done', noText: true, error: undefined});
+          ok += 1;
+          continue;
+        }
 
         // ۱. همیشه ترجمهٔ صفحه را در سرور ذخیره و همگام می‌کنیم (هم پاک‌سازی و هم درج ترجمه به translations.json نیاز دارند)
         const saveMsg = stage('save', tag);
@@ -1005,24 +1014,34 @@ export function BatchPanel({
         });
 
         const saveTranslations = async (rev: string) => {
-          await call(`/api/jobs/${page.jobId}/translations`, {
+          const res = await call(`/api/jobs/${page.jobId}/translations`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({sourceRevision: rev, text, promo: promoAction}),
           }, 'ذخیرهٔ ترجمه');
+          return await res.json().catch(() => ({}));
         };
 
+        let saveResult: any = {};
         try {
-          await saveTranslations(page.revision);
+          saveResult = await saveTranslations(page.revision);
         } catch (saveErr) {
           if (saveErr instanceof HttpError && saveErr.status === 409 && saveErr.message.includes('OCR')) {
             const res = await call(`/api/jobs/${page.jobId}/translation-source?promo=${promoAction}`, undefined, 'منبع ترجمه');
             const freshSource = await res.json();
-            await saveTranslations(freshSource.revision);
+            saveResult = await saveTranslations(freshSource.revision);
             page.revision = freshSource.revision;
           } else {
             throw saveErr;
           }
+        }
+
+        // اگر کاربر تمام شماره‌های این صفحه را خالی گذاشته باشد (مثلاً همه تابلو یا پلیس بوده و معنی داده نشده):
+        const hasTranslations = Object.keys(saveResult?.translations || {}).length > 0;
+        if (!hasTranslations) {
+          update(index, {state: 'done', noText: true, error: undefined});
+          ok += 1;
+          continue;
         }
 
         // ۲. آیا پاک‌سازی نیاز است؟
