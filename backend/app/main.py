@@ -759,6 +759,13 @@ class CleanInput(BaseModel):
     shift: dict[int, list[int]] = Field(default_factory=dict, max_length=9999)
 
 
+class ManualCleanInput(BaseModel):
+    """ماسک دستی به صورت base64 یا فهرستی از کادرها [x0, y0, x1, y1]."""
+
+    mask_base64: str | None = None
+    boxes: list[list[int]] | None = None
+
+
 PROMO_ACTIONS = ("replace", "remove", "keep")
 
 
@@ -1189,14 +1196,134 @@ def get_clean(job_id: str):
     path = workspace / "clean.png"
     if not path.is_file():
         raise HTTPException(404, "تصویر پاک‌شده موجود نیست.")
-    try:
-        stamp = json.loads((workspace / "clean-meta.json").read_text(encoding="utf-8"))
-        translation = read_translation(job_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "تصویر پاک‌شده موجود نیست.") from None
-    if translation["stale"] or stamp != {"sourceRevision": translation["sourceRevision"], "translations": translation["translations"]}:
-        raise HTTPException(409, "ترجمه یا OCR تغییر کرده است؛ دوباره پاک‌سازی کنید.")
+    if (workspace / "translations.json").is_file() and (workspace / "clean-meta.json").is_file():
+        try:
+            stamp = json.loads((workspace / "clean-meta.json").read_text(encoding="utf-8"))
+            translation = read_translation(job_id)
+            if not stamp.get("manual") and (translation["stale"] or stamp != {"sourceRevision": translation["sourceRevision"], "translations": translation["translations"]}):
+                raise HTTPException(409, "ترجمه یا OCR تغییر کرده است؛ دوباره پاک‌سازی کنید.")
+        except Exception:
+            pass
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/jobs/{job_id}/manual-clean")
+async def manual_clean(job_id: str, body: ManualCleanInput):
+    """پاک‌سازی و ترمیم دستی با قلم‌مو یا کادر انتخابی روی تصویر."""
+    import base64
+    from io import BytesIO
+    import cv2
+    import numpy as np
+
+    workspace = workspace_for(job_id)
+    if not workspace.is_dir():
+        raise HTTPException(404, "کار یافت نشد.")
+
+    base_path = workspace / "clean.png"
+    if not base_path.is_file():
+        base_path = workspace / "source.img"
+    if not base_path.is_file():
+        raise HTTPException(404, "تصویر مبدأ یافت نشد.")
+
+    with Image.open(base_path) as img:
+        img_rgb = img.convert("RGB")
+        w, h = img_rgb.size
+        arr_rgb = np.array(img_rgb)
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+
+    if body.boxes:
+        for box in body.boxes:
+            if len(box) >= 4:
+                x0, y0, x1, y1 = [int(v) for v in box[:4]]
+                x0, x1 = max(0, min(x0, x1)), min(w, max(x0, x1))
+                y0, y1 = max(0, min(y0, y1)), min(h, max(y0, y1))
+                if x1 > x0 and y1 > y0:
+                    mask[y0:y1, x0:x1] = 255
+
+    if body.mask_base64:
+        raw_b64 = body.mask_base64
+        if "," in raw_b64:
+            raw_b64 = raw_b64.split(",", 1)[1]
+        try:
+            mask_bytes = base64.b64decode(raw_b64)
+            with Image.open(BytesIO(mask_bytes)) as mask_img:
+                if mask_img.mode in ("RGBA", "LA"):
+                    alpha = np.array(mask_img.split()[-1])
+                    m_arr = np.where(alpha > 10, 255, 0).astype(np.uint8)
+                else:
+                    m_arr = np.array(mask_img.convert("L"))
+                    m_arr = np.where(m_arr > 10, 255, 0).astype(np.uint8)
+                if m_arr.shape != (h, w):
+                    m_arr = cv2.resize(m_arr, (w, h), interpolation=cv2.INTER_NEAREST)
+                mask = np.bitwise_or(mask, m_arr)
+        except Exception as exc:
+            logger.warning("Failed to decode mask_base64: %s", exc)
+
+    if not mask.any():
+        return {"ok": True, "jobId": job_id, "modified": False}
+
+    # پشتیبان‌گیری برای قابلیت بازگردانی (Undo)
+    shutil.copyfile(base_path, workspace / "clean.png.bak")
+
+    ys, xs = np.where(mask > 0)
+    y0, y1 = int(ys.min()), int(ys.max() + 1)
+    x0, x1 = int(xs.min()), int(xs.max() + 1)
+
+    pad = 32
+    cy0, cy1 = max(0, y0 - pad), min(h, y1 + pad)
+    cx0, cx1 = max(0, x0 - pad), min(w, x1 + pad)
+    crop_img = arr_rgb[cy0:cy1, cx0:cx1]
+    crop_mask = mask[cy0:cy1, cx0:cx1]
+
+    repaired = None
+    if inpaint.available():
+        try:
+            repaired = inpaint._tiled_fill(np, cv2, crop_img, crop_mask)
+        except Exception as exc:
+            logger.warning("Inpaint tiled fill failed, falling back to cv2: %s", exc)
+    if repaired is None:
+        repaired = cv2.inpaint(crop_img, crop_mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+
+    arr_rgb[cy0:cy1, cx0:cx1] = repaired
+    out_img = Image.fromarray(arr_rgb)
+    out_img.save(workspace / "clean.png.tmp", format="PNG")
+    os.replace(workspace / "clean.png.tmp", workspace / "clean.png")
+
+    if (workspace / "translations.json").is_file():
+        try:
+            translation = read_translation(job_id)
+            stamp = {"sourceRevision": translation["sourceRevision"], "translations": translation["translations"], "manual": True}
+            (workspace / "clean-meta.json").write_text(json.dumps(stamp, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    _drop_render(workspace)
+    try:
+        (workspace / "clean-preview.png").unlink()
+    except FileNotFoundError:
+        pass
+
+    return {"ok": True, "jobId": job_id, "modified": True}
+
+
+@app.post("/api/jobs/{job_id}/manual-clean/undo")
+def manual_clean_undo(job_id: str):
+    """بازگردانی آخرین تغییر دستی."""
+    workspace = workspace_for(job_id)
+    bak = workspace / "clean.png.bak"
+    if not bak.is_file():
+        raise HTTPException(400, "تغییری برای بازگردانی وجود ندارد.")
+
+    shutil.copyfile(bak, workspace / "clean.png")
+    bak.unlink()
+    _drop_render(workspace)
+    try:
+        (workspace / "clean-preview.png").unlink()
+    except FileNotFoundError:
+        pass
+
+    return {"ok": True, "restored": True}
 
 
 def _font_paths() -> dict:
