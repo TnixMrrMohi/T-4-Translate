@@ -16,7 +16,7 @@ from functools import partial
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
@@ -147,7 +147,7 @@ def health() -> str:
     return "ok"
 
 
-async def _read_image(file: UploadFile, save: bool = False) -> dict:
+async def _read_image(file: UploadFile, save: bool = False, mode: str | None = None) -> dict:
     """Validate a single image and return dimensions; do not persist or decode it fully."""
     started = time.perf_counter()
     size = 0
@@ -192,6 +192,7 @@ async def _read_image(file: UploadFile, save: bool = False) -> dict:
                     with (workspace / "source.img").open("wb") as output:
                         shutil.copyfileobj(temp, output)
                     info.update({"jobId": job_id, "status": "uploaded",
+                                 "mode": mode or "single",
                                  "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds")})
                     (workspace / "state.json.tmp").write_text(json.dumps(info), encoding="utf-8")
                     os.replace(workspace / "state.json.tmp", workspace / "state.json")
@@ -244,8 +245,8 @@ async def inspect_image(file: UploadFile = File(...)) -> dict:
 
 
 @app.post("/api/jobs", status_code=201)
-async def create_job(file: UploadFile = File(...)) -> dict:
-    return await _read_image(file, save=True)
+async def create_job(file: UploadFile = File(...), mode: str | None = Query(default=None)) -> dict:
+    return await _read_image(file, save=True, mode=mode)
 
 
 @app.get("/api/jobs/{job_id}")
@@ -293,7 +294,7 @@ def jobs_root() -> Path:
 
 
 @app.get("/api/jobs")
-def list_jobs(limit: int = 20) -> dict:
+def list_jobs(limit: int = 20, mode: str = "single") -> dict:
     """کارهای ذخیره‌شده روی همین سیستم، تازه‌ترین اول؛ برای بازکردن کار قبلی در رابط."""
     limit = max(1, min(MAX_JOB_LIST, limit))
     root = jobs_root()
@@ -309,6 +310,12 @@ def list_jobs(limit: int = 20) -> dict:
             continue
         if not isinstance(state, dict) or state.get("jobId") != workspace.name:
             continue
+        job_mode = state.get("mode", "single")
+        if mode != "all":
+            if mode == "single" and job_mode == "batch":
+                continue
+            if mode == "batch" and job_mode != "batch":
+                continue
         created = state.get("createdAt")
         sort_key = 0.0
         try:
@@ -322,14 +329,15 @@ def list_jobs(limit: int = 20) -> dict:
         items.append({"jobId": workspace.name, "createdAt": created,
                       "width": state.get("width"), "height": state.get("height"),
                       "format": state.get("format"), "sizeBytes": state.get("sizeBytes"),
+                      "mode": job_mode,
                       "status": state.get("status", "uploaded"), "_sort": sort_key})
     items.sort(key=lambda item: item.pop("_sort"), reverse=True)
     return {"items": items[:limit]}
 
 
 @app.delete("/api/jobs")
-async def delete_all_jobs(keep: str | None = None) -> dict:
-    """حذف همهٔ کارهای قبلی از روی دیسک، به جز کار باز (در صورت مشخص شدن)."""
+async def delete_all_jobs(keep: str | None = None, mode: str = "single") -> dict:
+    """حذف کارهای قبلی از روی دیسک بر اساس حالت (تک‌تصویر یا دسته‌ای)."""
     async with _ocr_lock:
         root = jobs_root()
         if not root.is_dir():
@@ -341,6 +349,16 @@ async def delete_all_jobs(keep: str | None = None) -> dict:
                 continue
             if keep and workspace.name == keep:
                 continue
+            try:
+                state = json.loads((workspace / "state.json").read_text(encoding="utf-8"))
+                job_mode = state.get("mode", "single") if isinstance(state, dict) else "single"
+                if mode != "all":
+                    if mode == "single" and job_mode == "batch":
+                        continue
+                    if mode == "batch" and job_mode != "batch":
+                        continue
+            except Exception:
+                pass
             try:
                 resolved = workspace.resolve()
                 if resolved.parent != root_resolved:
@@ -1710,7 +1728,7 @@ def _gap_cut(lines: list, height: int, bottom: bool) -> int:
     return int((best[0] + best[1]) // 2)
 
 
-def _new_job(image: Image.Image, lines: list | None, base_ocr: dict | None) -> dict:
+def _new_job(image: Image.Image, lines: list | None, base_ocr: dict | None, mode: str = "batch") -> dict:
     """تصویر را به‌صورت کار تازه ذخیره می‌کند؛ اگر ``lines`` داده شود، OCR هم همراهش نوشته می‌شود."""
     root = Path(os.environ.get("T4_DATA_DIR", str(Path.home() / ".t4-translate"))) / "jobs"
     job_id = uuid.uuid4().hex
@@ -1720,6 +1738,7 @@ def _new_job(image: Image.Image, lines: list | None, base_ocr: dict | None) -> d
         image.save(workspace / "source.img", format="PNG")
         info = {"width": image.width, "height": image.height, "format": "PNG",
                 "sizeBytes": (workspace / "source.img").stat().st_size, "jobId": job_id, "status": "uploaded",
+                "mode": mode,
                 "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         (workspace / "state.json.tmp").write_text(json.dumps(info), encoding="utf-8")
         os.replace(workspace / "state.json.tmp", workspace / "state.json")

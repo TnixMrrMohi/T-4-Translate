@@ -548,6 +548,7 @@ export function BatchPanel({
     setMessage('پردازش دسته‌ای ریست شد. تصویرهای جدید را انتخاب کنید.');
     try {
       localStorage.removeItem(STORE_KEY);
+      void fetch('/api/jobs?mode=batch', {method: 'DELETE'}).catch(() => undefined);
     } catch {
       // ignore
     }
@@ -727,7 +728,7 @@ export function BatchPanel({
     const form = new FormData();
     form.append('file', file);
     updateStage('upload', 0.1, `${tag} ${file.name}`);
-    const job = await (await call('/api/jobs', {method: 'POST', body: form}, 'بارگذاری')).json();
+    const job = await (await call('/api/jobs?mode=batch', {method: 'POST', body: form}, 'بارگذاری')).json();
     if (cancel.current) return;
 
     // صفحه‌ای که برای حافظهٔ این دستگاه بزرگ است، خودکار به برش‌های کوچک‌تر شکسته می‌شود؛

@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {createPortal} from 'react-dom';
 import {CompareSlider} from './CompareSlider';
 import {Overlay, useOverlayIsolation} from './Overlay';
@@ -27,9 +27,10 @@ const PROMO_KEY = 't4-promo';
 const PROMO_SITE = 'moonb.ir';
 const SLANTED_KEY = 't4-filter-slanted';
 type Source = {revision: string; items: SourceItem[]; blockCount?: number};
-type Job = {jobId: string; width: number; height: number; format: string; status: string};
+type Job = {jobId: string; width: number; height: number; format: string; status: string; mode?: string};
 type JobSummary = Job & {createdAt: string; sizeBytes?: number};
 const key = 't4-last-job';
+const ACTIVE_MODE_KEY = 't4-active-mode';
 
 /** مراحل کار؛ در هر لحظه فقط محتوای یک مرحله نمایش داده می‌شود. */
 const STEPS = [
@@ -1059,9 +1060,36 @@ export function App() {
   const [layoutDoc, setLayoutDoc] = useState<LayoutDoc | null>(null);
   const [layoutBusy, setLayoutBusy] = useState(false);
   const [layoutModal, setLayoutModal] = useState(false);
-  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_MODE_KEY);
+      if (saved === 'batch') return true;
+      if (saved === 'single') return false;
+      const batchData = localStorage.getItem('t4-batch-v2');
+      if (batchData) {
+        const parsed = JSON.parse(batchData);
+        if (Array.isArray(parsed?.pages) && parsed.pages.length > 0) return true;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  });
   // بخش دسته‌ای پس از اولین باز شدن زنده می‌ماند تا هنگام ویرایش یک صفحه، فصل از بین نرود.
-  const [batchSeen, setBatchSeen] = useState(false);
+  const [batchSeen, setBatchSeen] = useState(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_MODE_KEY);
+      if (saved === 'batch') return true;
+      const batchData = localStorage.getItem('t4-batch-v2');
+      if (batchData) {
+        const parsed = JSON.parse(batchData);
+        if (Array.isArray(parsed?.pages) && parsed.pages.length > 0) return true;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  });
   const [batchResetSignal, setBatchResetSignal] = useState(0);
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchHasWork, setBatchHasWork] = useState(false);
@@ -1138,9 +1166,29 @@ export function App() {
     uploadStarted.current = false;
   }
 
-  // «کارهای قبلی» فقط کارهایی است که دیگر باز نیستند: عکسی که همین حالا اضافه شده
-  // هنوز «کار قبلی» نیست؛ به‌محض انتخاب عکس بعدی یا ریست/شروع دوباره، در فهرست می‌آید.
-  const previousJobs = job ? jobs.filter(entry => entry.jobId !== job.jobId) : jobs;
+  // «کارهای قبلی» فقط کارهایی است که دیگر باز نیستند و متعلق به حالت تک‌تصویر هستند
+  const previousJobs = useMemo(() => {
+    let list = job ? jobs.filter(entry => entry.jobId !== job.jobId) : jobs;
+    try {
+      const batchSaved = JSON.parse(localStorage.getItem('t4-batch-v2') ?? 'null');
+      const batchIds = new Set<string>();
+      if (batchSaved && Array.isArray(batchSaved.pages)) {
+        for (const p of batchSaved.pages) {
+          if (p.jobId) batchIds.add(p.jobId);
+        }
+        if (Array.isArray(batchSaved.files)) {
+          for (const f of batchSaved.files) {
+            for (const piece of f.pieces || []) {
+              if (piece.jobId) batchIds.add(piece.jobId);
+            }
+          }
+        }
+      }
+      return list.filter(entry => entry.mode !== 'batch' && !batchIds.has(entry.jobId));
+    } catch {
+      return list.filter(entry => entry.mode !== 'batch');
+    }
+  }, [jobs, job]);
 
   // بالاترین مرحله‌ای که کاربر می‌تواند باز کند؛ بر اساس خروجی‌های موجود.
   const maxStep = !job ? 1
@@ -1185,6 +1233,11 @@ export function App() {
       }
     }
 
+    try {
+      localStorage.setItem(ACTIVE_MODE_KEY, toBatch ? 'batch' : 'single');
+    } catch {
+      // ignore
+    }
     setBatchSeen(true);
     setBatchOpen(toBatch);
   }
@@ -1215,7 +1268,7 @@ export function App() {
         setBusy(true);
         setMessage('در حال حذف کارهای قبلی و ریست برنامه…');
         try {
-          await fetch('/api/jobs', {method: 'DELETE'}).catch(() => undefined);
+          await fetch('/api/jobs?mode=single', {method: 'DELETE'}).catch(() => undefined);
           setJobs([]);
           clearCurrentJob();
           setStep(1);
@@ -1316,7 +1369,7 @@ export function App() {
 
   async function loadJobs(signal?: AbortSignal) {
     try {
-      const response = await fetch('/api/jobs?limit=20', {signal});
+      const response = await fetch('/api/jobs?limit=20&mode=single', {signal});
       if (!response.ok) return;
       const data = await response.json();
       if (Array.isArray(data.items)) setJobs(data.items);
@@ -1426,6 +1479,10 @@ export function App() {
         if (r.status === 404) {localStorage.removeItem(key); return;}
         if (!r.ok) throw Error();
         const saved: Job = await r.json();
+        if (saved.mode === 'batch') {
+          localStorage.removeItem(key);
+          return;
+        }
         if (!uploadStarted.current) {
           setJob(saved);
           setSourceVersion(Date.now());

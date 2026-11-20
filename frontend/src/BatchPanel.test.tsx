@@ -84,7 +84,7 @@ describe('ناحیهٔ انداختن تصویر', () => {
     const origFetch = global.fetch;
     let resolveJob: ((val: unknown) => void) | null = null;
     global.fetch = vi.fn().mockImplementation((url: string) => {
-      if (url === '/api/jobs') {
+      if (url.startsWith('/api/jobs')) {
         return new Promise(resolve => {
           resolveJob = () => resolve({
             ok: true,
