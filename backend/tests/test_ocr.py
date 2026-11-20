@@ -193,6 +193,24 @@ def test_ocr_settings_toggle_filter_slanted(monkeypatch, tmp_path):
         ocr_doc2 = client.get(f'/api/jobs/{job}/ocr').json()
         assert [l['text'] for l in ocr_doc2['lines']] == ['HELLO']
 
+
+def test_merge_horizontal_lines():
+    # دو کادر چسبیده در یک تراز افقی ادغام می‌شوند
+    left_part = {'text': '...IT', 'confidence': 0.8, 'quad': [[100, 200], [200, 200], [200, 250], [100, 250]]}
+    right_part = {'text': 'BETTER BE', 'confidence': 0.95, 'quad': [[210, 198], [400, 198], [400, 252], [210, 252]]}
+    merged = ocr._merge_horizontal_lines([left_part, right_part])
+    assert len(merged) == 1
+    assert merged[0]['text'] == '...IT BETTER BE'
+    assert merged[0]['quad'][0][0] == 100
+    assert merged[0]['quad'][1][0] == 400
+
+    # دو خط عمودی با فاصله نباید ادغام شوند
+    vertical1 = {'text': 'LINE 1', 'confidence': 0.9, 'quad': [[100, 100], [300, 100], [300, 140], [100, 140]]}
+    vertical2 = {'text': 'LINE 2', 'confidence': 0.9, 'quad': [[100, 160], [300, 160], [300, 200], [100, 200]]}
+    not_merged = ocr._merge_horizontal_lines([vertical1, vertical2])
+    assert len(not_merged) == 2
+
+
     assert ocr._gpu_disabled is False
 
 
@@ -253,4 +271,22 @@ def test_ocr_settings_toggle_filter_slanted(monkeypatch, tmp_path):
         assert res_on['filterSlanted'] is True
         ocr_doc2 = client.get(f'/api/jobs/{job}/ocr').json()
         assert [l['text'] for l in ocr_doc2['lines']] == ['HELLO']
+
+
+def test_merge_horizontal_lines():
+    # دو کادر چسبیده در یک تراز افقی ادغام می‌شوند
+    left_part = {'text': '...IT', 'confidence': 0.8, 'quad': [[100, 200], [200, 200], [200, 250], [100, 250]]}
+    right_part = {'text': 'BETTER BE', 'confidence': 0.95, 'quad': [[210, 198], [400, 198], [400, 252], [210, 252]]}
+    merged = ocr._merge_horizontal_lines([left_part, right_part])
+    assert len(merged) == 1
+    assert merged[0]['text'] == '...IT BETTER BE'
+    assert merged[0]['quad'][0][0] == 100
+    assert merged[0]['quad'][1][0] == 400
+
+    # دو خط عمودی با فاصله نباید ادغام شوند
+    vertical1 = {'text': 'LINE 1', 'confidence': 0.9, 'quad': [[100, 100], [300, 100], [300, 140], [100, 140]]}
+    vertical2 = {'text': 'LINE 2', 'confidence': 0.9, 'quad': [[100, 160], [300, 160], [300, 200], [100, 200]]}
+    not_merged = ocr._merge_horizontal_lines([vertical1, vertical2])
+    assert len(not_merged) == 2
+
 

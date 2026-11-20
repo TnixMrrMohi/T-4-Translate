@@ -873,6 +873,143 @@ def _resolve_line_collisions(lines: list) -> list:
     return result
 
 
+def _merge_horizontal_lines(lines: list) -> list:
+    """ادغام کادرهای متنی مجزا که روی یک خط افقی در یک راستا قرار دارند.
+
+    گاهی مدل تشخیص، کلمات یک سطر (مثلاً «...IT» و «BETTER BE») را به دلیل فاصله
+    بین کلمات یا فونت‌های متفاوت به دو یا چند کادر تفکیک می‌کند. این تابع کادرهایی
+    را که تراز عمودی یکسان دارند و فاصلهٔ افقی‌شان معقول است، در جهت خواندن چپ به راست
+    به یک کادر واحد ادغام می‌کند.
+    """
+    if not lines or len(lines) <= 1:
+        return lines
+
+    is_dict = isinstance(lines[0], dict)
+    items = []
+    for item in lines:
+        try:
+            q = item["quad"] if is_dict else item[0]
+            txt = item["text"] if is_dict else item[1]
+            conf = float(item["confidence"] if is_dict else item[2])
+            pts = np.asarray(q, dtype=np.float32)
+            if pts.shape == (4, 2):
+                items.append({
+                    "quad": [[float(x), float(y)] for x, y in q],
+                    "pts": pts,
+                    "text": str(txt),
+                    "conf": conf,
+                    "orig": item,
+                })
+            else:
+                items.append(None)
+        except Exception:
+            items.append(None)
+
+    valid_indices = [i for i, it in enumerate(items) if it is not None]
+    if len(valid_indices) <= 1:
+        return lines
+
+    merged = True
+    while merged:
+        merged = False
+        n = len(valid_indices)
+        for i in range(n):
+            idx1 = valid_indices[i]
+            it1 = items[idx1]
+            if it1 is None:
+                continue
+            for j in range(i + 1, n):
+                idx2 = valid_indices[j]
+                it2 = items[idx2]
+                if it2 is None:
+                    continue
+
+                pts1 = it1["pts"]
+                pts2 = it2["pts"]
+                x1_min, x1_max = float(pts1[:, 0].min()), float(pts1[:, 0].max())
+                y1_min, y1_max = float(pts1[:, 1].min()), float(pts1[:, 1].max())
+                h1 = y1_max - y1_min
+                w1 = x1_max - x1_min
+
+                x2_min, x2_max = float(pts2[:, 0].min()), float(pts2[:, 0].max())
+                y2_min, y2_max = float(pts2[:, 1].min()), float(pts2[:, 1].max())
+                h2 = y2_max - y2_min
+                w2 = x2_max - x2_min
+
+                if x1_min <= x2_min:
+                    left_it, right_it = it1, it2
+                    right_idx = idx2
+                    lx_min, lx_max, ly_min, ly_max, lh, lw = x1_min, x1_max, y1_min, y1_max, h1, w1
+                    rx_min, rx_max, ry_min, ry_max, rh, rw = x2_min, x2_max, y2_min, y2_max, h2, w2
+                else:
+                    left_it, right_it = it2, it1
+                    right_idx = idx1
+                    lx_min, lx_max, ly_min, ly_max, lh, lw = x2_min, x2_max, y2_min, y2_max, h2, w2
+                    rx_min, rx_max, ry_min, ry_max, rh, rw = x1_min, x1_max, y1_min, y1_max, h1, w1
+
+                min_h = min(lh, rh)
+                max_h = max(lh, rh)
+                if min_h < 6.0 or min_h / max_h < 0.40:
+                    continue
+
+                v_overlap = min(ly_max, ry_max) - max(ly_min, ry_min)
+                if v_overlap < 0.45 * min_h:
+                    continue
+
+                center_ly = (ly_min + ly_max) / 2.0
+                center_ry = (ry_min + ry_max) / 2.0
+                if abs(center_ly - center_ry) > 0.55 * max_h:
+                    continue
+
+                gap = rx_min - lx_max
+                if gap < -0.35 * min(lw, rw) or gap > max(2.0 * min_h, 60.0):
+                    continue
+
+                blocked = False
+                for k in valid_indices:
+                    if k == idx1 or k == idx2 or items[k] is None:
+                        continue
+                    k_pts = items[k]["pts"]
+                    kx_c = float(k_pts[:, 0].mean())
+                    ky_c = float(k_pts[:, 1].mean())
+                    if lx_max < kx_c < rx_min and min(ly_min, ry_min) - 5 <= ky_c <= max(ly_max, ry_max) + 5:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+
+                new_q = _union_quad(left_it["quad"], right_it["quad"])
+                new_text = f"{left_it['text'].strip()} {right_it['text'].strip()}".strip()
+                new_conf = (left_it["conf"] * lw + right_it["conf"] * rw) / max(1.0, lw + rw)
+                new_pts = np.asarray(new_q, dtype=np.float32)
+
+                left_it["quad"] = new_q
+                left_it["pts"] = new_pts
+                left_it["text"] = new_text
+                left_it["conf"] = new_conf
+                items[right_idx] = None
+                valid_indices.remove(right_idx)
+                merged = True
+                break
+            if merged:
+                break
+
+    output = []
+    for it in items:
+        if it is None:
+            continue
+        if is_dict:
+            orig = it.get("orig")
+            item_dict = dict(orig) if isinstance(orig, dict) else {}
+            item_dict["quad"] = it["quad"]
+            item_dict["text"] = it["text"]
+            item_dict["confidence"] = it["conf"]
+            output.append(item_dict)
+        else:
+            output.append((it["quad"], it["text"], it["conf"]))
+    return output
+
+
 def _read(image, on_progress=None) -> list:
     """خطوط یک نوار/صفحه: تشخیص و خواندنِ دسته‌ای، بعد بازخوانی خط‌به‌خط.
 
@@ -902,6 +1039,7 @@ def _read(image, on_progress=None) -> list:
         raw, _ = engine(image)
     lines = [item for item in (raw or []) if isinstance(item, (list, tuple)) and len(item) == 3]
     if lines:
+        lines = _merge_horizontal_lines(lines)
         lines = _extend_punctuation_quads(lines, image)
         lines = _resolve_line_collisions(lines)
     diagnostics.log_event(
@@ -998,7 +1136,7 @@ def _union_quad(q1: list, q2: list) -> list:
     return [[min(xs), min(ys)], [max(xs), min(ys)], [max(xs), max(ys)], [min(xs), max(ys)]]
 
 
-def is_slanted_quad(quad: list, max_angle_deg: float = 8.0) -> bool:
+def is_slanted_quad(quad: list, max_angle_deg: float = 14.0) -> bool:
     """محاسبهٔ زاویهٔ چرخش کادر نسبت به افق؛ آیا مایل و کج است؟"""
     if not quad or len(quad) < 4:
         return False
@@ -1116,6 +1254,7 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
             report(0.97, 'merge')
             before_dedupe = len(result)
             result = _dedupe(result)
+            result = _merge_horizontal_lines(result)
             result = _resolve_line_collisions(result)
             report(0.99, 'save')
             avg_conf = round(sum(l.get('confidence', 0.0) for l in result) / max(1, len(result)), 3)
@@ -1193,6 +1332,7 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
     report(0.97, 'merge')
     before_dedupe = len(result)
     result = _dedupe(result)
+    result = _merge_horizontal_lines(result)
     result = _resolve_line_collisions(result)
     report(0.99, 'save')
     avg_conf = round(sum(l.get('confidence', 0.0) for l in result) / max(1, len(result)), 3)
