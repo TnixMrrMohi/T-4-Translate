@@ -67,7 +67,7 @@ describe('ناحیهٔ انداختن تصویر', () => {
     expect(resetDone).toBe(true);
   });
 
-  it('دکمهٔ استخراج متن نام کوتاه دارد و دکمهٔ توقف عملیات را کنسل می‌کند', async () => {
+  it('دکمهٔ استخراج متن نام کوتاه دارد و دکمهٔ لغو پردازش همراه با پروگرس‌بار عملیات را کنسل می‌کند', async () => {
     const origFetch = global.fetch;
     let resolveJob: ((val: unknown) => void) | null = null;
     global.fetch = vi.fn().mockImplementation((url: string) => {
@@ -94,11 +94,14 @@ describe('ناحیهٔ انداختن تصویر', () => {
     expect(extractBtn).toBeInTheDocument();
 
     fireEvent.click(extractBtn);
-    const stopBtn = await screen.findByRole('button', {name: 'توقف'});
+    const stopBtn = await screen.findByRole('button', {name: 'لغو پردازش'});
     expect(stopBtn).toBeInTheDocument();
 
+    const progressBar = await screen.findByRole('progressbar', {name: 'پیشرفت استخراج متن'});
+    expect(progressBar).toBeInTheDocument();
+
     fireEvent.click(stopBtn);
-    expect(screen.getByText('در حال توقف…')).toBeInTheDocument();
+    expect(screen.getByText('در حال لغو…')).toBeInTheDocument();
 
     if (resolveJob) (resolveJob as () => void)();
 

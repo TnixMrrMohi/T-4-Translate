@@ -218,6 +218,52 @@ export const BATCH_STEPS = [
   {id: 5, title: 'مقایسه'},
 ];
 
+function BatchProgressBar({
+  progress,
+  detail,
+  onCancel,
+  cancelPending,
+  ariaLabel = 'پیشرفت استخراج متن',
+}: {
+  progress: {fraction: number; label: string};
+  detail?: string;
+  onCancel?: () => void;
+  cancelPending?: boolean;
+  ariaLabel?: string;
+}) {
+  const percent = Math.max(0, Math.min(100, Math.round(progress.fraction * 100)));
+  return (
+    <div className="progress-panel" data-stage="batch">
+      <div className="progress-head">
+        <span className="progress-label">{progress.label}</span>
+        <span className="progress-percent" dir="ltr">{percent.toLocaleString('fa-IR')}٪</span>
+      </div>
+      <div
+        className="progress-track"
+        role="progressbar"
+        aria-label={ariaLabel}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`${percent} درصد — ${progress.label}`}
+      >
+        <div className="progress-fill" style={{width: `${percent}%`}} />
+      </div>
+      {detail && <p className="progress-hint">{detail}</p>}
+      {onCancel && (
+        <button
+          type="button"
+          className="ghost"
+          disabled={cancelPending}
+          onClick={onCancel}
+        >
+          {cancelPending ? 'در حال لغو…' : 'لغو پردازش'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function BatchPanel({
   onClose,
   prompt,
@@ -245,6 +291,26 @@ export function BatchPanel({
   const [message, setMessage] = useState('');
   const [progress, setProgress] = useState('');
   const cancel = useRef(false);
+  const [cancelPending, setCancelPending] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{
+    fraction: number;
+    label: string;
+    detail?: string;
+  }>({
+    fraction: 0,
+    label: '',
+    detail: '',
+  });
+
+  function handleCancel() {
+    cancel.current = true;
+    setCancelPending(true);
+    setProgress('در حال لغو…');
+    setBatchProgress(prev => ({
+      ...prev,
+      label: 'در حال لغو پردازش…',
+    }));
+  }
   const [copied, setCopied] = useState<'prompt' | 'text' | null>(null);
   const copiedTimer = useRef<number | null>(null);
 
@@ -309,6 +375,8 @@ export function BatchPanel({
     setTranslated('');
     setFailedFiles([]);
     setProgress('');
+    setBatchProgress({fraction: 0, label: '', detail: ''});
+    setCancelPending(false);
     if (picker.current) {
       picker.current.value = '';
     }
@@ -392,23 +460,50 @@ export function BatchPanel({
 
   /** اگر حافظهٔ دستگاه پر باشد، کمی صبر می‌کند و همان کار را دوباره می‌زند (به‌جای رد کردن صفحه). */
   const retrying = <T,>(what: string, task: () => Promise<T>) =>
-    withMemoryRetry(task, (seconds, attempt) =>
-      setProgress(stage('wait', `${what} — ${seconds} ثانیه صبر، تلاش ${attempt + 1} از ${MEMORY_ATTEMPTS}`)),
+    withMemoryRetry(task, (seconds, attempt) => {
+      const waitMsg = stage('wait', `${what} — ${seconds} ثانیه صبر، تلاش ${attempt + 1} از ${MEMORY_ATTEMPTS}`);
+      setProgress(waitMsg);
+      setBatchProgress(prev => ({...prev, detail: waitMsg}));
+    },
     () => cancel.current);
 
   /** یک فایل: بارگذاری ← (در صورت بزرگی) برش ← OCR ← متن. نتیجه به found/fileList اضافه می‌شود. */
-  async function extractOne(file: File, order: number, found: BatchPage[], fileList: BatchFile[], tag: string) {
+  async function extractOne(
+    file: File,
+    order: number,
+    found: BatchPage[],
+    fileList: BatchFile[],
+    tag: string,
+    totalFiles: number = files.length,
+  ) {
+    const fileWeight = 1 / Math.max(1, totalFiles);
+    const baseFraction = order / Math.max(1, totalFiles);
+
+    const updateStage = (stageKey: keyof typeof STAGES, subFrac: number, where: string) => {
+      const fullDetail = stage(stageKey, where);
+      setProgress(fullDetail);
+      setBatchProgress({
+        fraction: Math.min(0.95, baseFraction + fileWeight * subFrac),
+        label: `در حال اسکن و خواندن فایل ${(order + 1).toLocaleString('fa-IR')} از ${totalFiles.toLocaleString('fa-IR')}…`,
+        detail: fullDetail,
+      });
+    };
+
     const form = new FormData();
     form.append('file', file);
-    setProgress(stage('upload', `${tag} ${file.name}`));
+    updateStage('upload', 0.1, `${tag} ${file.name}`);
     const job = await (await call('/api/jobs', {method: 'POST', body: form}, 'بارگذاری')).json();
+    if (cancel.current) return;
+
     // صفحه‌ای که برای حافظهٔ این دستگاه بزرگ است، خودکار به برش‌های کوچک‌تر شکسته می‌شود؛
     // خروجی نهایی دوباره از همان برش‌ها یک فایل می‌سازد و متنِ روی برش‌ها در مرز یک‌تکه پردازش می‌شود.
-    setProgress(stage('slice', `${tag} ${file.name}`));
+    updateStage('slice', 0.25, `${tag} ${file.name}`);
     const slice = await (await call('/api/batch/slice', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({jobId: job.jobId}),
     }, 'برش صفحهٔ بلند')).json();
+    if (cancel.current) return;
+
     const units: {jobId: string; height: number}[] = slice.sliced
       ? slice.slices : [{jobId: job.jobId, height: job.height}];
     if (slice.sliced) void fetch(`/api/jobs/${job.jobId}`, {method: 'DELETE'}).catch(() => undefined);
@@ -418,7 +513,8 @@ export function BatchPanel({
       if (cancel.current) break;
       const unit = units[part];
       const where = `${tag} ${file.name}` + (units.length > 1 ? ` · برش ${part + 1} از ${units.length}` : '');
-      setProgress(stage('ocr', where));
+      const ocrFrac = 0.25 + 0.7 * ((part + 0.5) / units.length);
+      updateStage('ocr', ocrFrac, where);
       await retrying('OCR', () => call(`/api/jobs/${unit.jobId}/ocr`, {method: 'POST'}, 'OCR'));
       if (cancel.current) break;
       const label = units.length > 1 ? `${file.name} [${part + 1}]` : file.name;
@@ -453,7 +549,13 @@ export function BatchPanel({
         at += 1;
         continue;
       }
-      setProgress(stage('seamCheck', `${upperPage.name} ↔ ${lowerPage.name}`));
+      const seamMsg = stage('seamCheck', `${upperPage.name} ↔ ${lowerPage.name}`);
+      setProgress(seamMsg);
+      setBatchProgress({
+        fraction: 0.92,
+        label: 'در حال بررسی متن مرز صفحه‌ها…',
+        detail: seamMsg,
+      });
       try {
         const seam = await (await call('/api/batch/seam', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -464,7 +566,13 @@ export function BatchPanel({
           continue;
         }
         if (!upperOwner || !lowerOwner) throw Error('ترتیب صفحه‌ها پیدا نشد.');
-        setProgress(stage('seamBuild', `${upperPage.name} ↔ ${lowerPage.name}`));
+        const buildMsg = stage('seamBuild', `${upperPage.name} ↔ ${lowerPage.name}`);
+        setProgress(buildMsg);
+        setBatchProgress({
+          fraction: 0.95,
+          label: 'در حال ساخت و خواندن نوار مرزی…',
+          detail: buildMsg,
+        });
         const cut = await (await call('/api/batch/stitch', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({upper: upperPage.jobId, lower: lowerPage.jobId}),
@@ -504,7 +612,9 @@ export function BatchPanel({
     setPages(found);   // فقط وقتی همهٔ تصویرها خوانده شدند نشان داده می‌شود
     setFailedFiles(failed);
     setBusy(null);
+    setCancelPending(false);
     setProgress('');
+    setBatchProgress({fraction: 0, label: '', detail: ''});
     const parts = [`متن ${found.length} صفحه آماده است`];
     if (joined) parts.push(`${joined} مرز با متنِ بریده جدا و یک‌تکه پردازش می‌شود`);
     if (failed.length) parts.push(`${failed.length} فایل خوانده نشد (دکمهٔ «تلاش دوباره برای فایل‌های ناموفق» را بزنید؛ بقیه دست‌نخورده می‌مانند)`);
@@ -518,9 +628,16 @@ export function BatchPanel({
   async function extract() {
     if (!files.length || busy) return;
     cancel.current = false;
+    setCancelPending(false);
     setBusy('extract');
     setPages([]);
     setTranslated('');
+    const total = files.length;
+    setBatchProgress({
+      fraction: 0.02,
+      label: `در حال آماده‌سازی برای خواندن ${total.toLocaleString('fa-IR')} تصویر…`,
+      detail: stage('upload', `فایل ۱ از ${total} · ${files[0].name}`),
+    });
     const found: BatchPage[] = [];
     const fileList: BatchFile[] = [];
     const failed: FailedFile[] = [];
@@ -528,24 +645,38 @@ export function BatchPanel({
     for (let index = 0; index < files.length; index += 1) {
       if (cancel.current) break;
       try {
-        await extractOne(files[index], index, found, fileList, `فایل ${index + 1} از ${files.length} ·`);
+        await extractOne(files[index], index, found, fileList, `فایل ${index + 1} از ${files.length} ·`, files.length);
       } catch (error) {
         failed.push({file: files[index], order: index, error: error instanceof Error ? error.message : 'خطا'});
       }
     }
     if (cancel.current) {
       setBusy(null);
+      setCancelPending(false);
       setProgress('');
+      setBatchProgress({fraction: 0, label: '', detail: ''});
       setMessage('عملیات استخراج متن متوقف شد.');
       return;
     }
+    setBatchProgress({
+      fraction: 0.95,
+      label: 'در حال بررسی متن مرز صفحه‌ها…',
+      detail: stage('seamCheck', ''),
+    });
     const joined = await seamPass(found, fileList, errors);
     if (cancel.current) {
       setBusy(null);
+      setCancelPending(false);
       setProgress('');
+      setBatchProgress({fraction: 0, label: '', detail: ''});
       setMessage('عملیات استخراج متن متوقف شد.');
       return;
     }
+    setBatchProgress({
+      fraction: 1,
+      label: 'استخراج متن به پایان رسید.',
+      detail: '',
+    });
     finishExtract(found, fileList, failed, errors, joined);
   }
 
@@ -553,7 +684,14 @@ export function BatchPanel({
   async function retryFailedFiles() {
     if (!failedFiles.length || busy) return;
     cancel.current = false;
+    setCancelPending(false);
     setBusy('extract');
+    const total = failedFiles.length;
+    setBatchProgress({
+      fraction: 0.05,
+      label: `در حال تلاش دوباره برای خواندن ${total.toLocaleString('fa-IR')} تصویر ناموفق…`,
+      detail: '',
+    });
     const found = [...pages];
     const fileList = outFiles.map(file => ({...file, pieces: [...file.pieces]}));
     const stillFailed: FailedFile[] = [];
@@ -567,7 +705,14 @@ export function BatchPanel({
       const fresh: BatchPage[] = [];
       const freshFiles: BatchFile[] = [];
       try {
-        await extractOne(item.file, item.order, fresh, freshFiles, `تلاش دوباره ${at + 1} از ${failedFiles.length} ·`);
+        await extractOne(
+          item.file,
+          item.order,
+          fresh,
+          freshFiles,
+          `تلاش دوباره ${at + 1} از ${failedFiles.length} ·`,
+          total,
+        );
       } catch (error) {
         stillFailed.push({...item, error: error instanceof Error ? error.message : 'خطا'});
         continue;
@@ -590,7 +735,9 @@ export function BatchPanel({
     if (cancel.current) {
       setFailedFiles(stillFailed);
       setBusy(null);
+      setCancelPending(false);
       setProgress('');
+      setBatchProgress({fraction: 0, label: '', detail: ''});
       setMessage('عملیات متوقف شد.');
       return;
     }
@@ -604,15 +751,28 @@ export function BatchPanel({
     if (busy || !pages.length) return;
     const parts = splitBatchText(translated);
     cancel.current = false;
+    setCancelPending(false);
     setBusy('apply');
     const targets = pages.filter(page => !only || only.includes(page.jobId));
     let ok = 0;
     let bad = 0;
+    const phaseTitle = phase === 'clean' ? 'پاک‌سازی' : phase === 'render' ? 'درج ترجمه' : 'پاک‌سازی و درج ترجمه';
+    setBatchProgress({
+      fraction: 0.02,
+      label: `در حال ${phaseTitle} صفحات…`,
+      detail: `صفحه ۱ از ${targets.length}`,
+    });
     for (let at = 0; at < targets.length; at += 1) {
       if (cancel.current) break;
       const page = targets[at];
       const index = pages.findIndex(entry => entry.jobId === page.jobId);
       const tag = `${at + 1} از ${targets.length} · ${page.name}`;
+      const frac = at / Math.max(1, targets.length);
+      setBatchProgress({
+        fraction: frac,
+        label: `در حال ${phaseTitle} — صفحه ${(at + 1).toLocaleString('fa-IR')} از ${targets.length.toLocaleString('fa-IR')}…`,
+        detail: tag,
+      });
       if (isPlainPage(page)) {
         update(index, {state: 'done', error: undefined});
         ok += 1;
@@ -623,16 +783,34 @@ export function BatchPanel({
         const text = parts.get(page.page);
         if (!text) throw new Error('ترجمهٔ این صفحه در متن نیست (تیتر === ... === را نگه دارید).');
         if (phase === 'clean' || phase === 'full') {
-          setProgress(stage('save', tag));
+          const saveMsg = stage('save', tag);
+          setProgress(saveMsg);
+          setBatchProgress({
+            fraction: frac + (0.5 / targets.length) * 0.2,
+            label: `در حال ثبت ترجمه — صفحه ${(at + 1).toLocaleString('fa-IR')} از ${targets.length.toLocaleString('fa-IR')}…`,
+            detail: saveMsg,
+          });
           await call(`/api/jobs/${page.jobId}/translations`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({sourceRevision: page.revision, text, promo: 'replace'}),
           }, 'ذخیرهٔ ترجمه');
-          setProgress(stage('clean', tag));
+          const cleanMsg = stage('clean', tag);
+          setProgress(cleanMsg);
+          setBatchProgress({
+            fraction: frac + (0.5 / targets.length) * 0.8,
+            label: `در حال پاک‌سازی — صفحه ${(at + 1).toLocaleString('fa-IR')} از ${targets.length.toLocaleString('fa-IR')}…`,
+            detail: cleanMsg,
+          });
           await retrying('پاک‌سازی', () => call(`/api/jobs/${page.jobId}/clean`, {method: 'POST'}, 'پاک‌سازی'));
         }
         if (phase === 'render' || phase === 'full') {
-          setProgress(stage('render', tag));
+          const renderMsg = stage('render', tag);
+          setProgress(renderMsg);
+          setBatchProgress({
+            fraction: frac + (0.5 / targets.length) * 1.0,
+            label: `در حال درج ترجمه — صفحه ${(at + 1).toLocaleString('fa-IR')} از ${targets.length.toLocaleString('fa-IR')}…`,
+            detail: renderMsg,
+          });
           await retrying('درج ترجمه', () => call(`/api/jobs/${page.jobId}/render`, {method: 'POST'}, 'درج ترجمه'));
         }
         update(index, {state: 'done'});
@@ -643,7 +821,9 @@ export function BatchPanel({
       }
     }
     setBusy(null);
+    setCancelPending(false);
     setProgress('');
+    setBatchProgress({fraction: 0, label: '', detail: ''});
     if (cancel.current) {
       setMessage(`عملیات متوقف شد (${ok} صفحه تکمیل شده بود).`);
       return;
@@ -661,7 +841,13 @@ export function BatchPanel({
     const ready = pages.filter(p => p.state === 'done');
     if (!ready.length || busy) return;
     setBusy('export');
-    setProgress(stage('zip', `${outFiles.length} فایل`));
+    const zipMsg = stage('zip', `${outFiles.length} فایل`);
+    setProgress(zipMsg);
+    setBatchProgress({
+      fraction: 1.0,
+      label: 'در حال ساخت فایل ZIP خروجی…',
+      detail: zipMsg,
+    });
     try {
       const response = await call('/api/batch/export', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -696,6 +882,8 @@ export function BatchPanel({
       setMessage(error instanceof Error ? error.message : 'دانلود ناموفق بود.');
     } finally {
       setBusy(null);
+      setProgress('');
+      setBatchProgress({fraction: 0, label: '', detail: ''});
     }
   }
 
@@ -827,7 +1015,7 @@ export function BatchPanel({
 
               <div className="upload-bar">
                 <span className="upload-bar-label">تصویرهای ورودی</span>
-                {files.length > 0 && (
+                {files.length > 0 && !busy && (
                   <button
                     type="button"
                     className="icon-button trash"
@@ -848,86 +1036,75 @@ export function BatchPanel({
                 )}
               </div>
 
-              <div
-                className={`select batch-drop${dragOver ? ' drag-over' : ''}${busy !== null ? ' busy' : ''}`}
-                role="button"
-                tabIndex={0}
-                aria-label="ناحیهٔ انداختن یا چسباندن تصویرها"
-                onClick={() => busy === null && (folderPicker.current?.click() ?? picker.current?.click())}
-                onKeyDown={event => {
-                  if (event.key === 'Enter' || event.key === ' ') {
+              {busy === 'extract' ? (
+                <BatchProgressBar
+                  progress={batchProgress}
+                  detail={batchProgress.detail || progress}
+                  onCancel={handleCancel}
+                  cancelPending={cancelPending}
+                  ariaLabel="پیشرفت استخراج متن"
+                />
+              ) : (
+                <div
+                  className={`select batch-drop${dragOver ? ' drag-over' : ''}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label="ناحیهٔ انداختن یا چسباندن تصویرها"
+                  onClick={() => folderPicker.current?.click() ?? picker.current?.click()}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      folderPicker.current?.click() ?? picker.current?.click();
+                    }
+                  }}
+                  onDragOver={event => {event.preventDefault(); setDragOver(true);}}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={event => {
                     event.preventDefault();
-                    if (busy === null) (folderPicker.current?.click() ?? picker.current?.click());
-                  }
-                }}
-                onDragOver={event => {event.preventDefault(); if (busy === null) setDragOver(true);}}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={event => {
-                  event.preventDefault();
-                  setDragOver(false);
-                  if (busy !== null) return;
-                  if (hasDirectoryEntry(event.dataTransfer)) {
-                    void extractDroppedFiles(event.dataTransfer).then(addFiles);
-                  } else {
-                    addFiles(event.dataTransfer.files);
-                  }
-                }}
-              >
-                <input
-                  ref={folderPicker}
-                  type="file"
-                  multiple
-                  aria-label="انتخاب فولدر"
-                  hidden
-                  disabled={busy !== null}
-                  {...({webkitdirectory: '', directory: ''} as React.InputHTMLAttributes<HTMLInputElement>)}
-                  onChange={event => {addFiles(event.target.files); event.target.value = '';}}
-                />
-                <input
-                  ref={picker}
-                  type="file"
-                  multiple
-                  accept="image/png,image/jpeg,image/webp"
-                  aria-label="انتخاب تصویرها"
-                  hidden
-                  disabled={busy !== null}
-                  onChange={event => {addFiles(event.target.files); event.target.value = '';}}
-                />
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9bf3cc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-                <span>{busy !== null ? 'در حال پردازش…' : 'انتخاب فولدر یا رها کردن تصاویر'}</span>
-              </div>
-
-              {files.length > 0 && (
-                <div className="wizard-nav start">
-                  <span className="fonts-note">{files.length} تصویر انتخاب شد.</span>
-                  <button type="button" className="ocr" disabled={busy !== null} onClick={() => void extract()}>
-                    استخراج متن
-                  </button>
-                  {failedFiles.length > 0 && (
-                    <button type="button" className="ghost" disabled={busy !== null} onClick={() => void retryFailedFiles()}>
-                      تلاش دوباره برای فایل‌های ناموفق ({failedFiles.length})
-                    </button>
-                  )}
+                    setDragOver(false);
+                    if (hasDirectoryEntry(event.dataTransfer)) {
+                      void extractDroppedFiles(event.dataTransfer).then(addFiles);
+                    } else {
+                      addFiles(event.dataTransfer.files);
+                    }
+                  }}
+                >
+                  <input
+                    ref={folderPicker}
+                    type="file"
+                    multiple
+                    aria-label="انتخاب فولدر"
+                    hidden
+                    {...({webkitdirectory: '', directory: ''} as React.InputHTMLAttributes<HTMLInputElement>)}
+                    onChange={event => {addFiles(event.target.files); event.target.value = '';}}
+                  />
+                  <input
+                    ref={picker}
+                    type="file"
+                    multiple
+                    accept="image/png,image/jpeg,image/webp"
+                    aria-label="انتخاب تصویرها"
+                    hidden
+                    onChange={event => {addFiles(event.target.files); event.target.value = '';}}
+                  />
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9bf3cc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  <span>انتخاب فولدر یا رها کردن تصاویر</span>
                 </div>
               )}
 
-              {busy && (
+              {files.length > 0 && !busy && (
                 <div className="wizard-nav start">
-                  <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
-                  {busy !== 'export' && (
-                    <button
-                      type="button"
-                      className="ghost danger"
-                      onClick={() => {
-                        cancel.current = true;
-                        setProgress('در حال توقف…');
-                      }}
-                    >
-                      توقف
+                  <span className="fonts-note">{files.length} تصویر انتخاب شد.</span>
+                  <button type="button" className="ocr" onClick={() => void extract()}>
+                    استخراج متن
+                  </button>
+                  {failedFiles.length > 0 && (
+                    <button type="button" className="ghost" onClick={() => void retryFailedFiles()}>
+                      تلاش دوباره برای فایل‌های ناموفق ({failedFiles.length})
                     </button>
                   )}
                 </div>
@@ -1027,37 +1204,31 @@ export function BatchPanel({
                 پاک‌سازی خودکار متن اصلی از روی تصاویر تمام صفحات فصل با هوش مصنوعی (Inpaint).
               </p>
 
-              <div className="wizard-nav start">
-                <button type="button" className="ocr" disabled={busy !== null || !translated.trim()} onClick={() => void run(undefined, 'clean')}>
-                  اجرای پاک‌سازی دسته‌ای
-                </button>
-                <button type="button" className="ghost" disabled={busy !== null || !translated.trim()} onClick={() => void run(undefined, 'full')}>
-                  اجرای کامل (پاک‌سازی و درج ترجمه)
-                </button>
-                {failedPages.length > 0 && (
-                  <button type="button" className="ghost" disabled={busy !== null || !translated.trim()}
-                    onClick={() => void run(failedPages.map(page => page.jobId), 'clean')}>
-                    تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
-                  </button>
-                )}
-              </div>
-
-              {busy && (
+              {!busy && (
                 <div className="wizard-nav start">
-                  <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
-                  {busy !== 'export' && (
-                    <button
-                      type="button"
-                      className="ghost danger"
-                      onClick={() => {
-                        cancel.current = true;
-                        setProgress('در حال توقف…');
-                      }}
-                    >
-                      توقف
+                  <button type="button" className="ocr" disabled={!translated.trim()} onClick={() => void run(undefined, 'clean')}>
+                    اجرای پاک‌سازی دسته‌ای
+                  </button>
+                  <button type="button" className="ghost" disabled={!translated.trim()} onClick={() => void run(undefined, 'full')}>
+                    اجرای کامل (پاک‌سازی و درج ترجمه)
+                  </button>
+                  {failedPages.length > 0 && (
+                    <button type="button" className="ghost" disabled={!translated.trim()}
+                      onClick={() => void run(failedPages.map(page => page.jobId), 'clean')}>
+                      تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
                     </button>
                   )}
                 </div>
+              )}
+
+              {busy === 'apply' && (
+                <BatchProgressBar
+                  progress={batchProgress}
+                  detail={batchProgress.detail || progress}
+                  onCancel={handleCancel}
+                  cancelPending={cancelPending}
+                  ariaLabel="پیشرفت پاک‌سازی دسته‌ای"
+                />
               )}
 
               <ul className="batch-list">
@@ -1094,34 +1265,28 @@ export function BatchPanel({
                 درج خودکار متون ترجمه‌شده روی تصاویر پاک‌شدهٔ فصل با فونت و تنظیمات استاندارد.
               </p>
 
-              <div className="wizard-nav start">
-                <button type="button" className="ocr" disabled={busy !== null || !translated.trim()} onClick={() => void run(undefined, 'render')}>
-                  درج ترجمه روی همهٔ صفحه‌ها
-                </button>
-                {failedPages.length > 0 && (
-                  <button type="button" className="ghost" disabled={busy !== null || !translated.trim()}
-                    onClick={() => void run(failedPages.map(page => page.jobId), 'render')}>
-                    تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
-                  </button>
-                )}
-              </div>
-
-              {busy && (
+              {!busy && (
                 <div className="wizard-nav start">
-                  <span className="wizard-note batch-stage" role="status">{progress || 'در حال کار…'}</span>
-                  {busy !== 'export' && (
-                    <button
-                      type="button"
-                      className="ghost danger"
-                      onClick={() => {
-                        cancel.current = true;
-                        setProgress('در حال توقف…');
-                      }}
-                    >
-                      توقف
+                  <button type="button" className="ocr" disabled={!translated.trim()} onClick={() => void run(undefined, 'render')}>
+                    درج ترجمه روی همهٔ صفحه‌ها
+                  </button>
+                  {failedPages.length > 0 && (
+                    <button type="button" className="ghost" disabled={!translated.trim()}
+                      onClick={() => void run(failedPages.map(page => page.jobId), 'render')}>
+                      تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
                     </button>
                   )}
                 </div>
+              )}
+
+              {busy === 'apply' && (
+                <BatchProgressBar
+                  progress={batchProgress}
+                  detail={batchProgress.detail || progress}
+                  onCancel={handleCancel}
+                  cancelPending={cancelPending}
+                  ariaLabel="پیشرفت درج ترجمه"
+                />
               )}
 
               <ul className="batch-list">
@@ -1161,14 +1326,24 @@ export function BatchPanel({
                 خط‌بندی‌اش را عوض کنید یا پشتش را دوباره پاک کنید. تغییرها همان لحظه ذخیره و درج می‌شوند.
               </p>
 
-              <div className="wizard-nav start">
-                <button type="button" className="ocr" disabled={busy !== null || doneCount === 0} onClick={() => void exportZip()}>
-                  دانلود خروجی WebP (ZIP)
-                </button>
-                <button type="button" className="ghost" onClick={() => setBatchStep(2)}>
-                  ویرایش مجدد ترجمه
-                </button>
-              </div>
+              {!busy && (
+                <div className="wizard-nav start">
+                  <button type="button" className="ocr" disabled={doneCount === 0} onClick={() => void exportZip()}>
+                    دانلود خروجی WebP (ZIP)
+                  </button>
+                  <button type="button" className="ghost" onClick={() => setBatchStep(2)}>
+                    ویرایش مجدد ترجمه
+                  </button>
+                </div>
+              )}
+
+              {busy === 'export' && (
+                <BatchProgressBar
+                  progress={batchProgress}
+                  detail={batchProgress.detail || progress}
+                  ariaLabel="پیشرفت ساخت ZIP خروجی"
+                />
+              )}
 
               <div className="chapter-view" aria-label="نمای فصل">
                 {pages.filter(page => page.state === 'done').map(page => (

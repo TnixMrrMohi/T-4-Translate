@@ -288,6 +288,7 @@
 .progress-panel[data-stage="done"] .progress-fill::after{animation:none}
 .progress-panel[data-stage="done"] .progress-fill{background:linear-gradient(90deg,#00ffcc,#a8ffe9)}
 .progress-hint{margin:0;color:#7d9294;font-size:12px;line-height:1.7}
+.progress-panel button.ghost{align-self:flex-start;margin-top:4px}
 @keyframes progress-sheen{from{background-position:200% 0}to{background-position:-200% 0}}
 @media (prefers-reduced-motion:reduce){.progress-fill{transition:none}.progress-fill::after{animation:none}}
 
