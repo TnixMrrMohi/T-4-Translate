@@ -527,6 +527,12 @@ export function BatchPanel({
   const [previewModalKind, setPreviewModalKind] = useState<'ocr' | 'clean' | 'render'>('ocr');
   const [manualTool, setManualTool] = useState<'brush' | 'box' | 'none'>('none');
   const [brushSize, setBrushSize] = useState(35);
+
+  useEffect(() => {
+    if (busy) {
+      setManualTool('none');
+    }
+  }, [busy]);
   const [promoAction, setPromoAction] = useState<PromoAction>(
     () => (localStorage.getItem(PROMO_KEY) === 'remove' ? 'remove' : 'replace')
   );
@@ -1735,51 +1741,52 @@ export function BatchPanel({
                 </ul>
               )}
 
-              {pages.length > 0 && (
-                <>
-                  <div className="manual-toolbar" role="toolbar" aria-label="ابزارهای پاک‌سازی و ترمیم دستی">
-                    <span className="manual-toolbar-label">ترمیم دستی:</span>
+              {!busy && pages.length > 0 && (
+                <div className="manual-toolbar" role="toolbar" aria-label="ابزارهای پاک‌سازی و ترمیم دستی">
+                  <span className="manual-toolbar-label">ترمیم دستی:</span>
+                  <button
+                    type="button"
+                    className={`ghost small ${manualTool === 'brush' ? 'is-active' : ''}`}
+                    onClick={() => setManualTool(manualTool === 'brush' ? 'none' : 'brush')}
+                    title="رنگ‌آمیزی آزاد روی متن‌ها و واترمارک‌های جا مانده"
+                  >
+                    🖌️ قلم‌مو
+                  </button>
+                  <button
+                    type="button"
+                    className={`ghost small ${manualTool === 'box' ? 'is-active' : ''}`}
+                    onClick={() => setManualTool(manualTool === 'box' ? 'none' : 'box')}
+                    title="کشیدن کادر مستطیلی دور واترمارک"
+                  >
+                    🔲 کادر انتخابی
+                  </button>
+                  {manualTool === 'brush' && (
+                    <label className="manual-brush-slider">
+                      اندازه:
+                      <input
+                        type="range"
+                        min="10"
+                        max="100"
+                        value={brushSize}
+                        onChange={e => setBrushSize(Number(e.target.value))}
+                      />
+                      <span>{brushSize}px</span>
+                    </label>
+                  )}
+                  {manualTool !== 'none' && (
                     <button
                       type="button"
-                      className={`ghost small ${manualTool === 'brush' ? 'is-active' : ''}`}
-                      onClick={() => setManualTool(manualTool === 'brush' ? 'none' : 'brush')}
-                      title="رنگ‌آمیزی آزاد روی متن‌ها و واترمارک‌های جا مانده"
+                      className="ghost small"
+                      onClick={() => setManualTool('none')}
                     >
-                      🖌️ قلم‌مو
+                      ✕ غیرفعال‌سازی
                     </button>
-                    <button
-                      type="button"
-                      className={`ghost small ${manualTool === 'box' ? 'is-active' : ''}`}
-                      onClick={() => setManualTool(manualTool === 'box' ? 'none' : 'box')}
-                      title="کشیدن کادر مستطیلی دور واترمارک"
-                    >
-                      🔲 کادر انتخابی
-                    </button>
-                    {manualTool === 'brush' && (
-                      <label className="manual-brush-slider">
-                        اندازه:
-                        <input
-                          type="range"
-                          min="10"
-                          max="100"
-                          value={brushSize}
-                          onChange={e => setBrushSize(Number(e.target.value))}
-                        />
-                        <span>{brushSize}px</span>
-                      </label>
-                    )}
-                    {manualTool !== 'none' && (
-                      <button
-                        type="button"
-                        className="ghost small"
-                        onClick={() => setManualTool('none')}
-                      >
-                        ✕ غیرفعال‌سازی
-                      </button>
-                    )}
-                  </div>
+                  )}
+                </div>
+              )}
 
-                  <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
+              {pages.length > 0 && (
+                <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
                     <figcaption>
                       <button
                         type="button"
@@ -1834,7 +1841,6 @@ export function BatchPanel({
                       ))}
                     </div>
                   </figure>
-                </>
               )}
 
               {!busy && (

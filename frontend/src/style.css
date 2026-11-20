@@ -671,7 +671,8 @@ button:disabled{cursor:not-allowed}
 }
 .manual-clean-actions {
   position: absolute;
-  bottom: 12px;
+  top: 12px;
+  bottom: auto;
   left: 50%;
   transform: translateX(-50%);
   background: rgba(10, 20, 22, 0.95);
@@ -686,6 +687,15 @@ button:disabled{cursor:not-allowed}
   pointer-events: auto;
   z-index: 20;
   white-space: nowrap;
+  transition: opacity 0.15s ease-out;
+}
+.manual-clean-actions.is-bottom {
+  top: auto;
+  bottom: 12px;
+}
+.is-drawing .manual-clean-actions {
+  opacity: 0;
+  pointer-events: none;
 }
 .manual-clean-actions .compact {
   padding: 4px 10px;

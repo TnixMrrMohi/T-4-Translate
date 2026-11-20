@@ -2,8 +2,8 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 
 export interface ManualCleanOverlayProps {
   jobId: string;
-  naturalWidth: number;
-  naturalHeight: number;
+  naturalWidth?: number;
+  naturalHeight?: number;
   tool: 'brush' | 'box' | 'none';
   brushSize: number;
   disabled?: boolean;
@@ -32,9 +32,35 @@ export function ManualCleanOverlay({
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
 
+  const [dims, setDims] = useState<{w: number; h: number}>({
+    w: naturalWidth || 1000,
+    h: naturalHeight || 1000,
+  });
+
+  useEffect(() => {
+    if (naturalWidth && naturalHeight) {
+      setDims({w: naturalWidth, h: naturalHeight});
+      return;
+    }
+    const parent = canvasRef.current?.parentElement;
+    const img = parent?.querySelector('img');
+    if (img) {
+      const updateFromImg = () => {
+        if (img.naturalWidth && img.naturalHeight) {
+          setDims({w: img.naturalWidth, h: img.naturalHeight});
+        }
+      };
+      if (img.complete && img.naturalWidth) {
+        updateFromImg();
+      } else {
+        img.addEventListener('load', updateFromImg, {once: true});
+      }
+    }
+  }, [naturalWidth, naturalHeight]);
+
   // ابعاد کانواس با رزولوشن واقعی تصویر تطبیق داده می‌شود
-  const targetW = naturalWidth || 1000;
-  const targetH = naturalHeight || 1000;
+  const targetW = dims.w;
+  const targetH = dims.h;
 
   // مقداردهی اولیه کانواس ماسک پس‌زمینه
   useEffect(() => {
@@ -64,7 +90,7 @@ export function ManualCleanOverlay({
   }, [targetW, targetH]);
 
   // تبدیل مختصات رویداد موس به مختصات رزولوشن واقعی تصویر
-  const getCoordinates = (e: React.MouseEvent<HTMLCanvasElement>): {x: number; y: number} => {
+  const getCoordinates = (clientX: number, clientY: number): {x: number; y: number} => {
     const canvas = canvasRef.current;
     if (!canvas) return {x: 0, y: 0};
     const rect = canvas.getBoundingClientRect();
@@ -72,108 +98,100 @@ export function ManualCleanOverlay({
     const height = rect.height || canvas.clientHeight || targetH;
     const scaleX = targetW / width;
     const scaleY = targetH / height;
+    const rawX = (clientX - rect.left) * scaleX;
+    const rawY = (clientY - rect.top) * scaleY;
     return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
+      x: Math.max(0, Math.min(targetW, rawX)),
+      y: Math.max(0, Math.min(targetH, rawY)),
     };
+  };
+
+  const drawBrushPoint = (x: number, y: number) => {
+    const canvas = canvasRef.current;
+    const offCanvas = offscreenCanvasRef.current;
+    if (!canvas || !offCanvas) return;
+    const ctx = canvas.getContext('2d');
+    const offCtx = offCanvas.getContext('2d');
+    if (!ctx || !offCtx) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const width = rect.width || canvas.clientWidth || targetW;
+    const scaleX = targetW / width;
+    const radius = (brushSize * scaleX) / 2;
+
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.5)';
+    ctx.fill();
+
+    offCtx.beginPath();
+    offCtx.arc(x, y, radius, 0, Math.PI * 2);
+    offCtx.fillStyle = '#ffffff';
+    offCtx.fill();
+    setHasDrawing(true);
+  };
+
+  const drawBoxPreview = (start: {x: number; y: number}, current: {x: number; y: number}) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const x0 = Math.min(start.x, current.x);
+    const y0 = Math.min(start.y, current.y);
+    const w = Math.abs(current.x - start.x);
+    const h = Math.abs(current.y - start.y);
+
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
+    ctx.fillRect(x0, y0, w, h);
+    ctx.strokeStyle = 'rgba(239, 68, 68, 0.9)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x0, y0, w, h);
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (disabled || busy || tool === 'none') return;
-    const {x, y} = getCoordinates(e);
+    const coords = getCoordinates(e.clientX, e.clientY);
     setIsDrawing(true);
 
     if (tool === 'brush') {
-      const canvas = canvasRef.current;
-      const offCanvas = offscreenCanvasRef.current;
-      if (!canvas || !offCanvas) return;
-      const ctx = canvas.getContext('2d');
-      const offCtx = offCanvas.getContext('2d');
-      if (!ctx || !offCtx) return;
-
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = targetW / rect.width;
-      const radius = (brushSize * scaleX) / 2;
-
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.5)';
-      ctx.fill();
-
-      offCtx.beginPath();
-      offCtx.arc(x, y, radius, 0, Math.PI * 2);
-      offCtx.fillStyle = '#ffffff';
-      offCtx.fill();
-
-      setHasDrawing(true);
+      drawBrushPoint(coords.x, coords.y);
     } else if (tool === 'box') {
-      setStartPoint({x, y});
+      setStartPoint(coords);
     }
-  };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || disabled || busy || tool === 'none') return;
-    const {x, y} = getCoordinates(e);
-
-    if (tool === 'brush') {
-      const canvas = canvasRef.current;
-      const offCanvas = offscreenCanvasRef.current;
-      if (!canvas || !offCanvas) return;
-      const ctx = canvas.getContext('2d');
-      const offCtx = offCanvas.getContext('2d');
-      if (!ctx || !offCtx) return;
-
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = targetW / rect.width;
-      const radius = (brushSize * scaleX) / 2;
-
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.5)';
-      ctx.fill();
-
-      offCtx.beginPath();
-      offCtx.arc(x, y, radius, 0, Math.PI * 2);
-      offCtx.fillStyle = '#ffffff';
-      offCtx.fill();
-      setHasDrawing(true);
-    } else if (tool === 'box' && startPoint) {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const x0 = Math.min(startPoint.x, x);
-      const y0 = Math.min(startPoint.y, y);
-      const w = Math.abs(x - startPoint.x);
-      const h = Math.abs(y - startPoint.y);
-
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
-      ctx.fillRect(x0, y0, w, h);
-      ctx.strokeStyle = 'rgba(239, 68, 68, 0.9)';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(x0, y0, w, h);
-    }
-  };
-
-  const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing) return;
-    setIsDrawing(false);
-
-    if (tool === 'box' && startPoint) {
-      const {x, y} = getCoordinates(e);
-      const x0 = Math.round(Math.min(startPoint.x, x));
-      const y0 = Math.round(Math.min(startPoint.y, y));
-      const x1 = Math.round(Math.max(startPoint.x, x));
-      const y1 = Math.round(Math.max(startPoint.y, y));
-
-      if (x1 - x0 > 4 && y1 - y0 > 4) {
-        setCurrentBox([x0, y0, x1, y1]);
-        setHasDrawing(true);
+    const onGlobalMove = (moveEvt: MouseEvent) => {
+      const current = getCoordinates(moveEvt.clientX, moveEvt.clientY);
+      if (tool === 'brush') {
+        drawBrushPoint(current.x, current.y);
+      } else if (tool === 'box') {
+        drawBoxPreview(coords, current);
       }
-      setStartPoint(null);
-    }
+    };
+
+    const onGlobalUp = (upEvt: MouseEvent) => {
+      setIsDrawing(false);
+      window.removeEventListener('mousemove', onGlobalMove);
+      window.removeEventListener('mouseup', onGlobalUp);
+
+      const end = getCoordinates(upEvt.clientX, upEvt.clientY);
+      if (tool === 'box') {
+        const x0 = Math.round(Math.min(coords.x, end.x));
+        const y0 = Math.round(Math.min(coords.y, end.y));
+        const x1 = Math.round(Math.max(coords.x, end.x));
+        const y1 = Math.round(Math.max(coords.y, end.y));
+
+        if (x1 - x0 > 4 && y1 - y0 > 4) {
+          setCurrentBox([x0, y0, x1, y1]);
+          setHasDrawing(true);
+        }
+        setStartPoint(null);
+      }
+    };
+
+    window.addEventListener('mousemove', onGlobalMove);
+    window.addEventListener('mouseup', onGlobalUp);
   };
 
   const handleExecuteClean = async () => {
@@ -243,8 +261,10 @@ export function ManualCleanOverlay({
     }
   };
 
+  const isNearTop = currentBox ? currentBox[1] < (targetH * 0.35) : false;
+
   return (
-    <div className="manual-clean-overlay-wrapper">
+    <div className={`manual-clean-overlay-wrapper ${isDrawing ? 'is-drawing' : ''}`}>
       <canvas
         ref={canvasRef}
         data-testid="manual-clean-canvas"
@@ -252,12 +272,13 @@ export function ManualCleanOverlay({
         width={targetW}
         height={targetH}
         onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
       />
 
-      <div className="manual-clean-actions" role="toolbar" aria-label="ابزارهای ترمیم دستی">
+      <div
+        className={`manual-clean-actions ${isNearTop ? 'is-bottom' : 'is-top'}`}
+        role="toolbar"
+        aria-label="ابزارهای ترمیم دستی"
+      >
         {hasDrawing && (
           <>
             <button
