@@ -1543,7 +1543,6 @@ export function BatchPanel({
                     >
                       بزرگ‌نمایی تصویر
                     </button>
-                    <span>پیش‌نمایش OCR فصل ({pages.length} تصویر) — همراه کادر و شمارهٔ خطوط</span>
                   </figcaption>
                   <div
                     className="preview-thumb is-scroll batch-stream"
