@@ -608,6 +608,7 @@ export function BatchPanel({
   const doneCount = pages.filter(p => p.state === 'done').length;
   const maxBatchStep = doneCount > 0 ? 5 : (pages.length > 0 ? 4 : 1);
   const failedPages = pages.filter(p => p.state === 'failed');
+  const needsTranslation = pages.some(p => !isPlainPage(p));
 
   function update(index: number, patch: Partial<BatchPage>) {
     setPages(old => old.map((p, i) => (i === index ? {...p, ...patch} : p)));
@@ -630,7 +631,8 @@ export function BatchPanel({
             const res = await call(`/api/jobs/${p.jobId}/translation-source?promo=${action}`, undefined, 'منبع ترجمه');
             const source = await res.json();
             const text = toText(source.items);
-            return {...p, revision: source.revision, text, noText: text.trim() === ''};
+            const noText = text.trim() === '';
+            return {...p, revision: source.revision, text, noText, state: noText ? 'done' : (p.noText && !noText ? 'extracted' : p.state)};
           } catch {
             return p;
           }
@@ -665,7 +667,8 @@ export function BatchPanel({
             const res = await call(`/api/jobs/${p.jobId}/translation-source?promo=${promoAction}`, undefined, 'منبع ترجمه');
             const source = await res.json();
             const text = toText(source.items);
-            return {...p, revision: source.revision, text, noText: text.trim() === ''};
+            const noText = text.trim() === '';
+            return {...p, revision: source.revision, text, noText, state: noText ? 'done' : (p.noText && !noText ? 'extracted' : p.state)};
           } catch {
             return p;
           }
@@ -686,7 +689,8 @@ export function BatchPanel({
     const source = await (await call(
       `/api/jobs/${jobId}/translation-source?promo=${promoAction}`, undefined, 'منبع ترجمه')).json();
     const text = toText(source.items);
-    return {page: 0, name, jobId, revision: source.revision, text, state: 'extracted', height, noText: text.trim() === ''};
+    const noText = text.trim() === '';
+    return {page: 0, name, jobId, revision: source.revision, text, state: noText ? 'done' : 'extracted', height, noText};
   };
 
   /** اگر حافظهٔ دستگاه پر باشد، کمی صبر می‌کند و همان کار را دوباره می‌زند (به‌جای رد کردن صفحه). */
@@ -1005,19 +1009,15 @@ export function BatchPanel({
         detail: tag,
       });
       if (isPlainPage(page)) {
-        update(index, {state: 'done', error: undefined});
+        update(index, {state: 'done', noText: true, error: undefined});
         ok += 1;
         continue;
       }
       update(index, {state: 'running', error: undefined});
       try {
         const text = parts.get(page.page);
-        if (text === undefined) {
-          throw new Error('ترجمهٔ این صفحه در متن نیست (تیتر === ... === را نگه دارید).');
-        }
-
-        // اگر زیر تیتر متنی نوشته نشده باشد (کاربر صفحه را کلاً ترجمه نکرده):
-        if (!text.trim()) {
+        if (text === undefined || !text.trim()) {
+          // اگر زیر تیتر متنی نوشته نشده باشد یا صفحه در ترجمه نیامده باشد:
           update(index, {state: 'done', noText: true, error: undefined});
           ok += 1;
           continue;
@@ -1607,7 +1607,7 @@ export function BatchPanel({
                 <button
                   type="button"
                   className="ocr"
-                  disabled={busy !== null || !translated.trim()}
+                  disabled={busy !== null || (needsTranslation && !translated.trim())}
                   onClick={() => {
                     setBatchStep(3);
                     void run(undefined, 'clean');
@@ -1639,7 +1639,7 @@ export function BatchPanel({
                   <button
                     type="button"
                     className="ghost"
-                    disabled={!translated.trim()}
+                    disabled={needsTranslation && !translated.trim()}
                     onClick={() => void run(undefined, 'clean')}
                     title="اجرای مجدد پاک‌سازی برای همهٔ صفحات"
                   >
@@ -1650,7 +1650,7 @@ export function BatchPanel({
                   <button
                     type="button"
                     className="ghost"
-                    disabled={!translated.trim()}
+                    disabled={needsTranslation && !translated.trim()}
                     onClick={() => void run(failedPages.map(page => page.jobId), 'clean')}
                   >
                     تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
@@ -1684,7 +1684,7 @@ export function BatchPanel({
                         <button
                           type="button"
                           className="ghost small"
-                          disabled={busy !== null || !translated.trim()}
+                          disabled={busy !== null || (needsTranslation && !translated.trim())}
                           onClick={() => void run([page.jobId], 'clean')}
                         >
                           تلاش دوباره
@@ -1702,7 +1702,7 @@ export function BatchPanel({
                 <button
                   type="button"
                   className="ocr"
-                  disabled={busy !== null || !translated.trim()}
+                  disabled={busy !== null || (needsTranslation && !translated.trim())}
                   onClick={() => {
                     setBatchStep(4);
                     void run(undefined, 'render');
@@ -1734,7 +1734,7 @@ export function BatchPanel({
                   <button
                     type="button"
                     className="ghost"
-                    disabled={!translated.trim()}
+                    disabled={needsTranslation && !translated.trim()}
                     onClick={() => void run(undefined, 'render')}
                     title="اجرای مجدد درج ترجمه برای همهٔ صفحات"
                   >
@@ -1745,7 +1745,7 @@ export function BatchPanel({
                   <button
                     type="button"
                     className="ghost"
-                    disabled={!translated.trim()}
+                    disabled={needsTranslation && !translated.trim()}
                     onClick={() => void run(failedPages.map(page => page.jobId), 'render')}
                   >
                     تلاش دوباره برای صفحه‌های ناموفق ({failedPages.length})
@@ -1779,7 +1779,7 @@ export function BatchPanel({
                         <button
                           type="button"
                           className="ghost small"
-                          disabled={busy !== null || !translated.trim()}
+                          disabled={busy !== null || (needsTranslation && !translated.trim())}
                           onClick={() => void run([page.jobId], 'render')}
                         >
                           تلاش دوباره

@@ -61,8 +61,8 @@ export function ChapterPage({jobId, label, index, version, plain = false}: {
     try {
       const response = await send(`/api/jobs/${jobId}/layout`, {}, 'چیدمان');
       setDoc(await response.json());
-    } catch (error) {
-      setNote(error instanceof Error ? error.message : 'چیدمان بارگذاری نشد.');
+    } catch {
+      setDoc(old => old ?? {jobId, width: 0, height: 0, blocks: [], fonts: [], layout: {}});
     }
   }, [jobId]);
 
@@ -141,11 +141,9 @@ export function ChapterPage({jobId, label, index, version, plain = false}: {
         </span>
       </figcaption>
 
-      {plain ? (
-        <img loading="lazy" alt={`صفحهٔ ${index} (بدون متن)`}
+      {plain || !doc || doc.blocks.length === 0 ? (
+        <img loading="lazy" alt={`صفحهٔ ${index}${plain || !doc || doc.blocks.length === 0 ? ' (بدون متن)' : ''}`}
           src={`/api/jobs/${jobId}/display/source?width=1400&v=${version}`} />
-      ) : !doc || doc.blocks.length === 0 ? (
-        <img loading="lazy" alt={`صفحهٔ ${index}`} src={`/api/jobs/${jobId}/render?v=${renderVer}`} />
       ) : (
         <TextLayoutEditor
           tall

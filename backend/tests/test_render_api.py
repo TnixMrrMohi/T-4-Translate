@@ -94,3 +94,33 @@ def test_render_webp_download_is_converted_and_cached(tmp_path, monkeypatch):
         client.post(f'/api/jobs/{job}/translations',
                     json={'sourceRevision': revision, 'text': '[1] درود'})
         assert client.get(f'/api/jobs/{job}/render.webp').status_code == 409
+
+
+def test_zero_text_job_serves_source_and_layout(tmp_path, monkeypatch):
+    """تصاویر بدون متن باید منبع اصلی را به عنوان رندر تحویل دهند و در layout ارور ندهند."""
+    monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: [])
+    with TestClient(app) as client:
+        job = _upload(client).json()['jobId']
+        client.post(f'/api/jobs/{job}/ocr')
+        # تصویر بدون متن: /layout باید بدون خطا blocks خالی برگرداند
+        layout_res = client.get(f'/api/jobs/{job}/layout')
+        assert layout_res.status_code == 200
+        assert layout_res.json()['blocks'] == []
+
+        # /render باید تصویر اصلی را برگرداند
+        render_res = client.get(f'/api/jobs/{job}/render')
+        assert render_res.status_code == 200
+
+        # /render.webp باید تصویر اصلی را به webp تبدیل کند
+        webp_res = client.get(f'/api/jobs/{job}/render.webp')
+        assert webp_res.status_code == 200
+        assert webp_res.headers['content-type'] == 'image/webp'
+        assert webp_res.content[:4] == b'RIFF' and webp_res.content[8:12] == b'WEBP'
+
+        # پیش‌نمایش display نیز باید تصویر اصلی را برگرداند
+        clean_disp = client.get(f'/api/jobs/{job}/display/clean?width=1200')
+        assert clean_disp.status_code == 200
+        render_disp = client.get(f'/api/jobs/{job}/display/render?width=1200')
+        assert render_disp.status_code == 200
+
