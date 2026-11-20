@@ -1635,17 +1635,6 @@ export function BatchPanel({
                   >
                     پاک‌سازی مجدد همهٔ صفحه‌ها
                   </button>
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => {
-                      setPreviewModalKind('clean');
-                      setPreviewModalOpen(true);
-                    }}
-                    title="نمایش پیوستهٔ تصویرهای پاک‌شدهٔ تمام صفحات"
-                  >
-                    بزرگ‌نمایی تصویرهای پاک‌شده
-                  </button>
                   {failedPages.length > 0 && (
                     <button
                       type="button"
