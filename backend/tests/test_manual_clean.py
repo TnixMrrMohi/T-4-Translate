@@ -105,3 +105,85 @@ def test_manual_clean_undo(tmp_path, monkeypatch):
     arr = np.array(clean_img)
     patch_mean = arr[50:80, 50:90].mean()
     assert patch_mean < 100
+
+
+def test_manual_clean_patch(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    job_id = _create_job(client)
+
+    # تست ابزار وصله (الگوبرداری از کادر تمیز و الصاق به لکه)
+    res = client.post(f'/api/jobs/{job_id}/manual-clean', json={
+        'patch': {
+            'target_box': [50, 50, 90, 80],
+            'source_box': [110, 50, 150, 80]
+        }
+    })
+    assert res.status_code in (200, 201)
+    assert res.json()['ok'] is True
+
+    clean_bytes = client.get(f'/api/jobs/{job_id}/clean').content
+    clean_img = Image.open(BytesIO(clean_bytes))
+    arr = np.array(clean_img)
+    # میانگین ناحیه هدف باید مانند ناحیه منبع روشن (بیش از 200) شده باشد
+    assert arr[50:80, 50:90].mean() > 200
+
+
+def test_manual_clean_view_size_scaling(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    job_id = _create_job(client)
+
+    # تصویر ۲۰۰×۲۰۰ است و لکه در [50, 50, 90, 80] است.
+    # فرض کنید کلاینت بوم ۱۰۰۰×۱۰۰۰ داشته (۵ برابر بزرگ‌تر).
+    # مختصات فرستاده شده [250, 250, 450, 400] خواهد بود.
+    res = client.post(f'/api/jobs/{job_id}/manual-clean', json={
+        'patch': {
+            'target_box': [250, 250, 450, 400],
+            'source_box': [550, 250, 750, 400],
+        },
+        'view_size': [1000, 1000]
+    })
+    assert res.status_code in (200, 201)
+    assert res.json()['ok'] is True
+
+    clean_bytes = client.get(f'/api/jobs/{job_id}/clean').content
+    clean_img = Image.open(BytesIO(clean_bytes))
+    arr = np.array(clean_img)
+    assert arr[50:80, 50:90].mean() > 200
+
+
+def test_manual_text(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    job_id = _create_job(client)
+
+    res = client.post(f'/api/jobs/{job_id}/manual-text', json={
+        'text': 'متن فارسی تستی',
+        'box': [10, 10, 190, 60],
+        'font_size': 20,
+        'color': '#000000',
+        'stroke_color': '#ffffff',
+        'stroke_width': 1,
+    })
+    assert res.status_code in (200, 201)
+    assert res.json()['status'] == 'ok'
+
+    clean_bytes = client.get(f'/api/jobs/{job_id}/clean').content
+    clean_img = Image.open(BytesIO(clean_bytes))
+    arr = np.array(clean_img)
+    assert (arr[10:60, 10:190] < 100).any()
+
+
+def test_manual_text_undo(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    job_id = _create_job(client)
+
+    res = client.post(f'/api/jobs/{job_id}/manual-text', json={
+        'text': 'متن فارسی تستی',
+        'box': [10, 10, 190, 60],
+        'font_size': 20,
+    })
+    assert res.status_code in (200, 201)
+
+    # Undo
+    undo_res = client.post(f'/api/jobs/{job_id}/manual-clean/undo')
+    assert undo_res.status_code == 200
+    assert undo_res.json()['ok'] is True

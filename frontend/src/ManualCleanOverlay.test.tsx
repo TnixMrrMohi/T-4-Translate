@@ -25,6 +25,11 @@ describe('ManualCleanOverlay', () => {
       fillRect: vi.fn(),
       strokeRect: vi.fn(),
       stroke: vi.fn(),
+      setLineDash: vi.fn(),
+      measureText: vi.fn().mockReturnValue({width: 50}),
+      fillText: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
     }) as any;
 
     HTMLCanvasElement.prototype.getBoundingClientRect = vi.fn().mockReturnValue({
@@ -38,7 +43,7 @@ describe('ManualCleanOverlay', () => {
 
     HTMLCanvasElement.prototype.toDataURL = vi.fn().mockReturnValue('data:image/png;base64,mockdata');
 
-    global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+    globalThis.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
       if (url.includes('/manual-clean/undo')) {
         return Promise.resolve({
           ok: true,
@@ -69,7 +74,7 @@ describe('ManualCleanOverlay', () => {
     await user.click(undoBtn);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
+      expect(globalThis.fetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/jobs/job-123/manual-clean/undo'),
         expect.objectContaining({method: 'POST'})
       );
@@ -92,7 +97,7 @@ describe('ManualCleanOverlay', () => {
     fireEvent.click(cleanBtn);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
+      expect(globalThis.fetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/jobs/job-123/manual-clean'),
         expect.objectContaining({
           method: 'POST',
@@ -100,5 +105,120 @@ describe('ManualCleanOverlay', () => {
         })
       );
     });
+  });
+
+  it('در حالت غیر standalone با دادن onSelectionChange، دکمه‌های شناور رندر نمی‌شوند و تغییر انتخاب فرستاده می‌شود', async () => {
+    const onSelectionChange = vi.fn();
+    render(
+      <ManualCleanOverlay
+        {...defaultProps}
+        tool="box"
+        pageIndex={0}
+        pageName="صفحهٔ ۱"
+        onSelectionChange={onSelectionChange}
+      />
+    );
+
+    const canvas = screen.getByTestId('manual-clean-canvas');
+
+    // کشیدن کادر مستطیلی
+    fireEvent.mouseDown(canvas, {clientX: 50, clientY: 50});
+    fireEvent.mouseMove(canvas, {clientX: 200, clientY: 150});
+    fireEvent.mouseUp(canvas, {clientX: 200, clientY: 150});
+
+    // نباید دکمه‌های شناور روی تصویر ظاهر شوند (چون در نوار ثابت والد رندر می‌شوند)
+    expect(screen.queryByRole('button', {name: 'پاک‌سازی این بخش'})).toBeNull();
+
+    // callback والد با مشخصات کادر صدا زده شده است
+    expect(onSelectionChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: 'job-123',
+        pageIndex: 0,
+        pageName: 'صفحهٔ ۱',
+        tool: 'box',
+      })
+    );
+  });
+
+  it('با تغییر activeJobId به صفحه‌ای دیگر، کانواس پاک‌سازی می‌شود', () => {
+    const {rerender} = render(
+      <ManualCleanOverlay
+        {...defaultProps}
+        tool="box"
+        activeJobId="job-123"
+      />
+    );
+
+    const canvas = screen.getByTestId('manual-clean-canvas');
+    fireEvent.mouseDown(canvas, {clientX: 50, clientY: 50});
+    fireEvent.mouseMove(canvas, {clientX: 200, clientY: 150});
+    fireEvent.mouseUp(canvas, {clientX: 200, clientY: 150});
+
+    // تغییر activeJobId به صفحهٔ دیگری مثل job-456
+    rerender(
+      <ManualCleanOverlay
+        {...defaultProps}
+        tool="box"
+        activeJobId="job-456"
+      />
+    );
+
+    // مطمئن می‌شویم دکمه‌های این کادر محو شده‌اند
+    expect(screen.queryByRole('button', {name: 'پاک‌سازی این بخش'})).toBeNull();
+  });
+
+  it('در حالت وصله (patch)، با کشیدن کادر، کادر هدف و منبع ایجاد شده و برای والد فرستاده می‌شوند', () => {
+    const onSelectionChange = vi.fn();
+    render(
+      <ManualCleanOverlay
+        {...defaultProps}
+        tool="patch"
+        pageIndex={0}
+        pageName="صفحهٔ ۱"
+        onSelectionChange={onSelectionChange}
+      />
+    );
+
+    const canvas = screen.getByTestId('manual-clean-canvas');
+    fireEvent.mouseDown(canvas, {clientX: 50, clientY: 50});
+    fireEvent.mouseMove(canvas, {clientX: 120, clientY: 100});
+    fireEvent.mouseUp(canvas, {clientX: 120, clientY: 100});
+
+    expect(onSelectionChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: 'job-123',
+        tool: 'patch',
+        patch: expect.objectContaining({
+          target_box: expect.any(Array),
+          source_box: expect.any(Array),
+        }),
+      })
+    );
+  });
+
+  it('در حالت متن (text)، با کشیدن کادر، کادر متن ایجاد شده و برای والد فرستاده می‌شود', () => {
+    const onSelectionChange = vi.fn();
+    render(
+      <ManualCleanOverlay
+        {...defaultProps}
+        tool="text"
+        pageIndex={0}
+        pageName="صفحهٔ ۱"
+        onSelectionChange={onSelectionChange}
+      />
+    );
+
+    const canvas = screen.getByTestId('manual-clean-canvas');
+    fireEvent.mouseDown(canvas, {clientX: 40, clientY: 40});
+    fireEvent.mouseMove(canvas, {clientX: 140, clientY: 90});
+    fireEvent.mouseUp(canvas, {clientX: 140, clientY: 90});
+
+    expect(onSelectionChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: 'job-123',
+        tool: 'text',
+        box: expect.any(Array),
+      })
+    );
   });
 });

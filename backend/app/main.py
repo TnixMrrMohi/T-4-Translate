@@ -2,8 +2,11 @@
 
 import asyncio
 import hashlib
+import logging
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 import warnings
 import json
 import os
@@ -21,13 +24,14 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from app.desktop_security import DesktopOriginGuard
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageDraw, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.request_limits import RequestBodyLimit
 from app import (bubbles, cleaning, diagnostics, fonts, hardware, inpaint, layout as layouts, models,
                  ocr, preview, progress, rendering, updater, execution)
 from app.translations import parse_translation
+from app.projects import ProjectManager
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
@@ -247,6 +251,68 @@ async def inspect_image(file: UploadFile = File(...)) -> dict:
 @app.post("/api/jobs", status_code=201)
 async def create_job(file: UploadFile = File(...), mode: str | None = Query(default=None)) -> dict:
     return await _read_image(file, save=True, mode=mode)
+
+
+class JobFromPathInput(BaseModel):
+    path: str
+    mode: str | None = "batch"
+
+
+def _read_image_from_path(file_path: Path, mode: str | None = None) -> dict:
+    started = time.perf_counter()
+    if not file_path.is_file():
+        raise HTTPException(404, "فایل در مسیر مشخص‌شده یافت نشد.")
+    size = file_path.stat().st_size
+    if size > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "حجم تصویر بیش از ۱۲۸ مگابایت است.")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            with Image.open(file_path) as image:
+                width, height = image.size
+                if image.format not in FORMATS or width * height > MAX_PIXELS:
+                    raise HTTPException(400, "فرمت یا ابعاد تصویر پشتیبانی نمی‌شود.")
+                image_format = image.format
+                image.verify()
+    except (UnidentifiedImageError, OSError, SyntaxError, ValueError,
+            Image.DecompressionBombWarning, Image.DecompressionBombError):
+        raise HTTPException(400, "فایل تصویر معتبر یا قابل پشتیبانی نیست.") from None
+
+    root = Path(os.environ.get("T4_DATA_DIR", str(Path.home() / ".t4-translate"))) / "jobs"
+    root.mkdir(parents=True, exist_ok=True)
+    job_id = uuid.uuid4().hex
+    workspace = root / job_id
+    workspace.mkdir()
+    try:
+        shutil.copyfile(file_path, workspace / "source.img")
+        info = {
+            "width": width,
+            "height": height,
+            "format": image_format,
+            "sizeBytes": size,
+            "jobId": job_id,
+            "status": "uploaded",
+            "mode": mode or "batch",
+            "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds")
+        }
+        (workspace / "state.json.tmp").write_text(json.dumps(info), encoding="utf-8")
+        os.replace(workspace / "state.json.tmp", workspace / "state.json")
+    except Exception:
+        shutil.rmtree(workspace, ignore_errors=True)
+        raise
+
+    diagnostics.log_event(
+        "image.upload.accepted", jobId=info.get("jobId"), filename=file_path.name,
+        imageFormat=image_format, width=width, height=height, sizeBytes=size,
+        elapsedMs=round((time.perf_counter() - started) * 1000, 1), saved=True,
+    )
+    return info
+
+
+@app.post("/api/jobs/from-path", status_code=201)
+def create_job_from_path(data: JobFromPathInput) -> dict:
+    return _read_image_from_path(Path(data.path), mode=data.mode)
+
 
 
 @app.get("/api/jobs/{job_id}")
@@ -759,11 +825,32 @@ class CleanInput(BaseModel):
     shift: dict[int, list[int]] = Field(default_factory=dict, max_length=9999)
 
 
+class PatchInput(BaseModel):
+    target_box: list[int]
+    source_box: list[int]
+
+
 class ManualCleanInput(BaseModel):
-    """ماسک دستی به صورت base64 یا فهرستی از کادرها [x0, y0, x1, y1]."""
+    """ماسک دستی به صورت base64، فهرستی از کادرها، یا وصله (patch)."""
 
     mask_base64: str | None = None
     boxes: list[list[int]] | None = None
+    patch: PatchInput | None = None
+    view_size: list[int] | None = None
+
+
+class ManualTextInput(BaseModel):
+    """تنظیمات درج دستی متن فارسی روی تصویر."""
+
+    text: str
+    box: list[int]
+    view_size: list[int] | None = None
+    font_id: str | None = None
+    font_size: int | None = None
+    color: str | None = None
+    stroke_color: str | None = None
+    stroke_width: int | None = None
+    align: str | None = "center"
 
 
 PROMO_ACTIONS = ("replace", "remove", "keep")
@@ -1230,12 +1317,87 @@ async def manual_clean(job_id: str, body: ManualCleanInput):
         w, h = img_rgb.size
         arr_rgb = np.array(img_rgb)
 
+    scale_x = (w / body.view_size[0]) if (body.view_size and len(body.view_size) >= 2 and body.view_size[0] > 0) else 1.0
+    scale_y = (h / body.view_size[1]) if (body.view_size and len(body.view_size) >= 2 and body.view_size[1] > 0) else 1.0
+
+    logger.info("manual_clean on %s: actual=(%d, %d), view_size=%s, scale=(%.3f, %.3f)",
+                job_id, w, h, body.view_size, scale_x, scale_y)
+
+    if body.patch:
+        tb = body.patch.target_box
+        sb = body.patch.source_box
+        if len(tb) >= 4 and len(sb) >= 4:
+            tx0, ty0, tx1, ty1 = [int(v) for v in tb[:4]]
+            sx0, sy0, sx1, sy1 = [int(v) for v in sb[:4]]
+
+            tx0, tx1 = int(round(tx0 * scale_x)), int(round(tx1 * scale_x))
+            ty0, ty1 = int(round(ty0 * scale_y)), int(round(ty1 * scale_y))
+            sx0, sx1 = int(round(sx0 * scale_x)), int(round(sx1 * scale_x))
+            sy0, sy1 = int(round(sy0 * scale_y)), int(round(sy1 * scale_y))
+
+            tx0, tx1 = max(0, min(tx0, tx1)), min(w, max(tx0, tx1))
+            ty0, ty1 = max(0, min(ty0, ty1)), min(h, max(ty0, ty1))
+            sx0, sx1 = max(0, min(sx0, sx1)), min(w, max(sx0, sx1))
+            sy0, sy1 = max(0, min(sy0, sy1)), min(h, max(sy0, sy1))
+
+            tw, th = tx1 - tx0, ty1 - ty0
+            sw, sh = sx1 - sx0, sy1 - sy0
+
+            if tw > 0 and th > 0 and sw > 0 and sh > 0:
+                # پشتیبان‌گیری برای قابلیت بازگردانی (Undo)
+                shutil.copyfile(base_path, workspace / "clean.png.bak")
+
+                source_patch = arr_rgb[sy0:sy1, sx0:sx1]
+                if (sw, sh) != (tw, th):
+                    interp = cv2.INTER_AREA if (sw > tw or sh > th) else cv2.INTER_CUBIC
+                    source_patch = cv2.resize(source_patch, (tw, th), interpolation=interp)
+
+                feather = 2
+                mask_patch = np.ones((th, tw), dtype=np.float32)
+                for i in range(feather):
+                    alpha = (i + 1) / (feather + 1)
+                    if ty0 > 0:
+                        mask_patch[i, :] = np.minimum(mask_patch[i, :], alpha)
+                    if ty1 < h:
+                        mask_patch[th - 1 - i, :] = np.minimum(mask_patch[th - 1 - i, :], alpha)
+                    if tx0 > 0:
+                        mask_patch[:, i] = np.minimum(mask_patch[:, i], alpha)
+                    if tx1 < w:
+                        mask_patch[:, tw - 1 - i] = np.minimum(mask_patch[:, tw - 1 - i], alpha)
+
+                mask_patch = mask_patch[..., None]
+                orig_target = arr_rgb[ty0:ty1, tx0:tx1].astype(np.float32)
+                blended = orig_target * (1.0 - mask_patch) + source_patch.astype(np.float32) * mask_patch
+                arr_rgb[ty0:ty1, tx0:tx1] = np.clip(blended, 0, 255).astype(np.uint8)
+
+                out_img = Image.fromarray(arr_rgb)
+                out_img.save(workspace / "clean.png.tmp", format="PNG")
+                os.replace(workspace / "clean.png.tmp", workspace / "clean.png")
+
+                if (workspace / "translations.json").is_file():
+                    try:
+                        translation = read_translation(job_id)
+                        stamp = {"sourceRevision": translation["sourceRevision"], "translations": translation["translations"], "manual": True}
+                        (workspace / "clean-meta.json").write_text(json.dumps(stamp, ensure_ascii=False), encoding="utf-8")
+                    except Exception:
+                        pass
+
+                _drop_render(workspace)
+                try:
+                    (workspace / "clean-preview.png").unlink()
+                except FileNotFoundError:
+                    pass
+
+                return {"ok": True, "jobId": job_id, "modified": True}
+
     mask = np.zeros((h, w), dtype=np.uint8)
 
     if body.boxes:
         for box in body.boxes:
             if len(box) >= 4:
                 x0, y0, x1, y1 = [int(v) for v in box[:4]]
+                x0, x1 = int(round(x0 * scale_x)), int(round(x1 * scale_x))
+                y0, y1 = int(round(y0 * scale_y)), int(round(y1 * scale_y))
                 x0, x1 = max(0, min(x0, x1)), min(w, max(x0, x1))
                 y0, y1 = max(0, min(y0, y1)), min(h, max(y0, y1))
                 if x1 > x0 and y1 > y0:
@@ -1324,6 +1486,146 @@ def manual_clean_undo(job_id: str):
         pass
 
     return {"ok": True, "restored": True}
+
+
+@app.post("/api/jobs/{job_id}/manual-text")
+async def manual_text(job_id: str, body: ManualTextInput):
+    """درج دستی متن فارسی با فونت، اندازه و چیدمان دلخواه روی تصویر."""
+    workspace = workspace_for(job_id)
+    if not workspace.is_dir():
+        raise HTTPException(404, "کار یافت نشد.")
+
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "متن نمی‌تواند خالی باشد.")
+    if not body.box or len(body.box) < 4:
+        raise HTTPException(400, "کادر درج متن نامعتبر است.")
+
+    base_path = workspace / "clean.png"
+    if not base_path.is_file():
+        base_path = workspace / "source.img"
+    if not base_path.is_file():
+        raise HTTPException(404, "تصویر مبدأ یافت نشد.")
+
+    with Image.open(base_path) as img:
+        img_rgb = img.convert("RGB")
+        w, h = img_rgb.size
+
+    scale_x = (w / body.view_size[0]) if (body.view_size and len(body.view_size) >= 2 and body.view_size[0] > 0) else 1.0
+    scale_y = (h / body.view_size[1]) if (body.view_size and len(body.view_size) >= 2 and body.view_size[1] > 0) else 1.0
+
+    bx0, by0, bx1, by1 = [int(v) for v in body.box[:4]]
+    bx0, bx1 = int(round(bx0 * scale_x)), int(round(bx1 * scale_x))
+    by0, by1 = int(round(by0 * scale_y)), int(round(by1 * scale_y))
+    bx0, bx1 = max(0, min(bx0, bx1)), min(w, max(bx0, bx1))
+    by0, by1 = max(0, min(by0, by1)), min(h, max(by0, by1))
+    box_w, box_h = bx1 - bx0, by1 - by0
+
+    if box_w < 6 or box_h < 6:
+        raise HTTPException(400, "کادر انتخابی برای درج متن بسیار کوچک است.")
+
+    # پشتیبان‌گیری برای قابلیت بازگردانی (Undo)
+    shutil.copyfile(base_path, workspace / "clean.png.bak")
+
+    # پیدا کردن مسیر فونت
+    font_path_str: str | None = None
+    if body.font_id:
+        for f_item in fonts.list_fonts():
+            if f_item.get("id") == body.font_id or f_item.get("name") == body.font_id:
+                font_path_str = f_item.get("path")
+                break
+
+    draw = ImageDraw.Draw(img_rgb)
+    user_size = int(round((body.font_size or 0) * scale_y)) if body.font_size else 0
+
+    if user_size >= 8:
+        font = rendering._font(user_size, font_path_str)
+        lines = rendering.wrap_text(text, font, box_w)
+    else:
+        font, lines = rendering._fit(text, box_w, box_h, font_path_str)
+
+    if not font or not lines:
+        font = rendering._font(max(12, int(box_h * 0.4)), font_path_str)
+        lines = rendering.wrap_text(text, font, box_w)
+
+    def _parse_color(c_str: str | None, default):
+        if not c_str:
+            return default
+        c = c_str.strip()
+        if c.startswith("#") and len(c) in (4, 7):
+            try:
+                if len(c) == 4:
+                    return (int(c[1] * 2, 16), int(c[2] * 2, 16), int(c[3] * 2, 16))
+                return (int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16))
+            except ValueError:
+                return default
+        return default
+
+    fill_color = _parse_color(body.color, (20, 20, 20))
+    stroke_color = _parse_color(body.stroke_color, (255, 255, 255) if fill_color[0] < 128 else (20, 20, 20))
+    raw_stroke_w = body.stroke_width if body.stroke_width is not None else 2
+    stroke_w = int(round(raw_stroke_w * (scale_x + scale_y) / 2)) if raw_stroke_w > 0 else 0
+
+    metrics = rendering._line_metrics(draw, lines, font)
+    line_height = max(1.0, max(h_val for _, _, _, h_val in metrics) * 1.24) if metrics else 20.0
+    block_height = line_height * len(lines)
+    start_y = by0 + (box_h - block_height) / 2
+    center_x = bx0 + box_w / 2
+
+    align = (body.align or "center").lower()
+    for index, line in enumerate(lines):
+        ink_left, ink_top, ink_width, ink_height = metrics[index]
+        if align == "right":
+            target_left = bx1 - ink_width - 4
+        elif align == "left":
+            target_left = bx0 + 4
+        else:
+            target_left = center_x - ink_width / 2
+
+        target_top = start_y + index * line_height + (line_height - ink_height) / 2
+        rendering.draw_text(
+            draw,
+            (target_left - ink_left, target_top - ink_top),
+            line,
+            font,
+            fill=fill_color,
+            stroke_width=stroke_w,
+            stroke_fill=stroke_color if stroke_w > 0 else None,
+        )
+
+    img_rgb.save(workspace / "clean.png.tmp", format="PNG")
+    os.replace(workspace / "clean.png.tmp", workspace / "clean.png")
+
+    if (workspace / "translations.json").is_file():
+        try:
+            translation = read_translation(job_id)
+            meta = {
+                "sourceRevision": translation["sourceRevision"],
+                "translations": translation["translations"],
+                "manual": True,
+            }
+            (workspace / "clean-meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    _drop_render(workspace)
+    try:
+        (workspace / "clean-preview.png").unlink()
+    except FileNotFoundError:
+        pass
+    for f in workspace.glob("display-clean-*.webp"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    for f in workspace.glob("display-clean-*.json"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+
+    logger.info("manual_text on %s: text='%s', box=%s, font=%s, size=%s", job_id, text, body.box, body.font_id, body.font_size)
+    return {"ok": True, "jobId": job_id, "status": "ok"}
 
 
 def _font_paths() -> dict:
@@ -2570,6 +2872,91 @@ def delete_font(font_id: str) -> dict:
     except OSError:
         raise HTTPException(500, "حذف فونت ناموفق بود.") from None
     return {"id": font_id, "deleted": True}
+
+
+# --- Project Management Endpoints ---
+
+class CreateProjectInput(BaseModel):
+    name: str = ""
+    source_path: str | None = None
+    source_mode: str = "internal"
+    settings: dict | None = None
+
+
+class ProjectStateInput(BaseModel):
+    step: int | None = None
+    name: str | None = None
+    pages: list | None = None
+    outFiles: list | None = None
+    translated: str | None = None
+    settings: dict | None = None
+    sourcePath: str | None = None
+    sourceMode: str | None = None
+
+
+class ScanFolderInput(BaseModel):
+    path: str
+
+
+@app.get("/api/projects")
+def list_projects() -> list:
+    pm = ProjectManager()
+    return pm.list_projects()
+
+
+@app.post("/api/projects")
+def create_project(data: CreateProjectInput) -> dict:
+    pm = ProjectManager()
+    return pm.create_project(
+        name=data.name,
+        source_path=data.source_path,
+        source_mode=data.source_mode,
+        settings=data.settings,
+    )
+
+
+@app.get("/api/projects/{project_id}")
+def get_project(project_id: str) -> dict:
+    pm = ProjectManager()
+    proj = pm.get_project(project_id)
+    if proj is None:
+        raise HTTPException(404, "پروژه یافت نشد.")
+    return proj
+
+
+@app.post("/api/projects/{project_id}/save-state")
+def save_project_state(project_id: str, data: ProjectStateInput) -> dict:
+    pm = ProjectManager()
+    state_dict = data.model_dump(exclude_unset=True)
+    proj = pm.save_project_state(project_id, state_dict)
+    if proj is None:
+        raise HTTPException(404, "پروژه یافت نشد.")
+    return proj
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str) -> dict:
+    pm = ProjectManager()
+    success = pm.delete_project(project_id)
+    if not success:
+        raise HTTPException(404, "پروژه یافت نشد.")
+    return {"id": project_id, "ok": True}
+
+
+@app.post("/api/projects/scan-folder")
+def scan_project_folder(data: ScanFolderInput) -> dict:
+    pm = ProjectManager()
+    files = pm.scan_local_folder(data.path)
+    return {"path": data.path, "files": files, "count": len(files)}
+
+
+@app.post("/api/projects/browse-folder")
+async def browse_project_folder() -> dict:
+    from app.projects import pick_folder_native
+    path = await asyncio.to_thread(pick_folder_native)
+    return {"path": path, "canceled": not bool(path)}
+
+
 
 
 # Only enabled by the packaged desktop launcher; development uses Vite separately.

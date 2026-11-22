@@ -374,10 +374,21 @@ def test_is_sfx_text():
     assert bubbles.is_sfx_text("Achoo!")
     assert bubbles.is_sfx_text("Haha!")
     assert bubbles.is_sfx_text("TAP TAP")
+    assert bubbles.is_sfx_text("TAK")
+    assert bubbles.is_sfx_text("TAK TAK")
+    assert bubbles.is_sfx_text("*TAK*")
+    assert bubbles.is_sfx_text("TRUDGE")
+    assert bubbles.is_sfx_text("TRUDGE TRUDGE")
+    assert bubbles.is_sfx_text("STAGGER")
+    assert bubbles.is_sfx_text("STAGER")
+    assert bubbles.is_sfx_text("SUIAGCER")
     assert bubbles.is_sfx_text("sigh...")
     assert not bubbles.is_sfx_text("DAMN! THIS IS WAY TOO BITTER.")
     assert not bubbles.is_sfx_text("WHAT TSK. WHAT A RIP OFF.")
     assert not bubbles.is_sfx_text("Hello world")
+    assert not bubbles.is_sfx_text("He had to trudge through the dark.")
+    assert not bubbles.is_sfx_text("He began to stagger across the room.")
+    assert not bubbles.is_sfx_text("Please take your time.")
 
 
 def test_sfx_outside_bubble_is_dropped_from_blocks():
@@ -398,6 +409,68 @@ def test_sfx_outside_bubble_is_dropped_from_blocks():
     assert "I am fine." in texts
 
 
+def test_sfx_separated_from_dialogue_in_bubble():
+    lines = [
+        {"text": "SMACK", "confidence": 0.96, "quad": [[10, 10], [50, 10], [50, 30], [10, 30]]},
+        {"text": "HOLD ON!", "confidence": 0.90, "quad": [[10, 40], [50, 40], [50, 60], [10, 60]]},
+    ]
+    doc = {"bubbles": [{"id": 1, "kind": "shout", "lines": [1, 2], "bbox": [10, 10, 40, 50]}]}
+    b_list = bubbles.blocks(doc, lines)
+    filtered = bubbles.drop_junk_blocks(b_list, lines)
+    texts = [b["text"] for b in filtered]
+    assert "SMACK" not in texts
+    assert "SMACK HOLD ON!" not in texts
+    assert "HOLD ON!" in texts
+
+
+def test_user_requested_sfx_and_signage_filters():
+    # افکت‌های صوتی سر خوردن، نگاه کردن، تکان سر
+    assert bubbles.is_sfx_text("SRK")
+    assert bubbles.is_sfx_text("SRKS")
+    assert bubbles.is_sfx_text("SRRK")
+    assert bubbles.is_sfx_text("LOOK-UP")
+    assert bubbles.is_sfx_text("LOOK-UP LOOK-UP")
+    assert bubbles.is_sfx_text("look up look up")
+    assert bubbles.is_sfx_text("NOD 000")
+    assert bubbles.is_sfx_text("NOO 000")
+
+    # تابلوها و علائم محیطی خارج از حباب
+    assert bubbles.is_environmental_sign("POLICE", "outside")
+    assert bubbles.is_environmental_sign("SECTION", "outside")
+    assert bubbles.is_environmental_sign("SECTION B", "outside")
+    assert bubbles.is_environmental_sign("POLICE", "unknown")
+    # دیالوگ داخل حباب نباید فیلتر شود
+    assert not bubbles.is_environmental_sign("POLICE", "speech")
+    assert not bubbles.is_environmental_sign("MAKE IT TO THE POLICE STATION...", "outside")
+    assert not bubbles.is_environmental_sign("I JUST HAVE TO HOLD ON.", "speech")
+
+    # در drop_junk_blocks همهٔ این موارد فیلتر می‌شوند
+    lines = [
+        {"text": "POLICE", "confidence": 0.95, "quad": [[10, 10], [50, 10], [50, 30], [10, 30]]},
+        {"text": "SECTION B", "confidence": 0.92, "quad": [[10, 40], [60, 40], [60, 60], [10, 60]]},
+        {"text": "SRKS", "confidence": 0.90, "quad": [[10, 70], [50, 70], [50, 90], [10, 90]]},
+        {"text": "NOO 000", "confidence": 0.88, "quad": [[10, 100], [50, 100], [50, 120], [10, 120]]},
+        {"text": "LOOK-UP LOOK-UP", "confidence": 0.91, "quad": [[10, 130], [80, 130], [80, 150], [10, 150]]},
+        {"text": "I JUST HAVE TO HOLD ON.", "confidence": 0.95, "quad": [[10, 160], [120, 160], [120, 180], [10, 180]]},
+    ]
+    raw_blocks = [
+        {"number": 1, "text": "POLICE", "kind": "outside", "lines": [1]},
+        {"number": 2, "text": "SECTION B", "kind": "outside", "lines": [2]},
+        {"number": 3, "text": "SRKS", "kind": "outside", "lines": [3]},
+        {"number": 4, "text": "NOO 000", "kind": "outside", "lines": [4]},
+        {"number": 5, "text": "LOOK-UP LOOK-UP", "kind": "shout", "lines": [5]},
+        {"number": 6, "text": "I JUST HAVE TO HOLD ON.", "kind": "speech", "lines": [6]},
+    ]
+    filtered = bubbles.drop_junk_blocks(raw_blocks, lines)
+    texts = [b["text"] for b in filtered]
+    assert "POLICE" not in texts
+    assert "SECTION B" not in texts
+    assert "SRKS" not in texts
+    assert "NOO 000" not in texts
+    assert "LOOK-UP LOOK-UP" not in texts
+    assert "I JUST HAVE TO HOLD ON." in texts
+
+
 def test_gulp_and_gulr_and_sfx_dropped():
     assert bubbles.is_sfx_text("GULP")
     assert bubbles.is_sfx_text("GULR")
@@ -408,6 +481,8 @@ def test_gulp_and_gulr_and_sfx_dropped():
     assert bubbles.is_sfx_text("UTER ULTER")
     assert bubbles.is_promotional("VORTEXSCANS.OFG")
     assert bubbles.is_promotional("STORM AT VORTEXSCANS.ORG")
+    assert bubbles.is_promotional("VICLABOR")
+    assert bubbles.is_promotional("YICLABOR")
 
     # کانتور پیچ‌درپیچ پس‌زمینه (مثل آسمان بین برج‌ها با دندانه‌های عمیق اما circularity بسیار پایین)
     bg_features = {

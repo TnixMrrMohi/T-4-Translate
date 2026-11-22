@@ -150,7 +150,7 @@ PROMO_PATTERNS = (
     r"translated by", r"translation (by|group)", r"scanlat", r"scans? by", r"scan team",
     r"\b[a-z0-9_-]*(scans?|scanlat|comics?|webtoon|manga)\b",
     r"read (more|online|at)", r"follow us", r"join (us|our)", r"subscribe",
-    r"free webtoon", r"raw provider", r"proofreader",
+    r"free webtoon", r"raw provider", r"proofreader", r"\b[vy]iclabor\b",
     r"تبلیغ", r"کانال", r"تلگرام", r"اینستاگرام", r"تخفیف", r"خرید", r"فروش",
     r"مترجم", r"اسکن", r"دانلود",
 )
@@ -1014,6 +1014,8 @@ def _cluster(numbers: list[int], by_number: dict) -> list[list[int]]:
                 previous = _line_box(by_number[cluster[-1]])
                 if previous is None:
                     continue
+                if _is_pure_sfx_line(number, by_number) != _is_pure_sfx_line(cluster[-1], by_number):
+                    continue
                 height = max(1.0, previous[1] - previous[0], box[1] - box[0])
                 gap = box[0] - previous[1]
                 overlap = min(box[3], previous[3]) - max(box[2], previous[2])
@@ -1118,11 +1120,13 @@ def blocks(document: dict, lines: list) -> list[dict]:
         seen.update(numbers)
         if bubble.get("kind") == "outside":
             for cluster in _cluster(numbers, by_number):
-                result.append(_block(cluster, by_number, "outside", []))
+                for group in _partition_sfx_groups(cluster, by_number):
+                    result.append(_block(group, by_number, "outside", []))
         else:
             features = bubble.get("features") or {}
-            result.append(_block(numbers, by_number, bubble.get("kind", "unknown"),
-                                 bubble.get("bbox") or [], float(features.get("solidity") or 1.0)))
+            for group in _partition_sfx_groups(numbers, by_number):
+                result.append(_block(group, by_number, bubble.get("kind", "unknown"),
+                                     bubble.get("bbox") or [], float(features.get("solidity") or 1.0)))
     for number in sorted(set(by_number) - seen):
         result.append(_block([number], by_number, "unknown", []))
 
@@ -1174,7 +1178,7 @@ def is_junk_text(text: str, confidence: float | None = None) -> bool:
         # اطمینان پایین روی متن کوتاه یعنی تقریباً حتماً خواندنِ اشتباهِ هنر است.
         if confidence < 0.62 and len(letters) <= 8:
             return True
-        if len(words) == 1 and len(letters) <= 7 and confidence < 0.8:
+        if len(words) == 1 and len(letters) <= 10 and confidence < 0.8:
             return True
     return False
 
@@ -1189,25 +1193,60 @@ SFX_WORDS = {
     "crunch", "chew", "chomp", "nom", "burp", "glug", "gurgle", "swallow", "slosh",
     # سرفه، عطسه، گلو و نفس
     "cough", "koff", "coff", "ahem", "sneeze", "achoo", "atchoo", "sniff", "snort", "hic", "hiccup",
-    "gasp", "pant", "wheeze", "phew", "whew", "sigh", "yawn", "huff", "puff",
+    "gasp", "pant", "wheeze", "phew", "whew", "sigh", "yawn", "huff", "puff", "gargle",
+    "snore", "purr", "growl", "grr", "grrr", "shh", "shhh", "squeal", "roar", "howl", "snarl", "whine",
     # خنده و پوزخند
     "haha", "hahaha", "hehe", "hehehe", "kuku", "kukuku", "fufu", "fufufu",
     "chuckle", "giggle", "snicker", "pfft", "pff", "bwahaha", "wahaha", "muahaha", "cackle",
     # حرکات بدنی و واکنش‌های حسی کمیک
     "shiver", "tremble", "twitch", "flinch", "shudder", "blink", "stare", "glare",
-    "peek", "nod", "shrug", "smirk", "sob", "whimper", "groan", "grunt", "tsk", "tch",
+    "peek", "nod", "nodd", "nodding", "noo", "nooo", "noooo", "ooo", "oooo", "shrug", "smirk", "sob", "whimper", "groan", "grunt", "tsk", "tch",
     "gah", "ack", "gahh", "urgh", "argh", "ugh", "eek", "kya", "eep", "gawd",
+    "trudge", "trudgetrudge", "plod", "clomp", "stomp",
+    "stagger", "stager", "suiagcer", "swagger", "slagger", "totter", "wobble", "sway", "jolt",
+    # لغزش، سر خوردن و کشیده شدن
+    "srk", "srrk", "srrrk", "srks", "srrks", "skrr", "skrk", "ssrk",
+    # جهت و نگاه
+    "lookup", "look-up",
     # ضربه، برخورد و صداهای محیطی
     "boom", "bang", "crash", "thud", "smack", "slam", "clatter", "chter", "chatter", "uter", "ulter", "rustle", "rumble",
-    "click", "clack", "clink", "tap", "taptap", "drip", "splash", "sizzle", "whoosh",
+    "click", "clack", "clink", "tap", "taptap", "tak", "taktak", "thak", "drip", "splash", "sizzle", "whoosh",
     "swish", "swoosh", "fwoosh", "zap", "buzz", "crackle", "squeak", "creak", "screech", "shriek", "snap",
     "rattle", "thump", "bump", "bonk", "wham", "plop", "ding", "dong", "vroom", "stagger", "dash", "woosh",
+    "clank", "clankclank", "clunk", "clunkclunk", "clackclack", "clickclack", "tick", "tock", "ticktock",
+    "thwack", "whack", "slap", "pat", "patpat", "plink", "plonk", "chug", "chugchug",
+}
+
+# کلمات رایج انگلیسی در دیالوگ‌ها و داستان‌ها که هرگز نباید خطای املایی صداواژه شمرده شوند
+COMMON_DIALOGUE_WORDS = {
+    # کلمات پرسشی و ربطی
+    "what", "when", "where", "which", "while", "whose", "why", "how", "that", "this", "then", "them", "they",
+    # ضمایر و صفات اشاره/شخصی
+    "their", "theirs", "there", "these", "those", "each", "every", "some", "such", "much", "many", "more", "most",
+    "other", "another", "thing", "things", "someone", "something", "anyone", "anything", "everyone", "everything",
+    "nothing", "myself", "yourself", "himself", "herself", "itself", "ourselves", "themselves",
+    # افعال و کلمات پرکاربرد دیالوگ
+    "wait", "want", "went", "were", "will", "well", "with", "without", "within", "have", "here", "hear", "heard",
+    "help", "head", "hand", "hands", "hold", "take", "make", "know", "knew", "look", "like", "love", "live", "life",
+    "dead", "kill", "stop", "step", "stay", "stand", "shut", "open", "door", "room", "back", "away", "down", "over",
+    "under", "again", "never", "always", "maybe", "please", "sorry", "thank", "thanks", "hello", "good", "great",
+    "fine", "come", "came", "call", "told", "tell", "talk", "said", "say", "seem", "meet", "move", "seen", "send",
+    "sent", "true", "real", "sure", "right", "wrong", "left", "find", "found", "feel", "felt", "give", "gave",
+    "keep", "kept", "lost", "lose", "need", "pass", "read", "work", "word", "words", "world", "girl", "lady",
+    "lord", "king", "queen", "prince", "sir", "guy", "guys", "man", "men", "woman", "women", "boy", "kid", "kids",
+    "child", "children", "friend", "friends", "enemy", "enemies", "mind", "soul", "body", "heart", "blood", "eyes",
+    "face", "voice", "sound", "just", "even", "also", "very", "really", "already", "still", "ever", "only", "own",
+    "both", "either", "neither", "because", "although", "though", "since", "until", "before", "after", "between",
+    "among", "through", "during", "about", "above", "below", "along", "across", "behind", "beyond", "inside",
+    "outside", "around", "damn", "shit", "fuck", "bitch", "bastard", "shot", "wall", "walk",
 }
 
 
 def _is_one_edit_from_sfx(w: str) -> bool:
     """آیا کلمه با خطای ۱ حرفی OCR به یکی از صداواژه‌ها می‌رسد؟ (مثل gulr -> gulp)"""
     if len(w) < 4:
+        return False
+    if w in COMMON_DIALOGUE_WORDS:
         return False
     for sfx in SFX_WORDS:
         if abs(len(w) - len(sfx)) > 1:
@@ -1227,20 +1266,86 @@ def _is_one_edit_from_sfx(w: str) -> bool:
     return False
 
 
+PERSIAN_SFX_WORDS = {
+    "خرخر", "خر خر", "خر‌خر", "تاک", "تلق", "تلق تلق", "تلق‌تلق",
+    "سویاگر", "تق", "تق تق", "تق‌تق", "هیس", "شترق", "گرومب",
+    "بوم", "فیش", "پوف", "هوم", "اوخ", "تیک", "تاک تاک",
+}
+
+ACTION_SFX_PHRASES = {
+    "look up", "look-up", "lookup",
+    "look down", "look-down",
+    "turn around", "turn back",
+    "step back", "step up",
+    "nod nod",
+}
+
+# تابلوها، برچسب‌های ساختمانی، علائم محیطی و نوشته‌های معماری بیرون از حباب
+SIGNAGE_WORDS = {
+    "police", "section", "exit", "entry", "entrance", "emergency",
+    "caution", "warning", "danger", "stop", "hospital", "hotel",
+    "motel", "cafe", "coffee", "restaurant", "store", "shop", "mart",
+    "supermarket", "bank", "station", "subway", "metro", "elevator",
+    "escalator", "restroom", "toilet", "wc", "office", "dept", "department",
+    "zone", "gate", "terminal", "floor", "lobby", "block", "sector",
+    "corridor", "hall", "plaza", "center", "centre", "avenue", "street",
+}
+
+
+def is_environmental_sign(text: str, kind: str) -> bool:
+    """تابلوها و نشانه‌های محیطی روی دیوار/ساختمان (مثل POLICE یا SECTION B) که خارج حباب دیالوگ‌اند."""
+    if kind not in ("outside", "unknown", "square"):
+        return False
+    raw = (text or "").strip()
+    words = re.findall(r"[A-Za-z]+", raw)
+    if not words:
+        return False
+    # کلمات تک مثل POLICE یا SECTION
+    if len(words) == 1 and words[0].lower() in SIGNAGE_WORDS:
+        return True
+    # عبارات کوتاه حداکثر ۲ کلمه‌ای مثل SECTION B یا POLICE STATION
+    if len(words) <= 2:
+        lowers = [w.lower() for w in words]
+        if any(w in SIGNAGE_WORDS for w in lowers):
+            non_sign = [w for w in lowers if w not in SIGNAGE_WORDS]
+            if not non_sign or all(len(w) == 1 for w in non_sign):
+                return True
+    return False
+
+
 def is_sfx_text(text: str) -> bool:
     """آیا این متن یک صداواژه، افکت صوتی یا صدای بدنی (SFX) است؟"""
     raw = (text or "").strip()
     if not raw:
         return False
-    words = re.findall(r"[A-Za-z]+", raw)
+    phrase_clean = re.sub(r"[\s*!.,\-_/]+", " ", raw.lower()).strip()
+    if phrase_clean in ACTION_SFX_PHRASES:
+        return True
+    parts = phrase_clean.split()
+    if len(parts) >= 2 and len(parts) % 2 == 0:
+        half = len(parts) // 2
+        if parts[:half] == parts[half:] and " ".join(parts[:half]) in ACTION_SFX_PHRASES:
+            return True
+
+    # صفرهای پی‌درپی کمیک مثل NOO 000 یا 000 که نمایانگر حباب صدا یا کشیدگی صدا هستند
+    cleaned_sfx = re.sub(r"\b0+\b", lambda m: "o" * len(m.group(0)), raw)
+    words = re.findall(r"[A-Za-z]+", cleaned_sfx)
     if not words:
+        persian_clean = re.sub(r"[\s*!.,،؛؟?\-_/]+", " ", raw).strip()
+        if persian_clean in PERSIAN_SFX_WORDS:
+            return True
         return False
+
     for word in words:
         w = word.lower()
+        if w in COMMON_DIALOGUE_WORDS:
+            return False
         if w in SFX_WORDS:
             continue
         # حذف تکرار کشیدهٔ حروف: sluuuurp -> slurp, haaaaha -> haha
         collapsed = re.sub(r"(.)\1+", r"\1", w)
+        if collapsed in COMMON_DIALOGUE_WORDS:
+            return False
         if collapsed in SFX_WORDS:
             continue
         # تکرار الگوهای خنده: hahahaha, hehehe, kukuku
@@ -1251,6 +1356,42 @@ def is_sfx_text(text: str) -> bool:
             continue
         return False
     return True
+
+
+def _is_pure_sfx_line(number: int, by_number: dict) -> bool:
+    line = by_number.get(number)
+    if not isinstance(line, dict):
+        return False
+    text = line.get("text", "")
+    if not is_sfx_text(text):
+        return False
+    # خنده‌های بیانی شخصیت‌ها (مثل Haha!) جزو دیالوگ هستند، نه افکت صوتی محض
+    return not bool(re.fullmatch(r"[\s*]*(ha|he|ku|fu|ah|oh)+[\s*!.]*", text, re.I))
+
+
+def _partition_sfx_groups(numbers: list[int], by_number: dict) -> list[list[int]]:
+    """خطوط افکت صوتی (SFX) را از خطوط عادی جدا می‌کند تا هرگز در یک متن به هم نچسبند."""
+    if len(numbers) <= 1:
+        return [numbers] if numbers else []
+    sfx_flags = [_is_pure_sfx_line(n, by_number) for n in numbers]
+    if all(sfx_flags) or not any(sfx_flags):
+        return [numbers]
+    groups: list[list[int]] = []
+    current: list[int] = []
+    current_is_sfx: bool | None = None
+    for n in numbers:
+        is_sfx = _is_pure_sfx_line(n, by_number)
+        if current_is_sfx is None or is_sfx == current_is_sfx:
+            current.append(n)
+            current_is_sfx = is_sfx
+        else:
+            if current:
+                groups.append(current)
+            current = [n]
+            current_is_sfx = is_sfx
+    if current:
+        groups.append(current)
+    return groups
 
 
 def drop_junk_blocks(block_list: list, lines: list) -> list:
@@ -1267,12 +1408,16 @@ def drop_junk_blocks(block_list: list, lines: list) -> list:
         text = item.get("text", "")
         if is_junk_text(text, confidence):
             continue
+        kind = item.get("kind", "unknown")
+        # تابلوها و علائم محیطی بیرون حباب (مثل POLICE، SECTION B) نباید وارد دیالوگ شوند
+        if is_environmental_sign(text, kind):
+            continue
         # صداواژه‌ها و افکت‌های صوتی از فهرست ترجمه کنار گذاشته می‌شوند:
         # ۱. در بیرون بالن، بالن‌های فریاد/نامشخص (shout, outside, unknown, square): تمام صداواژه‌ها و افکت‌ها حذف می‌شوند.
         # ۲. در بالن صحبت (speech): صداهای بدنی و محیطی (قورت دادن، هورت کشیدن، سرفه، عطسه و...) حذف می‌شوند،
         #    اما خنده‌های بیانی شخصیت‌ها (مثل Haha!) باقی می‌مانند.
         if is_sfx_text(text):
-            if item.get("kind") in ("outside", "unknown", "shout", "square"):
+            if kind in ("outside", "unknown", "shout", "square"):
                 continue
             if not re.fullmatch(r"[\s*]*(ha|he|ku|fu|ah|oh)+[\s*!.]*", text, re.I):
                 continue

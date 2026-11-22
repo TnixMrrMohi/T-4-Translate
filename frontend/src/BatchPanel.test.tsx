@@ -81,9 +81,9 @@ describe('ناحیهٔ انداختن تصویر', () => {
   });
 
   it('دکمهٔ استخراج متن نام کوتاه دارد و دکمهٔ لغو پردازش همراه با پروگرس‌بار عملیات را کنسل می‌کند', async () => {
-    const origFetch = global.fetch;
+    const origFetch = globalThis.fetch;
     let resolveJob: ((val: unknown) => void) | null = null;
-    global.fetch = vi.fn().mockImplementation((url: string) => {
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
       if (url.startsWith('/api/jobs')) {
         return new Promise(resolve => {
           resolveJob = () => resolve({
@@ -122,7 +122,7 @@ describe('ناحیهٔ انداختن تصویر', () => {
       expect(screen.getByText('عملیات استخراج متن متوقف شد.')).toBeInTheDocument();
     });
 
-    global.fetch = origFetch;
+    globalThis.fetch = origFetch;
   });
 
   it('کلیک روی کپی با پرامپت بازخورد بصری «کپی شد ✓» می‌دهد', async () => {

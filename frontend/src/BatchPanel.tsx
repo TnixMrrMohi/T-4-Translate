@@ -1,8 +1,14 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {ChapterPage} from './ChapterPage';
-import {ManualCleanOverlay} from './ManualCleanOverlay';
+import {ManualCleanOverlay, SelectionInfo} from './ManualCleanOverlay';
 import {Overlay} from './Overlay';
 import {copyToClipboard} from './clipboard';
+import {
+  findPageLineOffsets,
+  estimateScrollTopForLine,
+  findActivePageFromTextScroll,
+  findActivePageFromImageScroll,
+} from './scrollSync';
 
 const WEBP_QUALITY = 90;
 const HEADER = /^===\s*([0-9۰-۹٠-٩]+)(?:\s*\|\s*.+?)?\s*===\s*$/;
@@ -29,6 +35,8 @@ export type BatchPage = {
   height?: number;
   /** صفحه‌ای که متنی برای ترجمه ندارد؛ بدون پردازش و با تصویر اصلی در خروجی می‌آید. */
   noText?: boolean;
+  /** آیا پاک‌سازی یا ترمیم دستی روی این صفحه انجام شده است؟ */
+  manualCleaned?: boolean;
   revision: string;
   text: string;
   state: 'extracted' | 'running' | 'done' | 'failed';
@@ -45,7 +53,7 @@ export const PROMO_RULES: Record<PromoAction, string> = {
 };
 
 /** متن همهٔ صفحه‌ها با تیتر هر صفحه؛ همین قالب برای ترجمه برگردانده می‌شود. */
-export const isPlainPage = (page: BatchPage) => Boolean(page.noText || !(page.text || '').trim());
+export const isPlainPage = (page: BatchPage) => Boolean(!page.manualCleaned && (page.noText || !(page.text || '').trim()));
 
 export function buildBatchText(pages: BatchPage[]): string {
   // صفحه‌های بدون متن در فهرست ترجمه نمی‌آیند (چیزی برای ترجمه ندارند).
@@ -301,6 +309,8 @@ function BatchOcrModal({
   pages,
   chapterVersion,
   kind = 'ocr',
+  fontsList = [],
+  onPageCleaned,
   onCleanDone,
 }: {
   open: boolean;
@@ -308,12 +318,24 @@ function BatchOcrModal({
   pages: BatchPage[];
   chapterVersion: number;
   kind?: 'ocr' | 'clean' | 'render';
+  fontsList?: Array<{id: string; name: string}>;
+  onPageCleaned?: (jobId: string) => void;
   onCleanDone?: () => void;
 }) {
   const [zoom, setZoom] = useState(FIRST_ZOOM);
   const [fit, setFit] = useState(false);
-  const [modalTool, setModalTool] = useState<'brush' | 'box' | 'none'>('none');
+  const [modalTool, setModalTool] = useState<'brush' | 'box' | 'patch' | 'text' | 'none'>('none');
   const [modalBrushSize, setModalBrushSize] = useState(35);
+  const [modalSelection, setModalSelection] = useState<SelectionInfo | null>(null);
+  const [modalClearSignal, setModalClearSignal] = useState(0);
+  const [modalBusy, setModalBusy] = useState(false);
+  const [modalStatus, setModalStatus] = useState('');
+  const [modalCustomText, setModalCustomText] = useState('');
+  const [modalCustomFontId, setModalCustomFontId] = useState('');
+  const [modalCustomFontSize, setModalCustomFontSize] = useState(24);
+  const [modalCustomColor, setModalCustomColor] = useState('#141414');
+  const [modalCustomStroke, setModalCustomStroke] = useState(true);
+  const [modalCustomAlign, setModalCustomAlign] = useState<'center' | 'right' | 'left'>('center');
   const closeRef = useRef<HTMLButtonElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
 
@@ -322,14 +344,147 @@ function BatchOcrModal({
       setZoom(FIRST_ZOOM);
       setFit(false);
       setModalTool('none');
+      setModalSelection(null);
+      setModalClearSignal(c => c + 1);
+      setModalStatus('');
     }
   }, [open]);
+
+  const handleModalClose = () => {
+    setModalSelection(null);
+    setModalClearSignal(c => c + 1);
+    setModalTool('none');
+    onClose();
+  };
+
+  const handleModalApplyText = async () => {
+    if (!modalSelection?.box || modalBusy) return;
+    if (!modalCustomText.trim()) {
+      setModalStatus('لطفاً ابتدا متن فارسی را بنویسید.');
+      return;
+    }
+    setModalBusy(true);
+    setModalStatus('در حال درج متن روی تصویر…');
+    try {
+      const res = await fetch(`/api/jobs/${modalSelection.jobId}/manual-text`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          text: modalCustomText.trim(),
+          box: modalSelection.box,
+          view_size: modalSelection.viewSize,
+          font_id: modalCustomFontId || undefined,
+          font_size: modalCustomFontSize || undefined,
+          color: modalCustomColor,
+          stroke_color: modalCustomStroke ? (modalCustomColor === '#ffffff' ? '#000000' : '#ffffff') : undefined,
+          stroke_width: modalCustomStroke ? 2 : 0,
+          align: modalCustomAlign,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'خطا در درج متن');
+      }
+
+      const targetJobId = modalSelection.jobId;
+      setModalSelection(null);
+      setModalClearSignal(c => c + 1);
+      setModalStatus('متن با موفقیت روی تصویر درج شد.');
+      setTimeout(() => setModalStatus(''), 2500);
+      if (onPageCleaned) onPageCleaned(targetJobId);
+      if (onCleanDone) onCleanDone();
+    } catch (err) {
+      setModalStatus(err instanceof Error ? err.message : 'خطا در درج متن');
+    } finally {
+      setModalBusy(false);
+    }
+  };
+
+  const handleModalExecuteClean = async () => {
+    if (!modalSelection || modalBusy) return;
+    if (modalSelection.tool === 'text') {
+      await handleModalApplyText();
+      return;
+    }
+    setModalBusy(true);
+    setModalStatus('در حال ترمیم…');
+    try {
+      let body: {
+        mask_base64?: string;
+        boxes?: number[][];
+        patch?: {target_box: number[]; source_box: number[]};
+        view_size?: number[];
+      } = {
+        view_size: modalSelection.viewSize,
+      };
+      if (modalSelection.tool === 'patch' && modalSelection.patch) {
+        body.patch = modalSelection.patch;
+      } else if (modalSelection.tool === 'box' && modalSelection.box) {
+        body.boxes = [modalSelection.box];
+      } else if (modalSelection.maskBase64) {
+        body.mask_base64 = modalSelection.maskBase64;
+      }
+
+      const res = await fetch(`/api/jobs/${modalSelection.jobId}/manual-clean`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'خطا در پاک‌سازی دستی');
+      }
+
+      const targetJobId = modalSelection.jobId;
+      setModalSelection(null);
+      setModalClearSignal(c => c + 1);
+      setModalStatus('ناحیه با موفقیت پاک‌سازی شد.');
+      setTimeout(() => setModalStatus(''), 2500);
+      if (onPageCleaned) onPageCleaned(targetJobId);
+      if (onCleanDone) onCleanDone();
+    } catch (err) {
+      setModalStatus(err instanceof Error ? err.message : 'خطا در پاک‌سازی دستی');
+    } finally {
+      setModalBusy(false);
+    }
+  };
+
+  const handleModalUndo = async () => {
+    if (modalBusy) return;
+    const jId = modalSelection?.jobId || pages[0]?.jobId;
+    if (!jId) return;
+
+    setModalBusy(true);
+    setModalStatus('در حال بازگردانی…');
+    try {
+      const res = await fetch(`/api/jobs/${jId}/manual-clean/undo`, {
+        method: 'POST',
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'تغییری برای بازگردانی وجود ندارد.');
+      }
+
+      setModalSelection(null);
+      setModalClearSignal(c => c + 1);
+      setModalStatus('تغییر قبلی با موفقیت بازگردانده شد.');
+      setTimeout(() => setModalStatus(''), 2500);
+      if (onCleanDone) onCleanDone();
+    } catch (err) {
+      setModalStatus(err instanceof Error ? err.message : 'خطا در بازگردانی');
+    } finally {
+      setModalBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
     const timer = window.setTimeout(() => closeRef.current?.focus(), 50);
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') handleModalClose();
       else if (event.key === '+' || event.key === '=') zoomIn();
       else if (event.key === '-') zoomOut();
       else if (event.key === '0') showFit();
@@ -371,7 +526,7 @@ function BatchOcrModal({
       : `پیش‌نمایش پیوستهٔ صفحات فصل (${pages.length} تصویر) — همراه کادر و شمارهٔ خطوط OCR`;
 
   return (
-    <Overlay label={overlayLabel} onBackdropClick={onClose}>
+    <Overlay label={overlayLabel} onBackdropClick={handleModalClose}>
       <div className="modal-bar">
         <span className="grow">
           {titleText}
@@ -384,7 +539,11 @@ function BatchOcrModal({
               <button
                 type="button"
                 className={`ghost small ${modalTool === 'brush' ? 'is-active' : ''}`}
-                onClick={() => setModalTool(modalTool === 'brush' ? 'none' : 'brush')}
+                onClick={() => {
+                  setModalTool(modalTool === 'brush' ? 'none' : 'brush');
+                  setModalSelection(null);
+                  setModalClearSignal(c => c + 1);
+                }}
                 title="قلم‌موی موضعی"
               >
                 🖌️ قلم‌مو
@@ -392,10 +551,26 @@ function BatchOcrModal({
               <button
                 type="button"
                 className={`ghost small ${modalTool === 'box' ? 'is-active' : ''}`}
-                onClick={() => setModalTool(modalTool === 'box' ? 'none' : 'box')}
-                title="کادر مستطیلی"
+                onClick={() => {
+                  setModalTool(modalTool === 'box' ? 'none' : 'box');
+                  setModalSelection(null);
+                  setModalClearSignal(c => c + 1);
+                }}
+                title="کادر انتخابی"
               >
                 🔲 کادر انتخابی
+              </button>
+              <button
+                type="button"
+                className={`ghost small ${modalTool === 'patch' ? 'is-active' : ''}`}
+                onClick={() => {
+                  setModalTool(modalTool === 'patch' ? 'none' : 'patch');
+                  setModalSelection(null);
+                  setModalClearSignal(c => c + 1);
+                }}
+                title="الگوبرداری از یک کادر تمیز و الصاق روی واترمارک/متن"
+              >
+                🩹 وصله (الگوبرداری)
               </button>
               {modalTool === 'brush' && (
                 <label className="manual-brush-slider">
@@ -410,6 +585,56 @@ function BatchOcrModal({
                   <span>{modalBrushSize}px</span>
                 </label>
               )}
+              {modalTool === 'patch' && !modalSelection && (
+                <span style={{fontSize: '11px', color: '#a0ffe0', marginInlineStart: '6px'}}>
+                  کادر قرمز را دور واترمارک بکشید و کادر آبی را روی بافت تمیز بگذارید.
+                </span>
+              )}
+              {modalSelection && (
+                <div className="manual-action-pill">
+                  <span style={{fontSize: '12px', color: '#00ffcc', fontWeight: 600}}>
+                    {modalSelection.pageName || 'ناحیه انتخاب‌شده'}:
+                  </span>
+                  <button
+                    type="button"
+                    className="primary small"
+                    onClick={handleModalExecuteClean}
+                    disabled={modalBusy}
+                    style={{padding: '3px 10px', fontSize: '12px'}}
+                  >
+                    {modalSelection.tool === 'patch' ? '✨ اعمال وصله' : '✨ پاک‌سازی این بخش'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost small"
+                    onClick={() => {
+                      setModalSelection(null);
+                      setModalClearSignal(c => c + 1);
+                    }}
+                    disabled={modalBusy}
+                    style={{padding: '3px 8px', fontSize: '12px'}}
+                  >
+                    ✕ لغو
+                  </button>
+                </div>
+              )}
+              {modalTool !== 'none' && (
+                <button
+                  type="button"
+                  className="ghost small"
+                  onClick={handleModalUndo}
+                  disabled={modalBusy}
+                  title="بازگردانی آخرین تغییر پاک‌سازی"
+                  style={{padding: '3px 8px', fontSize: '12px'}}
+                >
+                  ↩️ Undo
+                </button>
+              )}
+              {modalStatus && (
+                <span style={{fontSize: '11px', color: '#00ffcc', marginInlineStart: '6px'}}>
+                  {modalStatus}
+                </span>
+              )}
             </div>
           )}
           <button type="button" onClick={zoomOut} disabled={!fit && zoom <= FIRST_ZOOM + 1e-9} aria-label="کوچک‌تر">−</button>
@@ -417,7 +642,7 @@ function BatchOcrModal({
           <button type="button" onClick={zoomIn} disabled={!fit && zoom >= LAST_ZOOM - 1e-9} aria-label="بزرگ‌تر">+</button>
           <button type="button" onClick={showWidth} disabled={!fit && zoom === 1}>عرض کامل</button>
           <button type="button" onClick={showFit} disabled={fit}>تناسب صفحه</button>
-          <button type="button" ref={closeRef} onClick={onClose}>بستن ✕</button>
+          <button type="button" ref={closeRef} onClick={handleModalClose}>بستن ✕</button>
         </span>
       </div>
       <p className="modal-hint" aria-live="polite">
@@ -442,18 +667,30 @@ function BatchOcrModal({
               <span className="batch-stream-tag">{idx + 1}. {p.name}</span>
               <img
                 src={
-                  isPlainPage(p)
-                    ? `/api/jobs/${p.jobId}/display/source?width=1400&v=${chapterVersion}`
+                  kind === 'clean'
+                    ? `/api/jobs/${p.jobId}/display/clean?width=1400&v=${chapterVersion}`
                     : `/api/jobs/${p.jobId}/display/${kind}?width=${kind === 'ocr' ? 1200 : 1400}&v=${chapterVersion}`
                 }
                 alt={`صفحهٔ ${p.page}: ${p.name}`}
                 style={{width: '100%', height: 'auto', display: 'block'}}
               />
-              {kind === 'clean' && !isPlainPage(p) && modalTool !== 'none' && (
+              {kind === 'clean' && modalTool !== 'none' && (
                 <ManualCleanOverlay
                   jobId={p.jobId}
+                  pageIndex={idx}
+                  pageName={`صفحهٔ ${p.page}`}
                   tool={modalTool}
                   brushSize={modalBrushSize}
+                  textPreview={modalCustomText}
+                  clearSignal={modalClearSignal}
+                  activeJobId={modalSelection?.jobId}
+                  onSelectionChange={sel => {
+                    if (sel) {
+                      setModalSelection(sel);
+                    } else if (modalSelection?.jobId === p.jobId) {
+                      setModalSelection(null);
+                    }
+                  }}
                   onCleanDone={() => {
                     if (onCleanDone) onCleanDone();
                   }}
@@ -475,6 +712,11 @@ export function BatchPanel({
   onReset,
   onBusyChange,
   onHasWorkChange,
+  activeProjectId,
+  onActiveProjectChange,
+  onOpenProjectManager,
+  initialFiles,
+  onClearInitialFiles,
 }: {
   onClose?: () => void;
   prompt: string;
@@ -483,6 +725,11 @@ export function BatchPanel({
   onReset?: () => void;
   onBusyChange?: (busy: boolean) => void;
   onHasWorkChange?: (hasWork: boolean) => void;
+  activeProjectId?: string | null;
+  onActiveProjectChange?: (projectId: string) => void;
+  onOpenProjectManager?: () => void;
+  initialFiles?: File[];
+  onClearInitialFiles?: () => void;
 }) {
   const [batchStep, setBatchStep] = useState(1);
   const [files, setFiles] = useState<File[]>([]);
@@ -517,6 +764,107 @@ export function BatchPanel({
   const [copied, setCopied] = useState<'prompt' | 'text' | null>(null);
   const copiedTimer = useRef<number | null>(null);
 
+  const [activeProjectMeta, setActiveProjectMeta] = useState<{
+    id: string;
+    name: string;
+    sourceMode?: string;
+    sourcePath?: string;
+  } | null>(null);
+  const [folderFiles, setFolderFiles] = useState<Array<{name: string; path: string; size: number; extension: string}>>([]);
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | ''>('');
+  const saveTimeoutRef = useRef<number | null>(null);
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [showAllFiles, setShowAllFiles] = useState(false);
+  const [showAllCleanPages, setShowAllCleanPages] = useState(false);
+  const [syncScroll, setSyncScroll] = useState(true);
+  const imageScrollRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const persianTextRef = useRef<HTMLTextAreaElement>(null);
+  const englishTextRef = useRef<HTMLTextAreaElement>(null);
+  const isSyncingRef = useRef(false);
+
+  // در مرحلهٔ ۲ به‌صورت هوشمند سایدبار جمع می‌شود تا تمام عرض در اختیار دید دو ستونه قرار گیرد
+  useEffect(() => {
+    if (batchStep === 2) {
+      setSidebarCollapsed(true);
+    }
+  }, [batchStep]);
+
+  // بارگذاری پروژهٔ انتخاب‌شده
+  useEffect(() => {
+    if (!activeProjectId) {
+      setActiveProjectMeta(null);
+      setFolderFiles([]);
+      return;
+    }
+    let ignore = false;
+    fetch(`/api/projects/${activeProjectId}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(proj => {
+        if (!proj || ignore) return;
+        setActiveProjectMeta({
+          id: proj.id,
+          name: proj.name,
+          sourceMode: proj.sourceMode,
+          sourcePath: proj.sourcePath,
+        });
+        if (Array.isArray(proj.pages) && proj.pages.length > 0) {
+          setPages(proj.pages);
+          if (typeof proj.translated === 'string') setTranslated(proj.translated);
+          if (Array.isArray(proj.outFiles)) setOutFiles(proj.outFiles);
+          if (typeof proj.step === 'number' && proj.step >= 1 && proj.step <= 4) {
+            setBatchStep(proj.step);
+          }
+        } else if (proj.sourcePath) {
+          fetch('/api/projects/scan-folder', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path: proj.sourcePath}),
+          })
+            .then(res => (res.ok ? res.json() : null))
+            .then(data => {
+              if (data && Array.isArray(data.files) && !ignore) {
+                setFolderFiles(data.files);
+              }
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
+    return () => {
+      ignore = true;
+    };
+  }, [activeProjectId]);
+
+  // ذخیرهٔ خودکار وضعیت روی دیسک در پروژهٔ فعال
+  useEffect(() => {
+    if (!activeProjectId) return;
+    if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = window.setTimeout(async () => {
+      setSaveStatus('saving');
+      try {
+        await fetch(`/api/projects/${activeProjectId}/save-state`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            step: batchStep,
+            pages,
+            translated,
+            outFiles,
+          }),
+        });
+        setSaveStatus('saved');
+        window.setTimeout(() => setSaveStatus(''), 2000);
+      } catch {
+        setSaveStatus('');
+      }
+    }, 800);
+    return () => {
+      if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
+    };
+  }, [activeProjectId, batchStep, pages, translated, outFiles]);
+
   useEffect(() => {
     return () => {
       if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
@@ -525,8 +873,166 @@ export function BatchPanel({
   const [chapterVersion, setChapterVersion] = useState(() => Date.now());
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewModalKind, setPreviewModalKind] = useState<'ocr' | 'clean' | 'render'>('ocr');
-  const [manualTool, setManualTool] = useState<'brush' | 'box' | 'none'>('none');
+  const [manualTool, setManualTool] = useState<'brush' | 'box' | 'patch' | 'text' | 'none'>('none');
   const [brushSize, setBrushSize] = useState(35);
+  const [activeSelection, setActiveSelection] = useState<SelectionInfo | null>(null);
+  const [clearSignal, setClearSignal] = useState(0);
+  const [manualCleanBusy, setManualCleanBusy] = useState(false);
+  const [manualStatus, setManualStatus] = useState('');
+  const [customText, setCustomText] = useState('');
+  const [customFontId, setCustomFontId] = useState('');
+  const [customFontSize, setCustomFontSize] = useState(24);
+  const [customColor, setCustomColor] = useState('#141414');
+  const [customStroke, setCustomStroke] = useState(true);
+  const [customAlign, setCustomAlign] = useState<'center' | 'right' | 'left'>('center');
+  const [fontsList, setFontsList] = useState<Array<{id: string; name: string}>>([]);
+
+  useEffect(() => {
+    fetch('/api/fonts')
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data?.fonts)) {
+          setFontsList(
+            data.fonts
+              .map((f: {id?: string; name?: string; family?: string}) => ({
+                id: f.id || f.name || '',
+                name: f.name || f.family || f.id || '',
+              }))
+              .filter((f: {id: string; name: string}) => Boolean(f.id && f.name))
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // همگام‌سازی و پاک‌سازی انتخاب‌ها هنگام باز یا بسته شدن بزرگ‌نمایی
+  useEffect(() => {
+    setActiveSelection(null);
+    setClearSignal(c => c + 1);
+  }, [previewModalOpen]);
+
+  const handleApplyText = async () => {
+    if (!activeSelection?.box || manualCleanBusy) return;
+    if (!customText.trim()) {
+      setManualStatus('لطفاً ابتدا متن فارسی را بنویسید.');
+      return;
+    }
+    setManualCleanBusy(true);
+    setManualStatus('در حال درج متن روی تصویر…');
+    try {
+      const res = await fetch(`/api/jobs/${activeSelection.jobId}/manual-text`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          text: customText.trim(),
+          box: activeSelection.box,
+          view_size: activeSelection.viewSize,
+          font_id: customFontId || undefined,
+          font_size: customFontSize || undefined,
+          color: customColor,
+          stroke_color: customStroke ? (customColor === '#ffffff' ? '#000000' : '#ffffff') : undefined,
+          stroke_width: customStroke ? 2 : 0,
+          align: customAlign,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'خطا در درج متن');
+      }
+
+      const targetJobId = activeSelection.jobId;
+      setActiveSelection(null);
+      setClearSignal(c => c + 1);
+      setManualStatus('متن با موفقیت روی تصویر درج شد.');
+      setTimeout(() => setManualStatus(''), 2500);
+      setPages(prev => prev.map(p => p.jobId === targetJobId ? {...p, manualCleaned: true, noText: false} : p));
+      setChapterVersion(Date.now());
+    } catch (err) {
+      setManualStatus(err instanceof Error ? err.message : 'خطا در درج متن');
+    } finally {
+      setManualCleanBusy(false);
+    }
+  };
+
+  const handleExecuteClean = async () => {
+    if (!activeSelection || manualCleanBusy) return;
+    if (activeSelection.tool === 'text') {
+      await handleApplyText();
+      return;
+    }
+    setManualCleanBusy(true);
+    setManualStatus('در حال ترمیم…');
+    try {
+      let body: {
+        mask_base64?: string;
+        boxes?: number[][];
+        patch?: {target_box: number[]; source_box: number[]};
+        view_size?: number[];
+      } = {
+        view_size: activeSelection.viewSize,
+      };
+      if (activeSelection.tool === 'patch' && activeSelection.patch) {
+        body.patch = activeSelection.patch;
+      } else if (activeSelection.tool === 'box' && activeSelection.box) {
+        body.boxes = [activeSelection.box];
+      } else if (activeSelection.maskBase64) {
+        body.mask_base64 = activeSelection.maskBase64;
+      }
+
+      const res = await fetch(`/api/jobs/${activeSelection.jobId}/manual-clean`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'خطا در پاک‌سازی دستی');
+      }
+
+      const targetJobId = activeSelection.jobId;
+      setActiveSelection(null);
+      setClearSignal(c => c + 1);
+      setManualStatus('ناحیه با موفقیت پاک‌سازی شد.');
+      setTimeout(() => setManualStatus(''), 2500);
+      setPages(prev => prev.map(p => p.jobId === targetJobId ? {...p, manualCleaned: true, noText: false} : p));
+      setChapterVersion(Date.now());
+    } catch (err) {
+      setManualStatus(err instanceof Error ? err.message : 'خطا در پاک‌سازی دستی');
+    } finally {
+      setManualCleanBusy(false);
+    }
+  };
+
+  const handleUndoClean = async () => {
+    if (manualCleanBusy) return;
+    const jId = activeSelection?.jobId || pages[0]?.jobId;
+    if (!jId) return;
+
+    setManualCleanBusy(true);
+    setManualStatus('در حال بازگردانی…');
+    try {
+      const res = await fetch(`/api/jobs/${jId}/manual-clean/undo`, {
+        method: 'POST',
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'تغییری برای بازگردانی وجود ندارد.');
+      }
+
+      setActiveSelection(null);
+      setClearSignal(c => c + 1);
+      setManualStatus('تغییر قبلی با موفقیت بازگردانده شد.');
+      setTimeout(() => setManualStatus(''), 2500);
+      setChapterVersion(Date.now());
+    } catch (err) {
+      setManualStatus(err instanceof Error ? err.message : 'خطا در بازگردانی');
+    } finally {
+      setManualCleanBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (busy) {
@@ -636,6 +1142,9 @@ export function BatchPanel({
       setMessage('فقط تصویر PNG، JPG یا WebP پذیرفته می‌شود.');
       return;
     }
+    if (message.includes('ریست شد')) {
+      setMessage('');
+    }
     setFiles(old => {
       const seen = new Set(old.map(file => `${file.name}|${file.size}`));
       const merged = [...old, ...incoming.filter(file => !seen.has(`${file.name}|${file.size}`))];
@@ -643,6 +1152,13 @@ export function BatchPanel({
     });
     setPages([]);
   }
+
+  useEffect(() => {
+    if (initialFiles && initialFiles.length > 0) {
+      addFiles(initialFiles);
+      onClearInitialFiles?.();
+    }
+  }, [initialFiles]);
 
   useEffect(() => {
     // چسباندن (Ctrl+V) تصویر از کلیپ‌بورد، تا وقتی این بخش باز است.
@@ -763,7 +1279,7 @@ export function BatchPanel({
 
   /** یک فایل: بارگذاری ← (در صورت بزرگی) برش ← OCR ← متن. نتیجه به found/fileList اضافه می‌شود. */
   async function extractOne(
-    file: File,
+    source: {file?: File; path?: string; name: string},
     order: number,
     found: BatchPage[],
     fileList: BatchFile[],
@@ -783,15 +1299,26 @@ export function BatchPanel({
       });
     };
 
-    const form = new FormData();
-    form.append('file', file);
-    updateStage('upload', 0.1, `${tag} ${file.name}`);
-    const job = await (await call('/api/jobs?mode=batch', {method: 'POST', body: form}, 'بارگذاری')).json();
+    updateStage('upload', 0.1, `${tag} ${source.name}`);
+    let job: {jobId: string; height: number};
+    if (source.path) {
+      job = await (await call('/api/jobs/from-path', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: source.path, mode: 'batch'}),
+      }, 'بارگذاری از دیسک')).json();
+    } else if (source.file) {
+      const form = new FormData();
+      form.append('file', source.file);
+      job = await (await call('/api/jobs?mode=batch', {method: 'POST', body: form}, 'بارگذاری')).json();
+    } else {
+      return;
+    }
     if (cancel.current) return;
 
     // صفحه‌ای که برای حافظهٔ این دستگاه بزرگ است، خودکار به برش‌های کوچک‌تر شکسته می‌شود؛
     // خروجی نهایی دوباره از همان برش‌ها یک فایل می‌سازد و متنِ روی برش‌ها در مرز یک‌تکه پردازش می‌شود.
-    updateStage('slice', 0.25, `${tag} ${file.name}`);
+    updateStage('slice', 0.25, `${tag} ${source.name}`);
     const slice = await (await call('/api/batch/slice', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({jobId: job.jobId}),
@@ -806,19 +1333,19 @@ export function BatchPanel({
     for (let part = 0; part < units.length; part += 1) {
       if (cancel.current) break;
       const unit = units[part];
-      const where = `${tag} ${file.name}` + (units.length > 1 ? ` · برش ${part + 1} از ${units.length}` : '');
+      const where = `${tag} ${source.name}` + (units.length > 1 ? ` · برش ${part + 1} از ${units.length}` : '');
       const ocrFrac = 0.25 + 0.7 * ((part + 0.5) / units.length);
       updateStage('ocr', ocrFrac, where);
       await retrying('OCR', () => call(`/api/jobs/${unit.jobId}/ocr?filter_slanted=${filterSlanted}`, {method: 'POST'}, 'OCR'));
       if (cancel.current) break;
-      const label = units.length > 1 ? `${file.name} [${part + 1}]` : file.name;
+      const label = units.length > 1 ? `${source.name} [${part + 1}]` : source.name;
       added.push(await loadPage(unit.jobId, label, unit.height));
       pieces.push({jobId: unit.jobId, top: 0, bottom: unit.height});
     }
     if (cancel.current) return;
     // فقط وقتی همهٔ برش‌های این فایل خوانده شد، به فصل اضافه می‌شود؛ فایل نیمه‌کاره نمی‌ماند.
     found.push(...added);
-    fileList.push({name: file.name, order, pieces});
+    fileList.push({name: source.name, order, pieces});
   }
 
   /** متنی که از مرز دو کار پشت‌سرهم (دو صفحه یا دو برش) بریده شده، در یک «نوار مرزی» کامل پردازش می‌شود. */
@@ -919,29 +1446,34 @@ export function BatchPanel({
     }
   }
 
-  async function extract() {
-    if (!files.length || busy) return;
+  async function extractSources(sources: Array<{file?: File; path?: string; name: string}>) {
+    if (!sources.length || busy) return;
+    setMessage('');
     cancel.current = false;
     setCancelPending(false);
     setBusy('extract');
     setPages([]);
     setTranslated('');
-    const total = files.length;
+    const total = sources.length;
     setBatchProgress({
       fraction: 0.02,
       label: `در حال آماده‌سازی برای خواندن ${total.toLocaleString('fa-IR')} تصویر…`,
-      detail: stage('upload', `فایل ۱ از ${total} · ${files[0].name}`),
+      detail: stage('upload', `فایل ۱ از ${total} · ${sources[0].name}`),
     });
     const found: BatchPage[] = [];
     const fileList: BatchFile[] = [];
     const failed: FailedFile[] = [];
     const errors: string[] = [];
-    for (let index = 0; index < files.length; index += 1) {
+    for (let index = 0; index < sources.length; index += 1) {
       if (cancel.current) break;
       try {
-        await extractOne(files[index], index, found, fileList, `فایل ${index + 1} از ${files.length} ·`, files.length);
+        await extractOne(sources[index], index, found, fileList, `فایل ${index + 1} از ${sources.length} ·`, sources.length);
       } catch (error) {
-        failed.push({file: files[index], order: index, error: error instanceof Error ? error.message : 'خطا'});
+        if (sources[index].file) {
+          failed.push({file: sources[index].file!, order: index, error: error instanceof Error ? error.message : 'خطا'});
+        } else {
+          errors.push(`${sources[index].name}: ${error instanceof Error ? error.message : 'خطا'}`);
+        }
       }
     }
     if (cancel.current) {
@@ -972,6 +1504,14 @@ export function BatchPanel({
       detail: '',
     });
     finishExtract(found, fileList, failed, errors, joined);
+  }
+
+  async function extract() {
+    await extractSources(files.map(f => ({file: f, name: f.name})));
+  }
+
+  async function extractFromFolder() {
+    await extractSources(folderFiles.map(f => ({path: f.path, name: f.name})));
   }
 
   /** فقط فایل‌هایی که خوانده نشدند (مثلاً حافظهٔ کم) دوباره خوانده و سر جای خودشان در فصل گذاشته می‌شوند. */
@@ -1043,6 +1583,7 @@ export function BatchPanel({
   /** اجرای دسته‌ای: همهٔ صفحه‌ها یا فقط صفحه‌های داده‌شده (تلاش دوباره). */
   async function run(only?: string[], phase: 'clean' | 'render' | 'full' = 'full') {
     if (busy || !pages.length) return;
+    setMessage('');
     const parts = splitBatchText(translated);
     cancel.current = false;
     setCancelPending(false);
@@ -1272,77 +1813,293 @@ export function BatchPanel({
     }, 2500);
   }
 
+  // اسکرول از سمت تصاویر به سمت متن‌ها
+  const handleImageScroll = () => {
+    if (!syncScroll || isSyncingRef.current || !imageScrollRef.current) return;
+    const container = imageScrollRef.current;
+
+    const itemOffsets: Array<{page: number; top: number; height: number}> = [];
+    pages.forEach(p => {
+      const el = pageRefs.current.get(p.page);
+      if (el) {
+        itemOffsets.push({
+          page: p.page,
+          top: el.offsetTop - container.offsetTop,
+          height: el.offsetHeight,
+        });
+      }
+    });
+
+    const activePage = findActivePageFromImageScroll(container.scrollTop, itemOffsets);
+    if (!activePage) return;
+
+    isSyncingRef.current = true;
+
+    if (persianTextRef.current && translated) {
+      const lineMap = findPageLineOffsets(translated);
+      const lineIdx = lineMap.get(activePage);
+      if (typeof lineIdx === 'number') {
+        const totalLines = translated.split(/\r?\n/).length;
+        persianTextRef.current.scrollTop = estimateScrollTopForLine(
+          lineIdx,
+          totalLines,
+          persianTextRef.current.scrollHeight,
+          persianTextRef.current.clientHeight
+        );
+      }
+    }
+
+    if (englishTextRef.current && combined) {
+      const lineMap = findPageLineOffsets(combined);
+      const lineIdx = lineMap.get(activePage);
+      if (typeof lineIdx === 'number') {
+        const totalLines = combined.split(/\r?\n/).length;
+        englishTextRef.current.scrollTop = estimateScrollTopForLine(
+          lineIdx,
+          totalLines,
+          englishTextRef.current.scrollHeight,
+          englishTextRef.current.clientHeight
+        );
+      }
+    }
+
+    window.setTimeout(() => {
+      isSyncingRef.current = false;
+    }, 80);
+  };
+
+  // اسکرول از سمت متن‌ها به سمت تصاویر
+  const handleTextScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
+    if (!syncScroll || isSyncingRef.current || !imageScrollRef.current) return;
+    const textarea = e.currentTarget;
+    const isPersian = textarea === persianTextRef.current;
+    const text = isPersian ? translated : combined;
+    if (!text) return;
+
+    const lineMap = findPageLineOffsets(text);
+    const totalLines = text.split(/\r?\n/).length;
+    const activePage = findActivePageFromTextScroll(
+      textarea.scrollTop,
+      textarea.scrollHeight,
+      textarea.clientHeight,
+      lineMap,
+      totalLines
+    );
+
+    if (!activePage) return;
+
+    const targetEl = pageRefs.current.get(activePage);
+    if (targetEl && imageScrollRef.current) {
+      isSyncingRef.current = true;
+      const targetTop = targetEl.offsetTop - imageScrollRef.current.offsetTop;
+      imageScrollRef.current.scrollTo({
+        top: targetTop,
+        behavior: 'smooth',
+      });
+
+      const otherRef = isPersian ? englishTextRef : persianTextRef;
+      const otherText = isPersian ? combined : translated;
+      if (otherRef.current && otherText) {
+        const otherMap = findPageLineOffsets(otherText);
+        const otherLineIdx = otherMap.get(activePage);
+        if (typeof otherLineIdx === 'number') {
+          const otherTotalLines = otherText.split(/\r?\n/).length;
+          otherRef.current.scrollTop = estimateScrollTopForLine(
+            otherLineIdx,
+            otherTotalLines,
+            otherRef.current.scrollHeight,
+            otherRef.current.clientHeight
+          );
+        }
+      }
+
+      window.setTimeout(() => {
+        isSyncingRef.current = false;
+      }, 100);
+    }
+  };
+
   return (
-    <div className="layout" aria-label="پردازش دسته‌ای" style={visible ? undefined : {display: 'none'}}>
+    <div
+      className={`layout${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}
+      aria-label="پردازش دسته‌ای"
+      style={visible ? undefined : {display: 'none'}}
+    >
       {/* ستون راست: پنج مرحله و خلاصه وضعیت فصل */}
-      <aside className="sidebar" aria-label="مراحل پردازش دسته‌ای">
-        <ol className="wizard-steps" aria-label="مراحل کار">
-          {BATCH_STEPS.map(item => {
-            const isCurrent = item.id === batchStep;
-            const isAvailable = item.id <= maxBatchStep;
-            const isDone = item.id < batchStep || (item.id === 1 && pages.length > 0) || (item.id === 2 && Boolean(translated.trim())) || (item.id === 3 && doneCount > 0);
-            const stepState = isCurrent ? 'current' : isDone ? 'done' : isAvailable ? 'available' : 'locked';
-            return (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  className={`step-item is-${stepState}`}
-                  onClick={() => setBatchStep(item.id)}
-                  disabled={!isAvailable || busy !== null}
-                  aria-current={stepState === 'current' ? 'step' : undefined}
-                  title={stepState === 'locked' ? 'برای باز شدن این مرحله، مرحلهٔ قبل را کامل کنید' : item.title}
-                >
-                  <span className="step-index">{stepState === 'done' ? '✓' : item.id}</span>
-                  <span className="step-title">{item.title}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-
-        <div className="batch-sidebar-info" aria-label="خلاصه وضعیت فصل">
-          <div className="batch-stat-row">
-            <span>تعداد کل تصاویر:</span>
-            <strong>{files.length}</strong>
+      {!sidebarCollapsed && (
+        <aside className="sidebar" aria-label="مراحل پردازش دسته‌ای">
+          <div className="batch-sidebar-header" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px'}}>
+            <span style={{fontWeight: 700, fontSize: '13px', color: '#94a3b8'}}>مراحل پروژه</span>
+            <button
+              type="button"
+              className="sidebar-toggle-btn"
+              onClick={() => setSidebarCollapsed(true)}
+              title="مخفی‌سازی ستون مراحل (نمای تمام‌عرض)"
+            >
+              ▶ نمای تمام‌عرض
+            </button>
           </div>
-          {batchStep > 1 && pages.length > 0 && (
-            <div className="batch-stat-row">
-              <span>صفحات استخراج‌شده:</span>
-              <strong>{pages.length}</strong>
-            </div>
-          )}
-          {doneCount > 0 && (
-            <div className="batch-stat-row is-success">
-              <span>صفحات آماده:</span>
-              <strong>{doneCount} از {pages.length}</strong>
-            </div>
-          )}
-          {failedPages.length > 0 && (
-            <div className="batch-stat-row is-danger">
-              <span>صفحات ناموفق:</span>
-              <strong>{failedPages.length}</strong>
-            </div>
-          )}
-        </div>
+          <ol className="wizard-steps" aria-label="مراحل کار">
+            {BATCH_STEPS.map(item => {
+              const isCurrent = item.id === batchStep;
+              const isAvailable = item.id <= maxBatchStep;
+              const isDone = item.id < batchStep || (item.id === 1 && pages.length > 0) || (item.id === 2 && Boolean(translated.trim())) || (item.id === 3 && doneCount > 0);
+              const stepState = isCurrent ? 'current' : isDone ? 'done' : isAvailable ? 'available' : 'locked';
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    className={`step-item is-${stepState}`}
+                    onClick={() => setBatchStep(item.id)}
+                    disabled={!isAvailable || busy !== null}
+                    aria-current={stepState === 'current' ? 'step' : undefined}
+                    title={stepState === 'locked' ? 'برای باز شدن این مرحله، مرحلهٔ قبل را کامل کنید' : item.title}
+                  >
+                    <span className="step-index">{stepState === 'done' ? '✓' : item.id}</span>
+                    <span className="step-title">{item.title}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
 
-        <details className="batch-legend">
-          <summary>راهنمای کد مرحله‌ها</summary>
-          <ul>
-            {(Object.keys(STAGES) as (keyof typeof STAGES)[]).map(key => (
-              <li key={key}><b dir="ltr">{STAGES[key][0]}</b> {STAGES[key][1]}</li>
-            ))}
-          </ul>
-        </details>
-      </aside>
+          <div className="batch-sidebar-info" aria-label="خلاصه وضعیت فصل">
+            <div className="batch-stat-row">
+              <span>تعداد کل تصاویر:</span>
+              <strong>{files.length}</strong>
+            </div>
+            {batchStep > 1 && pages.length > 0 && (
+              <div className="batch-stat-row">
+                <span>صفحات استخراج‌شده:</span>
+                <strong>{pages.length}</strong>
+              </div>
+            )}
+            {doneCount > 0 && (
+              <div className="batch-stat-row is-success">
+                <span>صفحات آماده:</span>
+                <strong>{doneCount} از {pages.length}</strong>
+              </div>
+            )}
+            {failedPages.length > 0 && (
+              <div className="batch-stat-row is-danger">
+                <span>صفحات ناموفق:</span>
+                <strong>{failedPages.length}</strong>
+              </div>
+            )}
+          </div>
+
+          <details className="batch-legend">
+            <summary>راهنمای کد مرحله‌ها</summary>
+            <ul>
+              {(Object.keys(STAGES) as (keyof typeof STAGES)[]).map(key => (
+                <li key={key}><b dir="ltr">{STAGES[key][0]}</b> {STAGES[key][1]}</li>
+              ))}
+            </ul>
+          </details>
+        </aside>
+      )}
 
       {/* ستون چپ: کارت مرحلهٔ جاری */}
       <section className="workspace" aria-label="محیط پردازش دسته‌ای">
+        <div className="batch-project-bar">
+          <div
+            className="batch-project-info"
+            onClick={onOpenProjectManager}
+            style={{cursor: onOpenProjectManager ? 'pointer' : 'default'}}
+            title={onOpenProjectManager ? 'کلیک برای باز کردن، تغییر یا ساخت پروژه جدید' : undefined}
+          >
+            <span style={{fontSize: '16px'}}>📁</span>
+            <strong>پروژه:</strong>
+            <span className="batch-project-name">{activeProjectMeta?.name || 'بدون پروژه (موقت)'}</span>
+            {activeProjectMeta?.sourcePath && (
+              <span className="batch-project-path" title={activeProjectMeta.sourcePath}>
+                ({activeProjectMeta.sourcePath})
+              </span>
+            )}
+            {saveStatus === 'saving' && <span className="batch-project-status saving">در حال ذخیره روی دیسک…</span>}
+            {saveStatus === 'saved' && <span className="batch-project-status saved">ذخیره‌شده روی دیسک ✓</span>}
+          </div>
+          <div style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
+            {onOpenProjectManager && (
+              <button
+                type="button"
+                className="batch-project-btn"
+                onClick={onOpenProjectManager}
+              >
+                مدیریت پروژه‌ها 📋
+              </button>
+            )}
+          </div>
+        </div>
+
+        {sidebarCollapsed && (
+          <nav className="compact-step-nav" aria-label="ناوبری فشرده مراحل">
+            <span style={{fontSize: '12px', color: '#94a3b8', marginInlineEnd: '4px'}}>مراحل:</span>
+            {BATCH_STEPS.map(item => (
+              <button
+                key={item.id}
+                type="button"
+                className={`compact-step-pill ${item.id === batchStep ? 'is-current' : ''}`}
+                onClick={() => setBatchStep(item.id)}
+                disabled={item.id > maxBatchStep || busy !== null}
+              >
+                {item.id}. {item.title}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="sidebar-toggle-btn"
+              style={{marginInlineStart: 'auto'}}
+              onClick={() => setSidebarCollapsed(false)}
+              title="نمایش ستون مراحل در کنار صفحه"
+            >
+              ◀ نمایش مراحل
+            </button>
+          </nav>
+        )}
+
         {message && <p className="wizard-status" role="status">{message}</p>}
 
         <section className="wizard-card" aria-live="polite">
           {batchStep === 1 && (
             <>
               <h2 className="wizard-title">مرحله ۱: انتخاب تصویر</h2>
+
+              {activeProjectMeta?.sourceMode === 'folder' && folderFiles.length > 0 && (
+                <div className="batch-folder-card">
+                  <h3>📂 پوشهٔ متصل: {activeProjectMeta.sourcePath}</h3>
+                  <p>
+                    تعداد <b>{folderFiles.length}</b> تصویر در این پوشه آمادهٔ استخراج متن است (مستقیماً از دیسک بدون مصرف حافظه).
+                  </p>
+                  <button
+                    type="button"
+                    className="ocr primary"
+                    disabled={busy !== null}
+                    onClick={() => void extractFromFolder()}
+                    style={{fontSize: '15px', padding: '10px 24px'}}
+                  >
+                    🚀 شروع استخراج متن این پوشه ({folderFiles.length} تصویر)
+                  </button>
+                </div>
+              )}
+
+              {pages.length > 0 && !busy && (
+                <div className="batch-folder-card" style={{borderStyle: 'dashed', background: '#0d1822'}}>
+                  <h3>✨ صفحات ذخیره‌شدهٔ این پروژه موجود است ({pages.length} صفحه)</h3>
+                  <p>می‌توانید مستقیماً به مراحل بعدی بروید یا کار را از همان‌جا ادامه دهید:</p>
+                  <div style={{display: 'flex', gap: '8px', justifyContent: 'center', flexWrap: 'wrap'}}>
+                    <button type="button" className="primary small" onClick={() => setBatchStep(2)}>
+                      رفتن به مرحله ۲: ترجمه فارسی →
+                    </button>
+                    <button type="button" className="ghost small" onClick={() => setBatchStep(3)}>
+                      رفتن به مرحله ۳: پاک‌سازی دستی
+                    </button>
+                    <button type="button" className="ghost small" onClick={() => setBatchStep(4)}>
+                      رفتن به مرحله ۴: خروجی نهایی
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="upload-bar">
                 <span className="upload-bar-label">تصویرهای ورودی</span>
@@ -1454,17 +2211,39 @@ export function BatchPanel({
 
               {files.length > 0 && (
                 <div className="jobs">
-                  <div className="jobs-header">
-                    <h3>تصویرهای انتخاب‌شده ({files.length})</h3>
+                  <div className="jobs-header" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px'}}>
+                    <h3 style={{margin: 0}}>تصویرهای انتخاب‌شده ({files.length})</h3>
+                    {files.length > 8 && (
+                      <button
+                        type="button"
+                        className="ghost small"
+                        onClick={() => setShowAllFiles(prev => !prev)}
+                        style={{fontSize: '12px', padding: '3px 10px'}}
+                      >
+                        {showAllFiles ? 'بستن فهرست ▴' : `مشاهده همه (${files.length} تصویر) ▾`}
+                      </button>
+                    )}
                   </div>
                   <ul className="batch-list" aria-label="فهرست تصویرها">
-                    {files.map((file, i) => (
+                    {(showAllFiles ? files : files.slice(0, 8)).map((file, i) => (
                       <li key={`${file.name}-${file.size}`} className="batch-row">
                         <span dir="ltr">{i + 1}. {file.name}</span>
                         <small className="fonts-note">{(file.size / 1024).toFixed(0)} KB</small>
                       </li>
                     ))}
                   </ul>
+                  {files.length > 8 && (
+                    <div style={{display: 'flex', justifyContent: 'center', marginTop: '6px'}}>
+                      <button
+                        type="button"
+                        className="ghost small"
+                        onClick={() => setShowAllFiles(prev => !prev)}
+                        style={{fontSize: '12px', padding: '4px 14px'}}
+                      >
+                        {showAllFiles ? 'بستن فهرست ▴' : `مشاهده همه (${files.length} تصویر) ▾`}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1482,178 +2261,234 @@ export function BatchPanel({
             <>
               <h2 className="wizard-title">مرحله ۲: ترجمهٔ فارسی</h2>
 
-              {/* اعلام و تنظیم رفتار متن تبلیغاتی؛ همراه شماره‌گذاری انجام می‌شود */}
-              <div className="promo-setting" role="group" aria-label="رفتار متن تبلیغاتی">
-                <div className="promo-setting-header">
-                  <div className="promo-setting-info">
-                    <span className="promo-setting-title">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '6px'}}>
-                        <path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/>
-                        <path d="M7 7h.01"/>
-                      </svg>
-                      مدیریت واترمارک و متن‌های تبلیغاتی
-                    </span>
+              {/* ردیف دوتایی تنظیمات: مدیریت واترمارک و فیلتر جلوه‌های صوتی مایل */}
+              <div className="batch-settings-grid">
+                {/* اعلام و تنظیم رفتار متن تبلیغاتی؛ همراه شماره‌گذاری انجام می‌شود */}
+                <div className="promo-setting" role="group" aria-label="رفتار متن تبلیغاتی">
+                  <div className="promo-setting-header">
+                    <div className="promo-setting-info">
+                      <span className="promo-setting-title">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '6px'}}>
+                          <path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/>
+                          <path d="M7 7h.01"/>
+                        </svg>
+                        مدیریت واترمارک و متن‌های تبلیغاتی
+                      </span>
+                    </div>
+                    <div className="promo-options">
+                      <button
+                        type="button"
+                        disabled={busy !== null || updatingSettings}
+                        className={promoAction === 'remove' ? 'is-active' : ''}
+                        aria-pressed={promoAction === 'remove'}
+                        onClick={() => void choosePromo('remove')}
+                      >
+                        حذف کامل
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy !== null || updatingSettings}
+                        className={promoAction === 'replace' ? 'is-active' : ''}
+                        aria-pressed={promoAction === 'replace'}
+                        onClick={() => void choosePromo('replace')}
+                      >
+                        جایگزینی با {PROMO_SITE}
+                      </button>
+                    </div>
                   </div>
-                  <div className="promo-options">
-                    <button
-                      type="button"
-                      disabled={busy !== null || updatingSettings}
-                      className={promoAction === 'remove' ? 'is-active' : ''}
-                      aria-pressed={promoAction === 'remove'}
-                      onClick={() => void choosePromo('remove')}
-                    >
-                      حذف کامل
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy !== null || updatingSettings}
-                      className={promoAction === 'replace' ? 'is-active' : ''}
-                      aria-pressed={promoAction === 'replace'}
-                      onClick={() => void choosePromo('replace')}
-                    >
-                      جایگزینی با {PROMO_SITE}
-                    </button>
-                  </div>
+                  <details className="promo-details">
+                    <summary>توضیحات</summary>
+                    <p className="promo-setting-desc">
+                      اگر در تصویر آدرس سایت قبلی، نام تیم اسکنر یا واترمارک باشد:
+                    </p>
+                    <div className="promo-hint">
+                      {promoAction === 'remove' ? (
+                        <span>
+                          <strong>حالت فعال:</strong> واترمارک‌ها و آدرس‌های سایت قبلی از متن شماره‌گذاری‌شده حذف می‌شوند.
+                        </span>
+                      ) : (
+                        <span>
+                          <strong>حالت فعال:</strong> به‌جای متن‌های تبلیغاتی شناسایی‌شده، آدرس <code>{PROMO_SITE}</code> قرار می‌گیرد تا به‌عنوان واترمارک شما در تصویر درج شود.
+                        </span>
+                      )}
+                    </div>
+                  </details>
                 </div>
-                <details className="promo-details">
-                  <summary>توضیحات</summary>
-                  <p className="promo-setting-desc">
-                    اگر در تصویر آدرس سایت قبلی، نام تیم اسکنر یا واترمارک باشد:
-                  </p>
-                  <div className="promo-hint">
-                    {promoAction === 'remove' ? (
-                      <span>
-                        <strong>حالت فعال:</strong> واترمارک‌ها و آدرس‌های سایت قبلی از متن شماره‌گذاری‌شده حذف می‌شوند.
-                      </span>
-                    ) : (
-                      <span>
-                        <strong>حالت فعال:</strong> به‌جای متن‌های تبلیغاتی شناسایی‌شده، آدرس <code>{PROMO_SITE}</code> قرار می‌گیرد تا به‌عنوان واترمارک شما در تصویر درج شود.
-                      </span>
-                    )}
-                  </div>
-                </details>
-              </div>
 
-              {/* فیلتر متن‌های مایل و کج (جلوه‌های صوتی) */}
-              <div className="promo-setting" role="group" aria-label="فیلتر متن‌های مایل و کج">
-                <div className="promo-setting-header">
-                  <div className="promo-setting-info">
-                    <span className="promo-setting-title">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '6px'}}>
-                        <circle cx="12" cy="12" r="10"/>
-                        <path d="m4.93 4.93 14.14 14.14"/>
-                      </svg>
-                      فیلتر جلوه‌های صوتی مایل (کج)
-                    </span>
+                {/* فیلتر متن‌های مایل و کج (جلوه‌های صوتی) */}
+                <div className="promo-setting" role="group" aria-label="فیلتر متن‌های مایل و کج">
+                  <div className="promo-setting-header">
+                    <div className="promo-setting-info">
+                      <span className="promo-setting-title">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '6px'}}>
+                          <circle cx="12" cy="12" r="10"/>
+                          <path d="m4.93 4.93 14.14 14.14"/>
+                        </svg>
+                        فیلتر جلوه‌های صوتی مایل (کج)
+                      </span>
+                    </div>
+                    <div className="promo-options">
+                      <button
+                        type="button"
+                        disabled={busy !== null || updatingSettings}
+                        className={filterSlanted ? 'is-active' : ''}
+                        aria-pressed={filterSlanted}
+                        onClick={() => void chooseFilterSlanted(true)}
+                      >
+                        حذف متن‌های کج
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy !== null || updatingSettings}
+                        className={!filterSlanted ? 'is-active' : ''}
+                        aria-pressed={!filterSlanted}
+                        onClick={() => void chooseFilterSlanted(false)}
+                      >
+                        شناسایی همه
+                      </button>
+                    </div>
                   </div>
-                  <div className="promo-options">
-                    <button
-                      type="button"
-                      disabled={busy !== null || updatingSettings}
-                      className={filterSlanted ? 'is-active' : ''}
-                      aria-pressed={filterSlanted}
-                      onClick={() => void chooseFilterSlanted(true)}
-                    >
-                      حذف متن‌های کج
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy !== null || updatingSettings}
-                      className={!filterSlanted ? 'is-active' : ''}
-                      aria-pressed={!filterSlanted}
-                      onClick={() => void chooseFilterSlanted(false)}
-                    >
-                      شناسایی همه
-                    </button>
-                  </div>
+                  <details className="promo-details">
+                    <summary>توضیحات</summary>
+                    <p className="promo-setting-desc">
+                      متون با زاویهٔ مایل (صداهای بلعیدن، عطسه، سرفه و افکت‌ها):
+                    </p>
+                    <div className="promo-hint">
+                      {filterSlanted ? (
+                        <span>
+                          <strong>حالت فعال:</strong> کادرهایی که با زاویهٔ مایل نوشته شده‌اند (مثل جلوه‌های صوتی و صداهای پس‌زمینه) نادیده گرفته می‌شوند و در تصویر و فهرست ترجمه لحاظ نمی‌شوند.
+                        </span>
+                      ) : (
+                        <span>
+                          <strong>حالت غیرفعال:</strong> تمام کادرها حتی با زاویهٔ مایل تشخیص داده شده و شماره‌گذاری می‌شوند.
+                        </span>
+                      )}
+                    </div>
+                  </details>
                 </div>
-                <details className="promo-details">
-                  <summary>توضیحات</summary>
-                  <p className="promo-setting-desc">
-                    متون با زاویهٔ مایل (صداهای بلعیدن، عطسه، سرفه و افکت‌ها):
-                  </p>
-                  <div className="promo-hint">
-                    {filterSlanted ? (
-                      <span>
-                        <strong>حالت فعال:</strong> کادرهایی که با زاویهٔ مایل نوشته شده‌اند (مثل جلوه‌های صوتی و صداهای پس‌زمینه) نادیده گرفته می‌شوند و در تصویر و فهرست ترجمه لحاظ نمی‌شوند.
-                      </span>
-                    ) : (
-                      <span>
-                        <strong>حالت غیرفعال:</strong> تمام کادرها حتی با زاویهٔ مایل تشخیص داده شده و شماره‌گذاری می‌شوند.
-                      </span>
-                    )}
-                  </div>
-                </details>
               </div>
 
               {pages.length > 0 && (
-                <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
-                  <figcaption>
-                    <button
-                      type="button"
-                      className="ghost small"
-                      onClick={() => setPreviewModalOpen(true)}
-                      aria-label="بزرگ‌نمایی"
-                      title="بزرگ‌نمایی پیوستهٔ فصل"
+                <div className="step2-split-container">
+                  {/* ستون اول: تصاویر و پیش‌نمایش صفحات با کادرهای OCR */}
+                  <div className="step2-pane">
+                    <div className="step2-pane-header">
+                      <h3 className="step2-pane-title">
+                        <span>🖼️</span>
+                        <span>تصاویر فصل ({pages.length} صفحه)</span>
+                      </h3>
+                      <button
+                        type="button"
+                        className="ghost small"
+                        onClick={() => setPreviewModalOpen(true)}
+                        aria-label="بزرگ‌نمایی"
+                        title="بزرگ‌نمایی پیوستهٔ فصل"
+                      >
+                        بزرگ‌نمایی 🔍
+                      </button>
+                    </div>
+
+                    <div
+                      ref={imageScrollRef}
+                      onScroll={handleImageScroll}
+                      className="step2-image-scroll batch-stream"
+                      tabIndex={0}
+                      role="region"
+                      aria-label="پیش‌نمایش پیوستهٔ صفحات با کادرهای OCR"
                     >
-                      بزرگ‌نمایی تصویر
-                    </button>
-                  </figcaption>
-                  <div
-                    className="preview-thumb is-scroll batch-stream"
-                    tabIndex={0}
-                    role="region"
-                    aria-label="پیش‌نمایش پیوستهٔ صفحات با کادرهای OCR"
-                    onClick={() => setPreviewModalOpen(true)}
-                  >
-                    {pages.map((p, idx) => (
-                      <div key={p.jobId} className="batch-stream-item">
-                        <span className="batch-stream-tag">{idx + 1}. {p.name}</span>
-                        <img
-                          src={`/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`}
-                          alt={`صفحهٔ ${p.page}: ${p.name}`}
-                          loading="lazy"
+                      {pages.map((p, idx) => (
+                        <div
+                          key={p.jobId}
+                          ref={el => {
+                            if (el) pageRefs.current.set(p.page, el);
+                            else pageRefs.current.delete(p.page);
+                          }}
+                          className="batch-stream-item"
+                          data-page={p.page}
+                        >
+                          <span className="batch-stream-tag">{idx + 1}. {p.name}</span>
+                          <img
+                            src={`/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`}
+                            alt={`صفحهٔ ${p.page}: ${p.name}`}
+                            loading="lazy"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ستون دوم: متون و ترجمهٔ همگام */}
+                  <div className="step2-pane">
+                    <div className="step2-pane-header">
+                      <h3 className="step2-pane-title">
+                        <span>📝</span>
+                        <span>متن و ترجمه</span>
+                      </h3>
+                      <div style={{display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap'}}>
+                        <button
+                          type="button"
+                          className={`sync-scroll-btn ${syncScroll ? 'active' : ''}`}
+                          onClick={() => setSyncScroll(s => !s)}
+                          title="اتصال و همگام‌سازی اسکرول بین تصاویر و متن‌ها"
+                        >
+                          <span>{syncScroll ? '🔗' : '⛓️‍💥'}</span>
+                          <span>اسکرول همگام: {syncScroll ? 'فعال' : 'غیرفعال'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          className={`ocr small${copied === 'prompt' ? ' is-copied' : ''}`}
+                          onClick={() => void copyPrompt(true)}
+                          title="متن همراه پرامپت ترجمه برای هوش مصنوعی"
+                        >
+                          {copied === 'prompt' ? 'کپی شد ✓' : 'کپی با پرامپت'}
+                        </button>
+                        <button
+                          type="button"
+                          className={`ghost small${copied === 'text' ? ' is-copied' : ''}`}
+                          onClick={() => void copyPrompt(false)}
+                          title="فقط متن‌های استخراج‌شده بدون پرامپت"
+                        >
+                          {copied === 'text' ? 'کپی شد ✓' : 'کپی متن'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="step2-text-scroll">
+                      <div className="step2-textarea-box">
+                        <label className="wizard-subtitle" style={{margin: 0, fontSize: '0.88rem'}}>
+                          متن ترجمه‌شده (فارسی):
+                        </label>
+                        <textarea
+                          ref={persianTextRef}
+                          onScroll={handleTextScroll}
+                          className="batch-text"
+                          dir="rtl"
+                          aria-label="متن ترجمه‌شده"
+                          value={translated}
+                          placeholder="متن ترجمه‌شده را اینجا بچسبانید..."
+                          onChange={event => setTranslated(event.target.value)}
                         />
                       </div>
-                    ))}
+
+                      <div className="step2-textarea-box">
+                        <label className="wizard-subtitle" style={{margin: 0, fontSize: '0.88rem'}}>
+                          متن استخراج‌شده (انگلیسی):
+                        </label>
+                        <textarea
+                          ref={englishTextRef}
+                          onScroll={handleTextScroll}
+                          className="batch-text"
+                          readOnly
+                          dir="ltr"
+                          aria-label="متن استخراج‌شده"
+                          value={combined}
+                        />
+                      </div>
+                    </div>
                   </div>
-                </figure>
+                </div>
               )}
-
-              <div className="wizard-nav start">
-                <button
-                  type="button"
-                  className={`ocr${copied === 'prompt' ? ' is-copied' : ''}`}
-                  onClick={() => void copyPrompt(true)}
-                  aria-live="polite"
-                  title="متن همراه پرامپت ترجمه برای هوش مصنوعی"
-                >
-                  {copied === 'prompt' ? 'کپی شد ✓' : 'کپی با پرامپت'}
-                </button>
-                <button
-                  type="button"
-                  className={`ghost${copied === 'text' ? ' is-copied' : ''}`}
-                  onClick={() => void copyPrompt(false)}
-                  aria-live="polite"
-                  title="فقط متن‌های استخراج‌شده بدون پرامپت"
-                >
-                  {copied === 'text' ? 'کپی شد ✓' : 'کپی فقط متن'}
-                </button>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => saveBlob(new Blob([combined], {type: 'text/plain;charset=utf-8'}), 'texts.txt')}
-                >
-                  ذخیرهٔ به‌صورت فایل
-                </button>
-              </div>
-
-              <textarea className="batch-text" readOnly dir="ltr" aria-label="متن استخراج‌شده" value={combined} />
-
-              <h3 className="wizard-subtitle">متن ترجمه‌شده</h3>
-              <textarea className="batch-text" dir="rtl" aria-label="متن ترجمه‌شده" value={translated}
-                placeholder="متن ترجمه‌شده را اینجا بچسبانید..."
-                onChange={event => setTranslated(event.target.value)} />
 
               <div className="wizard-nav">
                 <button type="button" className="ghost" disabled={busy !== null} onClick={() => setBatchStep(1)}>
@@ -1747,7 +2582,11 @@ export function BatchPanel({
                   <button
                     type="button"
                     className={`ghost small ${manualTool === 'brush' ? 'is-active' : ''}`}
-                    onClick={() => setManualTool(manualTool === 'brush' ? 'none' : 'brush')}
+                    onClick={() => {
+                      setManualTool(manualTool === 'brush' ? 'none' : 'brush');
+                      setActiveSelection(null);
+                      setClearSignal(c => c + 1);
+                    }}
                     title="رنگ‌آمیزی آزاد روی متن‌ها و واترمارک‌های جا مانده"
                   >
                     🖌️ قلم‌مو
@@ -1755,10 +2594,38 @@ export function BatchPanel({
                   <button
                     type="button"
                     className={`ghost small ${manualTool === 'box' ? 'is-active' : ''}`}
-                    onClick={() => setManualTool(manualTool === 'box' ? 'none' : 'box')}
+                    onClick={() => {
+                      setManualTool(manualTool === 'box' ? 'none' : 'box');
+                      setActiveSelection(null);
+                      setClearSignal(c => c + 1);
+                    }}
                     title="کشیدن کادر مستطیلی دور واترمارک"
                   >
                     🔲 کادر انتخابی
+                  </button>
+                  <button
+                    type="button"
+                    className={`ghost small ${manualTool === 'patch' ? 'is-active' : ''}`}
+                    onClick={() => {
+                      setManualTool(manualTool === 'patch' ? 'none' : 'patch');
+                      setActiveSelection(null);
+                      setClearSignal(c => c + 1);
+                    }}
+                    title="الگوبرداری از یک کادر تمیز و الصاق روی واترمارک/متن"
+                  >
+                    🩹 وصله (الگوبرداری)
+                  </button>
+                  <button
+                    type="button"
+                    className={`ghost small ${manualTool === 'text' ? 'is-active' : ''}`}
+                    onClick={() => {
+                      setManualTool(manualTool === 'text' ? 'none' : 'text');
+                      setActiveSelection(null);
+                      setClearSignal(c => c + 1);
+                    }}
+                    title="درج دستی متن فارسی با فونت و اندازه دلخواه روی تصویر"
+                  >
+                    ✍️ درج متن
                   </button>
                   {manualTool === 'brush' && (
                     <label className="manual-brush-slider">
@@ -1773,21 +2640,180 @@ export function BatchPanel({
                       <span>{brushSize}px</span>
                     </label>
                   )}
+                  {manualTool === 'patch' && !activeSelection && (
+                    <span style={{fontSize: '12px', color: '#a0ffe0', marginInlineStart: '6px'}}>
+                      کادر قرمز را دور واترمارک بکشید و کادر آبی را روی بافت تمیز بگذارید.
+                    </span>
+                  )}
+                  {manualTool === 'text' && !activeSelection && (
+                    <span style={{fontSize: '12px', color: '#c084fc', marginInlineStart: '6px'}}>
+                      کادر متن را روی بالن یا تصویر بکشید و متن فارسی را در کادر زیر بنویسید.
+                    </span>
+                  )}
+                  {manualTool === 'text' && (
+                    <div className="manual-text-panel" role="group" aria-label="تنظیمات درج متن">
+                      <div className="manual-text-row">
+                        <textarea
+                          className="manual-text-input"
+                          placeholder="متن فارسی دیالوگ را اینجا بنویسید..."
+                          value={customText}
+                          onChange={e => setCustomText(e.target.value)}
+                          rows={2}
+                          dir="rtl"
+                        />
+                      </div>
+                      <div className="manual-text-controls">
+                        <div className="manual-text-group">
+                          <label>فونت:</label>
+                          <select
+                            value={customFontId}
+                            onChange={e => setCustomFontId(e.target.value)}
+                            className="manual-text-select"
+                          >
+                            <option value="">پیش‌فرض (وزیرمتن)</option>
+                            {fontsList.map(f => (
+                              <option key={f.id} value={f.id}>{f.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="manual-text-group">
+                          <label>اندازه:</label>
+                          <button
+                            type="button"
+                            className="ghost small"
+                            onClick={() => setCustomFontSize(s => Math.max(10, s - 2))}
+                          >−</button>
+                          <span className="manual-text-size-val">{customFontSize}</span>
+                          <button
+                            type="button"
+                            className="ghost small"
+                            onClick={() => setCustomFontSize(s => Math.min(100, s + 2))}
+                          >+</button>
+                        </div>
+                        <div className="manual-text-group">
+                          <label>رنگ:</label>
+                          <button
+                            type="button"
+                            className={`ghost small${customColor === '#141414' && customStroke ? ' is-active' : ''}`}
+                            onClick={() => { setCustomColor('#141414'); setCustomStroke(true); }}
+                            title="مشکی با هاله سفید (استاندارد کمیک)"
+                          >
+                            مشکی/سفید
+                          </button>
+                          <button
+                            type="button"
+                            className={`ghost small${customColor === '#ffffff' && customStroke ? ' is-active' : ''}`}
+                            onClick={() => { setCustomColor('#ffffff'); setCustomStroke(true); }}
+                            title="سفید با هاله مشکی"
+                          >
+                            سفید/مشکی
+                          </button>
+                          <button
+                            type="button"
+                            className={`ghost small${customColor === '#141414' && !customStroke ? ' is-active' : ''}`}
+                            onClick={() => { setCustomColor('#141414'); setCustomStroke(false); }}
+                            title="مشکی خالص"
+                          >
+                            مشکی خالص
+                          </button>
+                        </div>
+                        <div className="manual-text-group">
+                          <label>چیدمان:</label>
+                          <button
+                            type="button"
+                            className={`ghost small${customAlign === 'center' ? ' is-active' : ''}`}
+                            onClick={() => setCustomAlign('center')}
+                          >
+                            وسط‌چین
+                          </button>
+                          <button
+                            type="button"
+                            className={`ghost small${customAlign === 'right' ? ' is-active' : ''}`}
+                            onClick={() => setCustomAlign('right')}
+                          >
+                            راست‌چین
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          className="ocr small"
+                          disabled={manualCleanBusy || !activeSelection?.box || !customText.trim()}
+                          onClick={() => void handleApplyText()}
+                          title="درج متن فارسی روی کادر انتخاب‌شده"
+                        >
+                          ✨ درج متن روی تصویر
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {activeSelection && (
+                    <div className="manual-action-pill">
+                      <span style={{fontSize: '12px', color: '#00ffcc', fontWeight: 600}}>
+                        {activeSelection.pageName || 'ناحیه انتخاب‌شده'}:
+                      </span>
+                      <button
+                        type="button"
+                        className="primary small"
+                        onClick={handleExecuteClean}
+                        disabled={manualCleanBusy}
+                        style={{padding: '3px 10px', fontSize: '12px'}}
+                      >
+                        {activeSelection.tool === 'patch'
+                          ? '✨ اعمال وصله'
+                          : activeSelection.tool === 'text'
+                          ? '✨ درج متن'
+                          : '✨ پاک‌سازی این بخش'}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost small"
+                        onClick={() => {
+                          setActiveSelection(null);
+                          setClearSignal(c => c + 1);
+                        }}
+                        disabled={manualCleanBusy}
+                        style={{padding: '3px 8px', fontSize: '12px'}}
+                      >
+                        ✕ لغو
+                      </button>
+                    </div>
+                  )}
                   {manualTool !== 'none' && (
                     <button
                       type="button"
                       className="ghost small"
-                      onClick={() => setManualTool('none')}
+                      onClick={handleUndoClean}
+                      disabled={manualCleanBusy}
+                      title="بازگردانی آخرین تغییر پاک‌سازی"
+                      style={{padding: '3px 8px', fontSize: '12px'}}
+                    >
+                      ↩️ Undo
+                    </button>
+                  )}
+                  {manualTool !== 'none' && (
+                    <button
+                      type="button"
+                      className="ghost small"
+                      onClick={() => {
+                        setManualTool('none');
+                        setActiveSelection(null);
+                        setClearSignal(c => c + 1);
+                      }}
                     >
                       ✕ غیرفعال‌سازی
                     </button>
+                  )}
+                  {manualStatus && (
+                    <span style={{fontSize: '11px', color: '#00ffcc', marginInlineStart: '6px'}}>
+                      {manualStatus}
+                    </span>
                   )}
                 </div>
               )}
 
               {pages.length > 0 && (
                 <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
-                    <figcaption>
+                    <figcaption style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px'}}>
                       <button
                         type="button"
                         className="ghost small"
@@ -1798,8 +2824,18 @@ export function BatchPanel({
                         aria-label="بزرگ‌نمایی"
                         title="بزرگ‌نمایی پیوستهٔ فصل"
                       >
-                        بزرگ‌نمایی تصویر
+                        بزرگ‌نمایی تصویر 🔍
                       </button>
+                      {pages.length > 10 && (
+                        <button
+                          type="button"
+                          className="ghost small"
+                          onClick={() => setShowAllCleanPages(prev => !prev)}
+                          style={{fontSize: '12px', padding: '3px 10px'}}
+                        >
+                          {showAllCleanPages ? 'بستن فهرست ▴' : `مشاهده همه (${pages.length} تصویر) ▾`}
+                        </button>
+                      )}
                     </figcaption>
                     <div
                       className="preview-thumb is-scroll batch-stream"
@@ -1812,7 +2848,7 @@ export function BatchPanel({
                         setPreviewModalOpen(true);
                       }}
                     >
-                      {pages.map((p, idx) => (
+                      {(showAllCleanPages ? pages : pages.slice(0, 10)).map((p, idx) => (
                         <div key={p.jobId} className="batch-stream-item" style={{position: 'relative'}}>
                           <span className="batch-stream-tag">
                             {idx + 1}. {p.name}
@@ -1821,25 +2857,47 @@ export function BatchPanel({
                           <img
                             src={
                               p.state === 'done'
-                                ? (isPlainPage(p)
-                                    ? `/api/jobs/${p.jobId}/display/source?width=800&v=${chapterVersion}`
-                                    : `/api/jobs/${p.jobId}/display/clean?width=800&v=${chapterVersion}`)
+                                ? `/api/jobs/${p.jobId}/display/clean?width=800&v=${chapterVersion}`
                                 : `/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`
                             }
                             alt={`صفحهٔ ${p.page}: ${p.name}`}
                             loading="lazy"
                           />
-                          {manualTool !== 'none' && !isPlainPage(p) && (
+                          {manualTool !== 'none' && (
                             <ManualCleanOverlay
                               jobId={p.jobId}
+                              pageIndex={idx}
+                              pageName={`صفحهٔ ${p.page}`}
                               tool={manualTool}
                               brushSize={brushSize}
+                              textPreview={customText}
+                              clearSignal={clearSignal}
+                              activeJobId={activeSelection?.jobId}
+                              onSelectionChange={sel => {
+                                if (sel) {
+                                  setActiveSelection(sel);
+                                } else if (activeSelection?.jobId === p.jobId) {
+                                  setActiveSelection(null);
+                                }
+                              }}
                               onCleanDone={() => setChapterVersion(Date.now())}
                             />
                           )}
                         </div>
                       ))}
                     </div>
+                    {pages.length > 10 && (
+                      <div style={{display: 'flex', justifyContent: 'center', margin: '8px 0'}}>
+                        <button
+                          type="button"
+                          className="ghost small"
+                          onClick={() => setShowAllCleanPages(prev => !prev)}
+                          style={{fontSize: '12px', padding: '4px 14px'}}
+                        >
+                          {showAllCleanPages ? 'بستن فهرست ▴' : `مشاهده همه (${pages.length} تصویر) ▾`}
+                        </button>
+                      </div>
+                    )}
                   </figure>
               )}
 
@@ -2129,6 +3187,10 @@ export function BatchPanel({
         pages={pages}
         chapterVersion={chapterVersion}
         kind={previewModalKind}
+        fontsList={fontsList}
+        onPageCleaned={jobId => {
+          setPages(prev => prev.map(p => (p.jobId === jobId ? {...p, manualCleaned: true, noText: false} : p)));
+        }}
         onCleanDone={() => setChapterVersion(Date.now())}
       />
     </div>

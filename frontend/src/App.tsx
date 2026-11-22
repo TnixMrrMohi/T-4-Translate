@@ -5,6 +5,7 @@ import {Overlay, useOverlayIsolation} from './Overlay';
 import {TextLayoutEditor} from './TextLayoutEditor';
 import SystemPanel from './SystemPanel';
 import {BatchPanel} from './BatchPanel';
+import {ProjectManagerModal} from './ProjectManagerModal';
 import {copyToClipboard} from './clipboard';
 import type {LayoutDoc, TextOverrides} from './TextLayoutEditor';
 import './style.css';
@@ -1090,6 +1091,29 @@ export function App() {
     }
     return false;
   });
+
+  const [projectModalOpen, setProjectModalOpen] = useState(false);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('t4-active-project-id');
+    } catch {
+      return null;
+    }
+  });
+
+  const [initialBatchFiles, setInitialBatchFiles] = useState<File[]>([]);
+
+  const handleSelectProject = (projId: string, files?: File[]) => {
+    setActiveProjectId(projId);
+    if (files && files.length > 0) {
+      setInitialBatchFiles(files);
+    }
+    try {
+      localStorage.setItem('t4-active-project-id', projId);
+    } catch {}
+    setBatchSeen(true);
+    setBatchOpen(true);
+  };
   const [batchResetSignal, setBatchResetSignal] = useState(0);
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchHasWork, setBatchHasWork] = useState(false);
@@ -2144,6 +2168,11 @@ export function App() {
           resetSignal={batchResetSignal}
           onBusyChange={setBatchBusy}
           onHasWorkChange={setBatchHasWork}
+          activeProjectId={activeProjectId}
+          onActiveProjectChange={handleSelectProject}
+          onOpenProjectManager={() => setProjectModalOpen(true)}
+          initialFiles={initialBatchFiles}
+          onClearInitialFiles={() => setInitialBatchFiles([])}
         />
       )}
 
@@ -2467,24 +2496,6 @@ export function App() {
                       {copied === 'prompt' ? 'کپی شد ✓' : 'کپی با پرامپت'}
                     </button>
                   </div>
-                  <div className="text-field">
-                    <div className="text-field-head">
-                      <label className="text-field-title" htmlFor="numbered-source">متن انگلیسی</label>
-                      <span className="text-field-meta">
-                        {source.items.length.toLocaleString('fa-IR')} بالن · فقط خواندنی
-                      </span>
-                    </div>
-                    <textarea
-                      id="numbered-source"
-                      className="text-box source"
-                      readOnly
-                      dir="ltr"
-                      rows={9}
-                      spellCheck={false}
-                      value={numberedSource}
-                    />
-                  </div>
-
                   {source.items.length > 0 ? (
                     <>
                       <div className="text-field">
@@ -2504,6 +2515,25 @@ export function App() {
                         />
                       </div>
                       {warnings && <p className="wizard-note">{warnings}</p>}
+
+                      <div className="text-field">
+                        <div className="text-field-head">
+                          <label className="text-field-title" htmlFor="numbered-source">متن انگلیسی</label>
+                          <span className="text-field-meta">
+                            {source.items.length.toLocaleString('fa-IR')} بالن · فقط خواندنی
+                          </span>
+                        </div>
+                        <textarea
+                          id="numbered-source"
+                          className="text-box source"
+                          readOnly
+                          dir="ltr"
+                          rows={9}
+                          spellCheck={false}
+                          value={numberedSource}
+                        />
+                      </div>
+
                       <div className="wizard-nav">
                         <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
                         <button type="button" className="ocr" disabled={busy || loadingData || !translation.trim()} onClick={() => void saveTranslation()}>
@@ -2513,6 +2543,21 @@ export function App() {
                     </>
                   ) : (
                     <>
+                      <div className="text-field">
+                        <div className="text-field-head">
+                          <label className="text-field-title" htmlFor="numbered-source">متن انگلیسی</label>
+                          <span className="text-field-meta">۰ بالن · فقط خواندنی</span>
+                        </div>
+                        <textarea
+                          id="numbered-source"
+                          className="text-box source"
+                          readOnly
+                          dir="ltr"
+                          rows={9}
+                          spellCheck={false}
+                          value={numberedSource}
+                        />
+                      </div>
                       <p className="wizard-note">متنی شناسایی نشد.</p>
                       <div className="wizard-nav">
                         <button type="button" className="ghost" onClick={() => goToStep(1)}>مرحلهٔ قبل</button>
@@ -2754,6 +2799,13 @@ export function App() {
       )}
 
       {dialog && <Dialog request={dialog} onClose={closeDialog} />}
+
+      <ProjectManagerModal
+        open={projectModalOpen}
+        activeProjectId={activeProjectId || undefined}
+        onClose={() => setProjectModalOpen(false)}
+        onSelectProject={handleSelectProject}
+      />
     </main>
   );
 }
