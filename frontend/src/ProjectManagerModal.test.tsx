@@ -14,6 +14,9 @@ describe('ProjectManagerModal', () => {
       donePages: 8,
       diskSizeMb: 12.5,
       sourceMode: 'internal',
+      totalChapters: 2,
+      chapterName: 'چپتر ۱',
+      chapterNumber: 1,
     },
     {
       id: 'proj_2',
@@ -46,6 +49,21 @@ describe('ProjectManagerModal', () => {
             step: 1,
             pages: [],
           }),
+        };
+      }
+      if (url === '/api/projects/proj_1/chapters') {
+        return {
+          ok: true,
+          json: async () => [
+            {id: 'chap_01', name: 'چپتر ۱', chapterNumber: 1, step: 2, totalPages: 10},
+            {id: 'chap_02', name: 'چپتر ۲', chapterNumber: 2, step: 1, totalPages: 15},
+          ],
+        };
+      }
+      if (url === '/api/projects/proj_1/chapters/chap_02/activate') {
+        return {
+          ok: true,
+          json: async () => ({ok: true}),
         };
       }
       if (url.startsWith('/api/projects/') && init?.method === 'DELETE') {
@@ -228,5 +246,41 @@ describe('ProjectManagerModal', () => {
 
     // دکمه ایجاد همچنان نباید وجود داشته باشد
     expect(screen.queryByRole('button', {name: /ایجاد و شروع پروژه/i})).not.toBeInTheDocument();
+  });
+
+  it('نمایش نشان چندچپتری و باز شدن کشوی چپترها و سوئیچ به چپتر دلخواه', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(
+      <ProjectManagerModal
+        open={true}
+        onClose={vi.fn()}
+        onSelectProject={onSelect}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('پروژه تست ۱')).toBeInTheDocument();
+    });
+
+    // نشان تعداد چپترها
+    expect(screen.getByText(/📚.*چپتر/i)).toBeInTheDocument();
+
+    // کلیک روی دکمه مشاهده چپترها
+    const chaptersToggleBtns = screen.getAllByRole('button', {name: /چپترها/i});
+    await user.click(chaptersToggleBtns[0]);
+
+    // بررسی بارگذاری چپترهای این پروژه
+    await waitFor(() => {
+      expect(screen.getByText(/فهرست چپترهای این پروژه/i)).toBeInTheDocument();
+      expect(screen.getByText(/چپتر ۲/i)).toBeInTheDocument();
+    });
+
+    // کلیک روی چپتر ۲ برای فعال‌سازی و ورود
+    const chap2Card = screen.getByText(/چپتر ۲/i).closest('.project-chapter-item');
+    expect(chap2Card).not.toBeNull();
+    await user.click(chap2Card!);
+
+    expect(onSelect).toHaveBeenCalledWith('proj_1');
   });
 });

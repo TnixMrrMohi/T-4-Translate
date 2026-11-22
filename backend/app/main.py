@@ -1068,7 +1068,10 @@ def read_translation(job_id: str) -> dict:
 
 def _render_artifacts(workspace: Path) -> list[Path]:
     """فایل‌های پیش‌نمایش رندر که با تغییر پاک‌سازی منقضی می‌شوند."""
-    return [workspace / "render.png", workspace / "render-meta.json"]
+    artifacts = [workspace / "render.png", workspace / "render-meta.json"]
+    for p in workspace.glob("render-*.webp"):
+        artifacts.append(p)
+    return artifacts
 
 
 def _drop_render(workspace: Path) -> None:
@@ -1703,8 +1706,12 @@ def _clean_stamp_matches(workspace: Path, translation: dict) -> bool:
         stamp = json.loads((workspace / "clean-meta.json").read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return False
-    return stamp == {"sourceRevision": translation["sourceRevision"],
-                     "translations": translation["translations"]}
+    if not isinstance(stamp, dict):
+        return False
+    return (
+        stamp.get("sourceRevision") == translation.get("sourceRevision")
+        and stamp.get("translations") == translation.get("translations")
+    )
 
 
 @app.post("/api/jobs/{job_id}/render")
@@ -2897,6 +2904,14 @@ class ScanFolderInput(BaseModel):
     path: str
 
 
+class CreateChapterInput(BaseModel):
+    name: str | None = None
+    chapter_number: int | None = None
+    source_path: str | None = None
+    source_mode: str = "internal"
+    settings: dict | None = None
+
+
 @app.get("/api/projects")
 def list_projects() -> list:
     pm = ProjectManager()
@@ -2954,6 +2969,65 @@ async def browse_project_folder() -> dict:
     from app.projects import pick_folder_native
     path = await asyncio.to_thread(pick_folder_native)
     return {"path": path, "canceled": not bool(path)}
+
+
+@app.get("/api/projects/{project_id}/chapters")
+def list_project_chapters(project_id: str) -> list:
+    pm = ProjectManager()
+    return pm.list_chapters(project_id)
+
+
+@app.post("/api/projects/{project_id}/chapters")
+def create_project_chapter(project_id: str, data: CreateChapterInput) -> dict:
+    pm = ProjectManager()
+    try:
+        return pm.create_chapter(
+            project_id=project_id,
+            name=data.name,
+            chapter_number=data.chapter_number,
+            source_path=data.source_path,
+            source_mode=data.source_mode,
+            settings=data.settings,
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from None
+
+
+@app.get("/api/projects/{project_id}/chapters/{chapter_id}")
+def get_project_chapter(project_id: str, chapter_id: str) -> dict:
+    pm = ProjectManager()
+    ch = pm.get_chapter(project_id, chapter_id)
+    if ch is None:
+        raise HTTPException(404, "چپتر یافت نشد.")
+    return ch
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_id}/save-state")
+def save_project_chapter_state(project_id: str, chapter_id: str, data: ProjectStateInput) -> dict:
+    pm = ProjectManager()
+    state_dict = data.model_dump(exclude_unset=True)
+    ch = pm.save_chapter_state(project_id, chapter_id, state_dict)
+    if ch is None:
+        raise HTTPException(404, "چپتر یافت نشد.")
+    return ch
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_id}/activate")
+def activate_project_chapter(project_id: str, chapter_id: str) -> dict:
+    pm = ProjectManager()
+    proj = pm.set_active_chapter(project_id, chapter_id)
+    if proj is None:
+        raise HTTPException(404, "چپتر یا پروژه یافت نشد.")
+    return proj
+
+
+@app.delete("/api/projects/{project_id}/chapters/{chapter_id}")
+def delete_project_chapter(project_id: str, chapter_id: str) -> dict:
+    pm = ProjectManager()
+    success = pm.delete_chapter(project_id, chapter_id)
+    if not success:
+        raise HTTPException(404, "چپتر یافت نشد.")
+    return {"id": chapter_id, "ok": True}
 
 
 

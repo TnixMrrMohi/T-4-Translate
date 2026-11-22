@@ -1,5 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {ChapterPage} from './ChapterPage';
+import {ChapterCreateModal} from './ChapterCreateModal';
 import {ManualCleanOverlay, SelectionInfo} from './ManualCleanOverlay';
 import {Overlay} from './Overlay';
 import {copyToClipboard} from './clipboard';
@@ -48,7 +49,7 @@ export const PROMO_KEY = 't4-promo';
 export const SLANTED_KEY = 't4-filter-slanted';
 export const PROMO_SITE = 'moonb.ir';
 export const PROMO_RULES: Record<PromoAction, string> = {
-  replace: `- اگر شماره‌ای متن تبلیغاتی بود (واترمارک، آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال یا شبکهٔ اجتماعی)، آن را ترجمه نکن و به‌جای ترجمه فقط «${PROMO_SITE}» بنویس.`,
+  replace: `- الزامی و حیاتی (واترمارک و آدرس سایت): اگر شماره‌ای متن تبلیغاتی، واترمارک، آدرس سایت (مانند vortexscans.com، asurascans و غیره) یا نام تیم اسکن/ترجمه بود، یا لحن آن «متن تبلیغاتی» ذکر شده بود، به هیچ عنوان آن شماره را حذف نکن! حتماً شماره را حفظ کن و به‌جای ترجمه فقط «${PROMO_SITE}» بنویس (مثال: «[1] ${PROMO_SITE}»). به یاد داشته باش که عدم درج این خطوط باعث برهم خوردن شماره‌گذاری می‌شود.`,
   remove: '- اگر شماره‌ای متن تبلیغاتی بود (واترمارک، آدرس سایت، نام مترجم/اسکنر، تبلیغ کانال یا شبکهٔ اجتماعی)، آن شماره را کاملاً حذف کن و در پاسخ نیاور.',
 };
 
@@ -392,6 +393,11 @@ function BatchOcrModal({
       setModalClearSignal(c => c + 1);
       setModalStatus('متن با موفقیت روی تصویر درج شد.');
       setTimeout(() => setModalStatus(''), 2500);
+      if (kind === 'render') {
+        try {
+          await fetch(`/api/jobs/${targetJobId}/render`, {method: 'POST'});
+        } catch {}
+      }
       if (onPageCleaned) onPageCleaned(targetJobId);
       if (onCleanDone) onCleanDone();
     } catch (err) {
@@ -442,6 +448,11 @@ function BatchOcrModal({
       setModalClearSignal(c => c + 1);
       setModalStatus('ناحیه با موفقیت پاک‌سازی شد.');
       setTimeout(() => setModalStatus(''), 2500);
+      if (kind === 'render') {
+        try {
+          await fetch(`/api/jobs/${targetJobId}/render`, {method: 'POST'});
+        } catch {}
+      }
       if (onPageCleaned) onPageCleaned(targetJobId);
       if (onCleanDone) onCleanDone();
     } catch (err) {
@@ -472,6 +483,11 @@ function BatchOcrModal({
       setModalClearSignal(c => c + 1);
       setModalStatus('تغییر قبلی با موفقیت بازگردانده شد.');
       setTimeout(() => setModalStatus(''), 2500);
+      if (kind === 'render') {
+        try {
+          await fetch(`/api/jobs/${jId}/render`, {method: 'POST'});
+        } catch {}
+      }
       if (onCleanDone) onCleanDone();
     } catch (err) {
       setModalStatus(err instanceof Error ? err.message : 'خطا در بازگردانی');
@@ -533,7 +549,7 @@ function BatchOcrModal({
           <span style={{color: '#7d9294', fontSize: '12px', marginInlineStart: '8px'}}>(Esc برای بستن)</span>
         </span>
         <span className="modal-actions">
-          {kind === 'clean' && (
+          {(kind === 'clean' || kind === 'render') && (
             <div className="manual-toolbar" style={{margin: '0 8px', padding: '2px 8px', display: 'inline-flex'}} role="toolbar" aria-label="ابزارهای ترمیم دستی در بزرگ‌نمایی">
               <span className="manual-toolbar-label">ترمیم دستی:</span>
               <button
@@ -572,6 +588,18 @@ function BatchOcrModal({
               >
                 🩹 وصله (الگوبرداری)
               </button>
+              <button
+                type="button"
+                className={`ghost small ${modalTool === 'text' ? 'is-active' : ''}`}
+                onClick={() => {
+                  setModalTool(modalTool === 'text' ? 'none' : 'text');
+                  setModalSelection(null);
+                  setModalClearSignal(c => c + 1);
+                }}
+                title="درج دستی متن فارسی"
+              >
+                ✍️ درج متن
+              </button>
               {modalTool === 'brush' && (
                 <label className="manual-brush-slider">
                   اندازه:
@@ -589,6 +617,52 @@ function BatchOcrModal({
                 <span style={{fontSize: '11px', color: '#a0ffe0', marginInlineStart: '6px'}}>
                   کادر قرمز را دور واترمارک بکشید و کادر آبی را روی بافت تمیز بگذارید.
                 </span>
+              )}
+              {modalTool === 'text' && (
+                <div className="manual-text-panel" role="group" aria-label="تنظیمات درج متن" style={{display: 'inline-flex', alignItems: 'center', gap: '6px', margin: '0 4px'}}>
+                  <input
+                    type="text"
+                    className="manual-text-input"
+                    placeholder="متن فارسی..."
+                    value={modalCustomText}
+                    onChange={e => setModalCustomText(e.target.value)}
+                    dir="rtl"
+                    style={{width: '140px', padding: '3px 6px', fontSize: '12px'}}
+                  />
+                  <select
+                    value={modalCustomFontId}
+                    onChange={e => setModalCustomFontId(e.target.value)}
+                    className="manual-text-select"
+                    style={{fontSize: '11px', padding: '2px 4px'}}
+                  >
+                    <option value="">پیش‌فرض</option>
+                    {fontsList.map(f => (
+                      <option key={f.id} value={f.id}>{f.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="ghost small"
+                    onClick={() => setModalCustomFontSize(s => Math.max(10, s - 2))}
+                    style={{padding: '1px 5px', fontSize: '11px'}}
+                  >−</button>
+                  <span style={{fontSize: '11px', color: '#00ffcc'}}>{modalCustomFontSize}</span>
+                  <button
+                    type="button"
+                    className="ghost small"
+                    onClick={() => setModalCustomFontSize(s => Math.min(100, s + 2))}
+                    style={{padding: '1px 5px', fontSize: '11px'}}
+                  >+</button>
+                  <button
+                    type="button"
+                    className={`ghost small${modalCustomAlign === 'right' ? ' is-active' : ''}`}
+                    onClick={() => setModalCustomAlign(a => a === 'right' ? 'center' : 'right')}
+                    title={modalCustomAlign === 'right' ? 'راست‌چین' : 'وسط‌چین'}
+                    style={{padding: '1px 5px', fontSize: '11px'}}
+                  >
+                    {modalCustomAlign === 'right' ? '⯈ راست‌چین' : '☰ وسط‌چین'}
+                  </button>
+                </div>
               )}
               {modalSelection && (
                 <div className="manual-action-pill">
@@ -665,36 +739,57 @@ function BatchOcrModal({
           {pages.map((p, idx) => (
             <div key={p.jobId} style={{position: 'relative', width: '100%', lineHeight: 0}}>
               <span className="batch-stream-tag">{idx + 1}. {p.name}</span>
-              <img
-                src={
-                  kind === 'clean'
-                    ? `/api/jobs/${p.jobId}/display/clean?width=1400&v=${chapterVersion}`
-                    : `/api/jobs/${p.jobId}/display/${kind}?width=${kind === 'ocr' ? 1200 : 1400}&v=${chapterVersion}`
-                }
-                alt={`صفحهٔ ${p.page}: ${p.name}`}
-                style={{width: '100%', height: 'auto', display: 'block'}}
-              />
-              {kind === 'clean' && modalTool !== 'none' && (
-                <ManualCleanOverlay
+              {kind === 'render' ? (
+                <ChapterPage
                   jobId={p.jobId}
-                  pageIndex={idx}
-                  pageName={`صفحهٔ ${p.page}`}
+                  label={p.name}
+                  index={p.page}
+                  version={chapterVersion}
+                  plain={isPlainPage(p)}
                   tool={modalTool}
                   brushSize={modalBrushSize}
                   textPreview={modalCustomText}
                   clearSignal={modalClearSignal}
                   activeJobId={modalSelection?.jobId}
-                  onSelectionChange={sel => {
-                    if (sel) {
-                      setModalSelection(sel);
-                    } else if (modalSelection?.jobId === p.jobId) {
-                      setModalSelection(null);
-                    }
-                  }}
+                  onSelectionChange={setModalSelection}
                   onCleanDone={() => {
                     if (onCleanDone) onCleanDone();
                   }}
                 />
+              ) : (
+                <>
+                  <img
+                    src={
+                      kind === 'clean'
+                        ? `/api/jobs/${p.jobId}/display/clean?width=1400&v=${chapterVersion}`
+                        : `/api/jobs/${p.jobId}/display/${kind}?width=${kind === 'ocr' ? 1200 : 1400}&v=${chapterVersion}`
+                    }
+                    alt={`صفحهٔ ${p.page}: ${p.name}`}
+                    style={{width: '100%', height: 'auto', display: 'block'}}
+                  />
+                  {kind === 'clean' && modalTool !== 'none' && (
+                    <ManualCleanOverlay
+                      jobId={p.jobId}
+                      pageIndex={idx}
+                      pageName={`صفحهٔ ${p.page}`}
+                      tool={modalTool}
+                      brushSize={modalBrushSize}
+                      textPreview={modalCustomText}
+                      clearSignal={modalClearSignal}
+                      activeJobId={modalSelection?.jobId}
+                      onSelectionChange={sel => {
+                        if (sel) {
+                          setModalSelection(sel);
+                        } else if (modalSelection?.jobId === p.jobId) {
+                          setModalSelection(null);
+                        }
+                      }}
+                      onCleanDone={() => {
+                        if (onCleanDone) onCleanDone();
+                      }}
+                    />
+                  )}
+                </>
               )}
             </div>
           ))}
@@ -770,9 +865,31 @@ export function BatchPanel({
     sourceMode?: string;
     sourcePath?: string;
   } | null>(null);
+  const [chapters, setChapters] = useState<Array<{id: string; name: string; chapterNumber: number}>>([]);
+  const [activeChapterId, setActiveChapterId] = useState<string>('');
+  const [chapterCreateOpen, setChapterCreateOpen] = useState(false);
   const [folderFiles, setFolderFiles] = useState<Array<{name: string; path: string; size: number; extension: string}>>([]);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | ''>('');
   const saveTimeoutRef = useRef<number | null>(null);
+
+  const handleSwitchChapter = async (targetChapterId: string) => {
+    if (!activeProjectId || targetChapterId === activeChapterId) return;
+    setActiveChapterId(targetChapterId);
+    try {
+      await fetch(`/api/projects/${activeProjectId}/chapters/${targetChapterId}/activate`, {method: 'POST'});
+      const res = await fetch(`/api/projects/${activeProjectId}/chapters/${targetChapterId}`);
+      if (res.ok) {
+        const ch = await res.json();
+        setPages(ch.pages || []);
+        setTranslated(ch.translated || '');
+        setOutFiles(ch.outFiles || []);
+        setBatchStep(ch.step || 1);
+        setChapterVersion(Date.now());
+      }
+    } catch (e) {
+      console.error('Failed to switch chapter:', e);
+    }
+  };
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [showAllFiles, setShowAllFiles] = useState(false);
@@ -809,6 +926,13 @@ export function BatchPanel({
           sourceMode: proj.sourceMode,
           sourcePath: proj.sourcePath,
         });
+        if (Array.isArray(proj.chapters) && proj.chapters.length > 0) {
+          setChapters(proj.chapters);
+          setActiveChapterId(proj.activeChapterId || proj.chapters[0]?.id || '');
+        } else {
+          setChapters([]);
+          setActiveChapterId('');
+        }
         if (Array.isArray(proj.pages) && proj.pages.length > 0) {
           setPages(proj.pages);
           if (typeof proj.translated === 'string') setTranslated(proj.translated);
@@ -946,6 +1070,11 @@ export function BatchPanel({
       setClearSignal(c => c + 1);
       setManualStatus('متن با موفقیت روی تصویر درج شد.');
       setTimeout(() => setManualStatus(''), 2500);
+      if (batchStep === 4) {
+        try {
+          await fetch(`/api/jobs/${targetJobId}/render`, {method: 'POST'});
+        } catch {}
+      }
       setPages(prev => prev.map(p => p.jobId === targetJobId ? {...p, manualCleaned: true, noText: false} : p));
       setChapterVersion(Date.now());
     } catch (err) {
@@ -996,6 +1125,11 @@ export function BatchPanel({
       setClearSignal(c => c + 1);
       setManualStatus('ناحیه با موفقیت پاک‌سازی شد.');
       setTimeout(() => setManualStatus(''), 2500);
+      if (batchStep === 4) {
+        try {
+          await fetch(`/api/jobs/${targetJobId}/render`, {method: 'POST'});
+        } catch {}
+      }
       setPages(prev => prev.map(p => p.jobId === targetJobId ? {...p, manualCleaned: true, noText: false} : p));
       setChapterVersion(Date.now());
     } catch (err) {
@@ -1026,6 +1160,11 @@ export function BatchPanel({
       setClearSignal(c => c + 1);
       setManualStatus('تغییر قبلی با موفقیت بازگردانده شد.');
       setTimeout(() => setManualStatus(''), 2500);
+      if (batchStep === 4) {
+        try {
+          await fetch(`/api/jobs/${jId}/render`, {method: 'POST'});
+        } catch {}
+      }
       setChapterVersion(Date.now());
     } catch (err) {
       setManualStatus(err instanceof Error ? err.message : 'خطا در بازگردانی');
@@ -1919,6 +2058,241 @@ export function BatchPanel({
     }
   };
 
+  const renderManualToolbar = () => (
+    <div className="manual-toolbar" role="toolbar" aria-label="ابزارهای پاک‌سازی و ترمیم دستی">
+      <span className="manual-toolbar-label">ترمیم دستی:</span>
+      <button
+        type="button"
+        className={`ghost small ${manualTool === 'brush' ? 'is-active' : ''}`}
+        onClick={() => {
+          setManualTool(manualTool === 'brush' ? 'none' : 'brush');
+          setActiveSelection(null);
+          setClearSignal(c => c + 1);
+        }}
+        title="رنگ‌آمیزی آزاد روی متن‌ها و واترمارک‌های جا مانده"
+      >
+        🖌️ قلم‌مو
+      </button>
+      <button
+        type="button"
+        className={`ghost small ${manualTool === 'box' ? 'is-active' : ''}`}
+        onClick={() => {
+          setManualTool(manualTool === 'box' ? 'none' : 'box');
+          setActiveSelection(null);
+          setClearSignal(c => c + 1);
+        }}
+        title="کشیدن کادر مستطیلی دور واترمارک"
+      >
+        🔲 کادر انتخابی
+      </button>
+      <button
+        type="button"
+        className={`ghost small ${manualTool === 'patch' ? 'is-active' : ''}`}
+        onClick={() => {
+          setManualTool(manualTool === 'patch' ? 'none' : 'patch');
+          setActiveSelection(null);
+          setClearSignal(c => c + 1);
+        }}
+        title="الگوبرداری از یک کادر تمیز و الصاق روی واترمارک/متن"
+      >
+        🩹 وصله (الگوبرداری)
+      </button>
+      <button
+        type="button"
+        className={`ghost small ${manualTool === 'text' ? 'is-active' : ''}`}
+        onClick={() => {
+          setManualTool(manualTool === 'text' ? 'none' : 'text');
+          setActiveSelection(null);
+          setClearSignal(c => c + 1);
+        }}
+        title="درج دستی متن فارسی با فونت و اندازه دلخواه روی تصویر"
+      >
+        ✍️ درج متن
+      </button>
+      {manualTool === 'brush' && (
+        <label className="manual-brush-slider">
+          اندازه:
+          <input
+            type="range"
+            min="10"
+            max="100"
+            value={brushSize}
+            onChange={e => setBrushSize(Number(e.target.value))}
+          />
+          <span>{brushSize}px</span>
+        </label>
+      )}
+      {manualTool === 'patch' && !activeSelection && (
+        <span style={{fontSize: '12px', color: '#a0ffe0', marginInlineStart: '6px'}}>
+          کادر قرمز را دور واترمارک بکشید و کادر آبی را روی بافت تمیز بگذارید.
+        </span>
+      )}
+      {manualTool === 'text' && !activeSelection && (
+        <span style={{fontSize: '12px', color: '#c084fc', marginInlineStart: '6px'}}>
+          کادر متن را روی بالن یا تصویر بکشید و متن فارسی را در کادر زیر بنویسید.
+        </span>
+      )}
+      {manualTool === 'text' && (
+        <div className="manual-text-panel" role="group" aria-label="تنظیمات درج متن">
+          <div className="manual-text-row">
+            <textarea
+              className="manual-text-input"
+              placeholder="متن فارسی دیالوگ را اینجا بنویسید..."
+              value={customText}
+              onChange={e => setCustomText(e.target.value)}
+              rows={2}
+              dir="rtl"
+            />
+          </div>
+          <div className="manual-text-controls">
+            <div className="manual-text-group">
+              <label>فونت:</label>
+              <select
+                value={customFontId}
+                onChange={e => setCustomFontId(e.target.value)}
+                className="manual-text-select"
+              >
+                <option value="">پیش‌فرض (وزیرمتن)</option>
+                {fontsList.map(f => (
+                  <option key={f.id} value={f.id}>{f.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="manual-text-group">
+              <label>اندازه:</label>
+              <button
+                type="button"
+                className="ghost small"
+                onClick={() => setCustomFontSize(s => Math.max(10, s - 2))}
+              >−</button>
+              <span className="manual-text-size-val">{customFontSize}</span>
+              <button
+                type="button"
+                className="ghost small"
+                onClick={() => setCustomFontSize(s => Math.min(100, s + 2))}
+              >+</button>
+            </div>
+            <div className="manual-text-group">
+              <label>رنگ:</label>
+              <button
+                type="button"
+                className={`ghost small${customColor === '#141414' && customStroke ? ' is-active' : ''}`}
+                onClick={() => { setCustomColor('#141414'); setCustomStroke(true); }}
+                title="مشکی با هاله سفید (استاندارد کمیک)"
+              >
+                مشکی/سفید
+              </button>
+              <button
+                type="button"
+                className={`ghost small${customColor === '#ffffff' && customStroke ? ' is-active' : ''}`}
+                onClick={() => { setCustomColor('#ffffff'); setCustomStroke(true); }}
+                title="سفید با هاله مشکی"
+              >
+                سفید/مشکی
+              </button>
+              <button
+                type="button"
+                className={`ghost small${customColor === '#141414' && !customStroke ? ' is-active' : ''}`}
+                onClick={() => { setCustomColor('#141414'); setCustomStroke(false); }}
+                title="مشکی خالص"
+              >
+                مشکی خالص
+              </button>
+            </div>
+            <div className="manual-text-group">
+              <label>چیدمان:</label>
+              <button
+                type="button"
+                className={`ghost small${customAlign === 'center' ? ' is-active' : ''}`}
+                onClick={() => setCustomAlign('center')}
+              >
+                وسط‌چین
+              </button>
+              <button
+                type="button"
+                className={`ghost small${customAlign === 'right' ? ' is-active' : ''}`}
+                onClick={() => setCustomAlign('right')}
+              >
+                راست‌چین
+              </button>
+            </div>
+            <button
+              type="button"
+              className="ocr small"
+              disabled={manualCleanBusy || !activeSelection?.box || !customText.trim()}
+              onClick={() => void handleApplyText()}
+              title="درج متن فارسی روی کادر انتخاب‌شده"
+            >
+              ✨ درج متن روی تصویر
+            </button>
+          </div>
+        </div>
+      )}
+      {activeSelection && (
+        <div className="manual-action-pill">
+          <span style={{fontSize: '12px', color: '#00ffcc', fontWeight: 600}}>
+            {activeSelection.pageName || 'ناحیه انتخاب‌شده'}:
+          </span>
+          <button
+            type="button"
+            className="primary small"
+            onClick={handleExecuteClean}
+            disabled={manualCleanBusy}
+            style={{padding: '3px 10px', fontSize: '12px'}}
+          >
+            {activeSelection.tool === 'patch'
+              ? '✨ اعمال وصله'
+              : activeSelection.tool === 'text'
+              ? '✨ درج متن'
+              : '✨ پاک‌سازی این بخش'}
+          </button>
+          <button
+            type="button"
+            className="ghost small"
+            onClick={() => {
+              setActiveSelection(null);
+              setClearSignal(c => c + 1);
+            }}
+            disabled={manualCleanBusy}
+            style={{padding: '3px 8px', fontSize: '12px'}}
+          >
+            ✕ لغو
+          </button>
+        </div>
+      )}
+      {manualTool !== 'none' && (
+        <button
+          type="button"
+          className="ghost small"
+          onClick={handleUndoClean}
+          disabled={manualCleanBusy}
+          title="بازگردانی آخرین تغییر پاک‌سازی"
+          style={{padding: '3px 8px', fontSize: '12px'}}
+        >
+          ↩️ Undo
+        </button>
+      )}
+      {manualTool !== 'none' && (
+        <button
+          type="button"
+          className="ghost small"
+          onClick={() => {
+            setManualTool('none');
+            setActiveSelection(null);
+            setClearSignal(c => c + 1);
+          }}
+        >
+          ✕ غیرفعال‌سازی
+        </button>
+      )}
+      {manualStatus && (
+        <span style={{fontSize: '11px', color: '#00ffcc', marginInlineStart: '6px'}}>
+          {manualStatus}
+        </span>
+      )}
+    </div>
+  );
+
   return (
     <div
       className={`layout${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}
@@ -2020,6 +2394,42 @@ export function BatchPanel({
             {saveStatus === 'saved' && <span className="batch-project-status saved">ذخیره‌شده روی دیسک ✓</span>}
           </div>
           <div style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
+            {activeProjectId && chapters.length > 0 && (
+              <div className="batch-chapter-controls" style={{display: 'inline-flex', alignItems: 'center', gap: '6px', marginInlineStart: '12px'}}>
+                <label htmlFor="batch-chapter-select" style={{fontSize: '13px', color: '#94a3b8'}}>📖 چپتر:</label>
+                <select
+                  id="batch-chapter-select"
+                  aria-label="انتخاب چپتر"
+                  value={activeChapterId}
+                  onChange={e => void handleSwitchChapter(e.target.value)}
+                  className="batch-chapter-select"
+                  style={{
+                    background: '#162430',
+                    color: '#00ffcc',
+                    border: '1px solid #1f3b4d',
+                    borderRadius: '4px',
+                    padding: '2px 8px',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {chapters.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="ghost small"
+                  onClick={() => setChapterCreateOpen(true)}
+                  style={{fontSize: '12px', padding: '2px 6px'}}
+                  title="افزودن چپتر جدید به این پروژه"
+                >
+                  + چپتر جدید
+                </button>
+              </div>
+            )}
             {onOpenProjectManager && (
               <button
                 type="button"
@@ -2576,240 +2986,7 @@ export function BatchPanel({
                 </ul>
               )}
 
-              {!busy && pages.length > 0 && (
-                <div className="manual-toolbar" role="toolbar" aria-label="ابزارهای پاک‌سازی و ترمیم دستی">
-                  <span className="manual-toolbar-label">ترمیم دستی:</span>
-                  <button
-                    type="button"
-                    className={`ghost small ${manualTool === 'brush' ? 'is-active' : ''}`}
-                    onClick={() => {
-                      setManualTool(manualTool === 'brush' ? 'none' : 'brush');
-                      setActiveSelection(null);
-                      setClearSignal(c => c + 1);
-                    }}
-                    title="رنگ‌آمیزی آزاد روی متن‌ها و واترمارک‌های جا مانده"
-                  >
-                    🖌️ قلم‌مو
-                  </button>
-                  <button
-                    type="button"
-                    className={`ghost small ${manualTool === 'box' ? 'is-active' : ''}`}
-                    onClick={() => {
-                      setManualTool(manualTool === 'box' ? 'none' : 'box');
-                      setActiveSelection(null);
-                      setClearSignal(c => c + 1);
-                    }}
-                    title="کشیدن کادر مستطیلی دور واترمارک"
-                  >
-                    🔲 کادر انتخابی
-                  </button>
-                  <button
-                    type="button"
-                    className={`ghost small ${manualTool === 'patch' ? 'is-active' : ''}`}
-                    onClick={() => {
-                      setManualTool(manualTool === 'patch' ? 'none' : 'patch');
-                      setActiveSelection(null);
-                      setClearSignal(c => c + 1);
-                    }}
-                    title="الگوبرداری از یک کادر تمیز و الصاق روی واترمارک/متن"
-                  >
-                    🩹 وصله (الگوبرداری)
-                  </button>
-                  <button
-                    type="button"
-                    className={`ghost small ${manualTool === 'text' ? 'is-active' : ''}`}
-                    onClick={() => {
-                      setManualTool(manualTool === 'text' ? 'none' : 'text');
-                      setActiveSelection(null);
-                      setClearSignal(c => c + 1);
-                    }}
-                    title="درج دستی متن فارسی با فونت و اندازه دلخواه روی تصویر"
-                  >
-                    ✍️ درج متن
-                  </button>
-                  {manualTool === 'brush' && (
-                    <label className="manual-brush-slider">
-                      اندازه:
-                      <input
-                        type="range"
-                        min="10"
-                        max="100"
-                        value={brushSize}
-                        onChange={e => setBrushSize(Number(e.target.value))}
-                      />
-                      <span>{brushSize}px</span>
-                    </label>
-                  )}
-                  {manualTool === 'patch' && !activeSelection && (
-                    <span style={{fontSize: '12px', color: '#a0ffe0', marginInlineStart: '6px'}}>
-                      کادر قرمز را دور واترمارک بکشید و کادر آبی را روی بافت تمیز بگذارید.
-                    </span>
-                  )}
-                  {manualTool === 'text' && !activeSelection && (
-                    <span style={{fontSize: '12px', color: '#c084fc', marginInlineStart: '6px'}}>
-                      کادر متن را روی بالن یا تصویر بکشید و متن فارسی را در کادر زیر بنویسید.
-                    </span>
-                  )}
-                  {manualTool === 'text' && (
-                    <div className="manual-text-panel" role="group" aria-label="تنظیمات درج متن">
-                      <div className="manual-text-row">
-                        <textarea
-                          className="manual-text-input"
-                          placeholder="متن فارسی دیالوگ را اینجا بنویسید..."
-                          value={customText}
-                          onChange={e => setCustomText(e.target.value)}
-                          rows={2}
-                          dir="rtl"
-                        />
-                      </div>
-                      <div className="manual-text-controls">
-                        <div className="manual-text-group">
-                          <label>فونت:</label>
-                          <select
-                            value={customFontId}
-                            onChange={e => setCustomFontId(e.target.value)}
-                            className="manual-text-select"
-                          >
-                            <option value="">پیش‌فرض (وزیرمتن)</option>
-                            {fontsList.map(f => (
-                              <option key={f.id} value={f.id}>{f.name}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="manual-text-group">
-                          <label>اندازه:</label>
-                          <button
-                            type="button"
-                            className="ghost small"
-                            onClick={() => setCustomFontSize(s => Math.max(10, s - 2))}
-                          >−</button>
-                          <span className="manual-text-size-val">{customFontSize}</span>
-                          <button
-                            type="button"
-                            className="ghost small"
-                            onClick={() => setCustomFontSize(s => Math.min(100, s + 2))}
-                          >+</button>
-                        </div>
-                        <div className="manual-text-group">
-                          <label>رنگ:</label>
-                          <button
-                            type="button"
-                            className={`ghost small${customColor === '#141414' && customStroke ? ' is-active' : ''}`}
-                            onClick={() => { setCustomColor('#141414'); setCustomStroke(true); }}
-                            title="مشکی با هاله سفید (استاندارد کمیک)"
-                          >
-                            مشکی/سفید
-                          </button>
-                          <button
-                            type="button"
-                            className={`ghost small${customColor === '#ffffff' && customStroke ? ' is-active' : ''}`}
-                            onClick={() => { setCustomColor('#ffffff'); setCustomStroke(true); }}
-                            title="سفید با هاله مشکی"
-                          >
-                            سفید/مشکی
-                          </button>
-                          <button
-                            type="button"
-                            className={`ghost small${customColor === '#141414' && !customStroke ? ' is-active' : ''}`}
-                            onClick={() => { setCustomColor('#141414'); setCustomStroke(false); }}
-                            title="مشکی خالص"
-                          >
-                            مشکی خالص
-                          </button>
-                        </div>
-                        <div className="manual-text-group">
-                          <label>چیدمان:</label>
-                          <button
-                            type="button"
-                            className={`ghost small${customAlign === 'center' ? ' is-active' : ''}`}
-                            onClick={() => setCustomAlign('center')}
-                          >
-                            وسط‌چین
-                          </button>
-                          <button
-                            type="button"
-                            className={`ghost small${customAlign === 'right' ? ' is-active' : ''}`}
-                            onClick={() => setCustomAlign('right')}
-                          >
-                            راست‌چین
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          className="ocr small"
-                          disabled={manualCleanBusy || !activeSelection?.box || !customText.trim()}
-                          onClick={() => void handleApplyText()}
-                          title="درج متن فارسی روی کادر انتخاب‌شده"
-                        >
-                          ✨ درج متن روی تصویر
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {activeSelection && (
-                    <div className="manual-action-pill">
-                      <span style={{fontSize: '12px', color: '#00ffcc', fontWeight: 600}}>
-                        {activeSelection.pageName || 'ناحیه انتخاب‌شده'}:
-                      </span>
-                      <button
-                        type="button"
-                        className="primary small"
-                        onClick={handleExecuteClean}
-                        disabled={manualCleanBusy}
-                        style={{padding: '3px 10px', fontSize: '12px'}}
-                      >
-                        {activeSelection.tool === 'patch'
-                          ? '✨ اعمال وصله'
-                          : activeSelection.tool === 'text'
-                          ? '✨ درج متن'
-                          : '✨ پاک‌سازی این بخش'}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost small"
-                        onClick={() => {
-                          setActiveSelection(null);
-                          setClearSignal(c => c + 1);
-                        }}
-                        disabled={manualCleanBusy}
-                        style={{padding: '3px 8px', fontSize: '12px'}}
-                      >
-                        ✕ لغو
-                      </button>
-                    </div>
-                  )}
-                  {manualTool !== 'none' && (
-                    <button
-                      type="button"
-                      className="ghost small"
-                      onClick={handleUndoClean}
-                      disabled={manualCleanBusy}
-                      title="بازگردانی آخرین تغییر پاک‌سازی"
-                      style={{padding: '3px 8px', fontSize: '12px'}}
-                    >
-                      ↩️ Undo
-                    </button>
-                  )}
-                  {manualTool !== 'none' && (
-                    <button
-                      type="button"
-                      className="ghost small"
-                      onClick={() => {
-                        setManualTool('none');
-                        setActiveSelection(null);
-                        setClearSignal(c => c + 1);
-                      }}
-                    >
-                      ✕ غیرفعال‌سازی
-                    </button>
-                  )}
-                  {manualStatus && (
-                    <span style={{fontSize: '11px', color: '#00ffcc', marginInlineStart: '6px'}}>
-                      {manualStatus}
-                    </span>
-                  )}
-                </div>
-              )}
+              {!busy && pages.length > 0 && renderManualToolbar()}
 
               {pages.length > 0 && (
                 <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
@@ -3002,18 +3179,30 @@ export function BatchPanel({
 
               {/* نمایش تعاملی صفحات فصل با امکان ویرایش چیدمان متن‌ها، فونت، اندازه و پاک‌سازی پشت متن */}
               {!busy && pages.some(p => p.state === 'done') ? (
-                <div className="chapter-view" aria-label="نمای فصل و ویرایش متن‌ها">
-                  {pages.filter(page => page.state === 'done').map(page => (
-                    <ChapterPage
-                      key={page.jobId}
-                      jobId={page.jobId}
-                      label={page.name}
-                      index={page.page}
-                      version={chapterVersion}
-                      plain={isPlainPage(page)}
-                    />
-                  ))}
-                </div>
+                <>
+                  {renderManualToolbar()}
+                  <div className="chapter-view" aria-label="نمای فصل و ویرایش متن‌ها">
+                    {pages.filter(page => page.state === 'done').map(page => (
+                      <ChapterPage
+                        key={page.jobId}
+                        jobId={page.jobId}
+                        label={page.name}
+                        index={page.page}
+                        version={chapterVersion}
+                        plain={isPlainPage(page)}
+                        tool={manualTool}
+                        brushSize={brushSize}
+                        textPreview={customText}
+                        clearSignal={clearSignal}
+                        activeJobId={activeSelection?.jobId}
+                        onSelectionChange={setActiveSelection}
+                        onCleanDone={() => {
+                          setChapterVersion(Date.now());
+                        }}
+                      />
+                    ))}
+                  </div>
+                </>
               ) : pages.length > 0 && (
                 <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
                   <figcaption>
@@ -3193,6 +3382,34 @@ export function BatchPanel({
         }}
         onCleanDone={() => setChapterVersion(Date.now())}
       />
+
+      {chapterCreateOpen && activeProjectMeta && (
+        <ChapterCreateModal
+          open={chapterCreateOpen}
+          projectName={activeProjectMeta.name}
+          nextChapterNumber={
+            (chapters.reduce((max, c) => Math.max(max, c.chapterNumber || 0), 0) || 1) + 1
+          }
+          onClose={() => setChapterCreateOpen(false)}
+          onCreateChapter={async (chData, files) => {
+            const res = await fetch(`/api/projects/${activeProjectMeta.id}/chapters`, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                name: chData.name,
+                chapter_number: chData.chapterNumber,
+                source_path: chData.sourcePath,
+                source_mode: chData.sourceMode,
+              }),
+            });
+            if (!res.ok) throw new Error('خطا در ایجاد چپتر');
+            const newCh = await res.json();
+            setChapters(prev => [...prev, {id: newCh.id, name: newCh.name, chapterNumber: newCh.chapterNumber}]);
+            await handleSwitchChapter(newCh.id);
+            setChapterCreateOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

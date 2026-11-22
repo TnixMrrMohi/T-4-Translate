@@ -9,6 +9,7 @@ export type TextOverride = {
   font?: string;
   text?: string;
   color?: string;
+  align?: 'right' | 'center' | 'left';
 };
 export type TextOverrides = Record<string, TextOverride>;
 
@@ -24,6 +25,9 @@ export type LayoutBlock = {
   size: number;
   center: [number, number];
   rotation: number;
+  align?: 'right' | 'center' | 'left';
+  textWidth?: number;
+  textHeight?: number;
   color?: string | null;
   defaultColor?: string | null;
   font: string | null;
@@ -178,6 +182,7 @@ export function TextLayoutEditor({
       ...(current.font ? {font: current.font} : {}),
       ...(current.text ? {text: current.text} : {}),
       ...(current.color ? {color: current.color} : {}),
+      ...(current.align ? {align: current.align} : {}),
       ...change,
     };
     if (change.color === undefined && 'color' in change) {
@@ -271,6 +276,7 @@ export function TextLayoutEditor({
       rotation: override.rotation ?? 0,
       font: override.font ?? null,
       color: override.color ?? block.color ?? '#101b1b',
+      align: (override.align ?? block.align ?? 'center') as 'right' | 'center' | 'left',
     };
   };
 
@@ -426,6 +432,50 @@ export function TextLayoutEditor({
             )}
           </div>
         </div>
+        <div className="layout-field is-narrow">
+          <span>چینش</span>
+          <div className="layout-align-group" role="group" aria-label="چینش متن">
+            <button
+              type="button"
+              className={`ghost small layout-align-btn${selectedBlock && effective(selectedBlock).align === 'right' ? ' is-active' : ''}`}
+              disabled={disabled || !selectedBlock}
+              title="راست‌چین"
+              aria-label="راست‌چین"
+              onClick={() => {
+                if (!selectedBlock) return;
+                patch(selectedBlock.number, {align: 'right'}, selectedBlock, true);
+              }}
+            >
+              ⯈
+            </button>
+            <button
+              type="button"
+              className={`ghost small layout-align-btn${selectedBlock && effective(selectedBlock).align === 'center' ? ' is-active' : ''}`}
+              disabled={disabled || !selectedBlock}
+              title="وسط‌چین"
+              aria-label="وسط‌چین"
+              onClick={() => {
+                if (!selectedBlock) return;
+                patch(selectedBlock.number, {align: 'center'}, selectedBlock, true);
+              }}
+            >
+              ☰
+            </button>
+            <button
+              type="button"
+              className={`ghost small layout-align-btn${selectedBlock && effective(selectedBlock).align === 'left' ? ' is-active' : ''}`}
+              disabled={disabled || !selectedBlock}
+              title="چپ‌چین"
+              aria-label="چپ‌چین"
+              onClick={() => {
+                if (!selectedBlock) return;
+                patch(selectedBlock.number, {align: 'left'}, selectedBlock, true);
+              }}
+            >
+              ⯇
+            </button>
+          </div>
+        </div>
         <div className="layout-actions">
           <button type="button" className="ghost" disabled={disabled || selected === null} onClick={resetBlock}>
             بازنشانی این متن
@@ -494,8 +544,10 @@ export function TextLayoutEditor({
           <img src={imageUrl} alt={imageAlt ?? 'تصویر پاک‌شده برای چیدمان متن'} draggable={false} />
           {blocks.map(block => {
           const state = effective(block);
-          const baseWidth = Math.max(4, block.box[2] - block.box[0]);
-          const baseHeight = Math.max(4, block.box[3] - block.box[1]);
+          const contentWidth = block.textWidth !== undefined ? (block.textWidth + 24) : (block.box[2] - block.box[0]);
+          const contentHeight = block.textHeight !== undefined ? (block.textHeight + 16) : (block.box[3] - block.box[1]);
+          const baseWidth = Math.max(16, contentWidth);
+          const baseHeight = Math.max(16, contentHeight);
           const ratio = state.size / Math.max(1, block.size);
           const boxWidth = baseWidth * ratio;
           const boxHeight = baseHeight * ratio;
@@ -510,6 +562,7 @@ export function TextLayoutEditor({
                 width: `${Math.max(24, boxWidth * scale)}px`,
                 height: `${Math.max(18, boxHeight * scale)}px`,
                 transform: `rotate(${state.rotation}deg)`,
+                justifyContent: state.align === 'right' ? 'flex-start' : state.align === 'left' ? 'flex-end' : 'center',
               }}
               role="button"
               tabIndex={0}
@@ -544,6 +597,8 @@ export function TextLayoutEditor({
                   fontFamily: fontFamily(state.font, block.defaultFont),
                   lineHeight: 1.2,
                   whiteSpace: 'pre-line',
+                  textAlign: state.align,
+                  width: '100%',
                   color: state.color,
                   ...(ghost ? {color: 'transparent', textShadow: 'none'} : {}),
                 }}

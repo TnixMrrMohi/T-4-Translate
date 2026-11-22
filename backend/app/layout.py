@@ -105,6 +105,9 @@ def sanitize(value) -> dict:
             if len(hex_digits) == 3:
                 hex_digits = "".join(c * 2 for c in hex_digits)
             result["color"] = f"#{hex_digits.lower()}"
+    align = value.get("align")
+    if isinstance(align, str) and align.strip().lower() in ("center", "right", "left"):
+        result["align"] = align.strip().lower()
     return result
 
 

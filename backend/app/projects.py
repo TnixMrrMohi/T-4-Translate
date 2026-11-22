@@ -32,6 +32,12 @@ class ProjectManager:
     def _get_manifest_path(self, project_id: str) -> Path:
         return self._get_project_dir(project_id) / "project.json"
 
+    def _get_chapters_dir(self, project_id: str) -> Path:
+        return self._get_project_dir(project_id) / "chapters"
+
+    def _get_chapter_path(self, project_id: str, chapter_id: str) -> Path:
+        return self._get_chapters_dir(project_id) / f"{chapter_id}.json"
+
     def _atomic_write_json(self, path: Path, data: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(".tmp")
@@ -51,6 +57,63 @@ class ProjectManager:
             pass
         return round(total_bytes / (1024 * 1024), 2)
 
+    def _migrate_legacy_project_if_needed(self, manifest: dict) -> dict:
+        """ارتقای خودکار پروژه‌های قدیمی تک‌فصل به ساختار چندچپتری بدون از دست رفتن هیچ داده‌ای."""
+        project_id = manifest.get("id", "")
+        chapters = manifest.get("chapters")
+        if isinstance(chapters, list) and len(chapters) > 0 and manifest.get("activeChapterId"):
+            return manifest
+
+        chapters_dir = self._get_chapters_dir(project_id)
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        ch_id = manifest.get("activeChapterId") or "chap_01"
+        ch_path = self._get_chapter_path(project_id, ch_id)
+
+        pages = manifest.get("pages", [])
+        done_count = sum(1 for p in pages if p.get("state") == "done")
+
+        if not ch_path.exists():
+            ch_data = {
+                "id": ch_id,
+                "projectId": project_id,
+                "chapterNumber": 1,
+                "name": "چپتر ۱",
+                "createdAt": manifest.get("createdAt", now_iso),
+                "updatedAt": manifest.get("updatedAt", now_iso),
+                "step": manifest.get("step", 1),
+                "sourceMode": manifest.get("sourceMode", "internal"),
+                "sourcePath": manifest.get("sourcePath"),
+                "pages": pages,
+                "outFiles": manifest.get("outFiles", []),
+                "translated": manifest.get("translated", ""),
+                "settings": manifest.get("settings", {
+                    "promoAction": "replace",
+                    "filterSlanted": True,
+                    "quality": 90,
+                }),
+            }
+            self._atomic_write_json(ch_path, ch_data)
+
+        ch_summary = {
+            "id": ch_id,
+            "chapterNumber": 1,
+            "name": "چپتر ۱",
+            "createdAt": manifest.get("createdAt", now_iso),
+            "updatedAt": manifest.get("updatedAt", now_iso),
+            "step": manifest.get("step", 1),
+            "totalPages": len(pages),
+            "donePages": done_count,
+            "sourceMode": manifest.get("sourceMode", "internal"),
+            "sourcePath": manifest.get("sourcePath"),
+        }
+
+        manifest["chapters"] = [ch_summary]
+        manifest["activeChapterId"] = ch_id
+        self._atomic_write_json(self._get_manifest_path(project_id), manifest)
+        return manifest
+
     def list_projects(self) -> List[Dict[str, Any]]:
         results = []
         if not self.projects_dir.exists():
@@ -61,20 +124,26 @@ class ProjectManager:
                 manifest_file = child / "project.json"
                 if manifest_file.exists():
                     try:
-                        with open(manifest_file, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        pages = data.get("pages", [])
-                        done_count = sum(1 for p in pages if p.get("state") == "done")
+                        proj = self.get_project(child.name)
+                        if not proj:
+                            continue
+                        chapters = proj.get("chapters", [])
+                        total_pages = proj.get("totalPages", len(proj.get("pages", [])))
+                        done_pages = proj.get("donePages", sum(1 for p in proj.get("pages", []) if p.get("state") == "done"))
                         results.append({
-                            "id": data.get("id", child.name),
-                            "name": data.get("name", child.name),
-                            "createdAt": data.get("createdAt", ""),
-                            "updatedAt": data.get("updatedAt", ""),
-                            "step": data.get("step", 1),
-                            "totalPages": len(pages),
-                            "donePages": done_count,
-                            "sourceMode": data.get("sourceMode", "internal"),
-                            "sourcePath": data.get("sourcePath"),
+                            "id": proj.get("id", child.name),
+                            "name": proj.get("name", child.name),
+                            "createdAt": proj.get("createdAt", ""),
+                            "updatedAt": proj.get("updatedAt", ""),
+                            "step": proj.get("step", 1),
+                            "activeChapterId": proj.get("activeChapterId"),
+                            "chapterName": proj.get("chapterName", "چپتر ۱"),
+                            "chapterNumber": proj.get("chapterNumber", 1),
+                            "totalChapters": len(chapters),
+                            "totalPages": total_pages,
+                            "donePages": done_pages,
+                            "sourceMode": proj.get("sourceMode", "internal"),
+                            "sourcePath": proj.get("sourcePath"),
                             "diskSizeMb": self._compute_dir_size_mb(child),
                         })
                     except Exception:
@@ -94,6 +163,8 @@ class ProjectManager:
         project_id = f"proj_{uuid.uuid4().hex[:10]}"
         proj_dir = self._get_project_dir(project_id)
         proj_dir.mkdir(parents=True, exist_ok=True)
+        chapters_dir = self._get_chapters_dir(project_id)
+        chapters_dir.mkdir(parents=True, exist_ok=True)
 
         now_iso = datetime.now(timezone.utc).isoformat()
         resolved_source_path = None
@@ -103,9 +174,12 @@ class ProjectManager:
                 resolved_source_path = str(p)
                 source_mode = "folder"
 
-        manifest = {
-            "id": project_id,
-            "name": name.strip() if name and name.strip() else f"پروژه {project_id[5:]}",
+        ch_id = "chap_01"
+        ch_data = {
+            "id": ch_id,
+            "projectId": project_id,
+            "chapterNumber": 1,
+            "name": "چپتر ۱",
             "createdAt": now_iso,
             "updatedAt": now_iso,
             "step": 1,
@@ -120,34 +194,278 @@ class ProjectManager:
                 "quality": 90,
             },
         }
+        self._atomic_write_json(self._get_chapter_path(project_id, ch_id), ch_data)
+
+        ch_summary = {
+            "id": ch_id,
+            "chapterNumber": 1,
+            "name": "چپتر ۱",
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+            "step": 1,
+            "totalPages": 0,
+            "donePages": 0,
+            "sourceMode": source_mode,
+            "sourcePath": resolved_source_path,
+        }
+
+        manifest = {
+            "id": project_id,
+            "name": name.strip() if name and name.strip() else f"پروژه {project_id[5:]}",
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+            "activeChapterId": ch_id,
+            "chapters": [ch_summary],
+            "step": 1,
+            "sourceMode": source_mode,
+            "sourcePath": resolved_source_path,
+            "pages": [],
+            "outFiles": [],
+            "translated": "",
+            "chapterName": "چپتر ۱",
+            "chapterNumber": 1,
+            "settings": ch_data["settings"],
+        }
 
         self._atomic_write_json(self._get_manifest_path(project_id), manifest)
         return manifest
 
-    def get_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+    def get_project(self, project_id: str, chapter_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         manifest_path = self._get_manifest_path(project_id)
         if not manifest_path.exists():
             return None
         try:
             with open(manifest_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                manifest = json.load(f)
         except Exception:
             return None
+
+        manifest = self._migrate_legacy_project_if_needed(manifest)
+
+        target_ch_id = chapter_id or manifest.get("activeChapterId")
+        if target_ch_id:
+            ch_data = self.get_chapter(project_id, target_ch_id)
+            if ch_data:
+                manifest["step"] = ch_data.get("step", 1)
+                manifest["pages"] = ch_data.get("pages", [])
+                manifest["translated"] = ch_data.get("translated", "")
+                manifest["outFiles"] = ch_data.get("outFiles", [])
+                manifest["sourceMode"] = ch_data.get("sourceMode", manifest.get("sourceMode", "internal"))
+                manifest["sourcePath"] = ch_data.get("sourcePath", manifest.get("sourcePath"))
+                manifest["chapterName"] = ch_data.get("name", "چپتر ۱")
+                manifest["chapterNumber"] = ch_data.get("chapterNumber", 1)
+                manifest["activeChapterId"] = target_ch_id
+
+        return manifest
 
     def save_project_state(self, project_id: str, state_update: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         current = self.get_project(project_id)
         if current is None:
             return None
 
-        # Keys allowed to update
-        allowed_keys = {"name", "step", "pages", "outFiles", "translated", "settings", "sourcePath", "sourceMode"}
+        # به‌روزرسانی فیلدهای سطح بالای پروژه در صورت وجود
+        if "name" in state_update and state_update["name"]:
+            manifest_path = self._get_manifest_path(project_id)
+            if manifest_path.exists():
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as f:
+                        raw_m = json.load(f)
+                    raw_m["name"] = state_update["name"]
+                    self._atomic_write_json(manifest_path, raw_m)
+                except Exception:
+                    pass
+
+        active_ch_id = current.get("activeChapterId")
+        if active_ch_id:
+            self.save_chapter_state(project_id, active_ch_id, state_update)
+
+        return self.get_project(project_id)
+
+    def list_chapters(self, project_id: str) -> List[Dict[str, Any]]:
+        manifest_path = self._get_manifest_path(project_id)
+        if not manifest_path.exists():
+            return []
+        manifest = self.get_project(project_id)
+        if not manifest:
+            return []
+        chapters = manifest.get("chapters", [])
+        return sorted(chapters, key=lambda c: c.get("chapterNumber", 0))
+
+    def create_chapter(
+        self,
+        project_id: str,
+        name: Optional[str] = None,
+        chapter_number: Optional[int] = None,
+        source_path: Optional[str] = None,
+        source_mode: str = "internal",
+        settings: Optional[dict] = None,
+    ) -> Dict[str, Any]:
+        manifest_path = self._get_manifest_path(project_id)
+        if not manifest_path.exists():
+            raise ValueError(f"پروژه {project_id} یافت نشد.")
+
+        manifest = self.get_project(project_id)
+        chapters = manifest.get("chapters", [])
+
+        if chapter_number is None:
+            existing_numbers = [c.get("chapterNumber", 0) for c in chapters if isinstance(c.get("chapterNumber"), int)]
+            chapter_number = (max(existing_numbers) + 1) if existing_numbers else (len(chapters) + 1)
+
+        if not name or not name.strip():
+            name = f"چپتر {chapter_number}"
+        else:
+            name = name.strip()
+
+        ch_id = f"chap_{uuid.uuid4().hex[:8]}"
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        resolved_source_path = None
+        if source_path:
+            p = Path(source_path).resolve()
+            if p.exists() and p.is_dir():
+                resolved_source_path = str(p)
+                source_mode = "folder"
+
+        ch_data = {
+            "id": ch_id,
+            "projectId": project_id,
+            "chapterNumber": chapter_number,
+            "name": name,
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+            "step": 1,
+            "sourceMode": source_mode,
+            "sourcePath": resolved_source_path,
+            "pages": [],
+            "outFiles": [],
+            "translated": "",
+            "settings": settings or manifest.get("settings", {
+                "promoAction": "replace",
+                "filterSlanted": True,
+                "quality": 90,
+            }),
+        }
+
+        self._atomic_write_json(self._get_chapter_path(project_id, ch_id), ch_data)
+
+        ch_summary = {
+            "id": ch_id,
+            "chapterNumber": chapter_number,
+            "name": name,
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+            "step": 1,
+            "totalPages": 0,
+            "donePages": 0,
+            "sourceMode": source_mode,
+            "sourcePath": resolved_source_path,
+        }
+
+        chapters.append(ch_summary)
+        # Update manifest on disk
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            raw_manifest = json.load(f)
+        raw_manifest["chapters"] = chapters
+        raw_manifest["updatedAt"] = now_iso
+        self._atomic_write_json(manifest_path, raw_manifest)
+
+        return ch_data
+
+    def get_chapter(self, project_id: str, chapter_id: str) -> Optional[Dict[str, Any]]:
+        ch_path = self._get_chapter_path(project_id, chapter_id)
+        if not ch_path.exists():
+            return None
+        try:
+            with open(ch_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def save_chapter_state(self, project_id: str, chapter_id: str, state_update: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        ch_data = self.get_chapter(project_id, chapter_id)
+        if ch_data is None:
+            return None
+
+        allowed_keys = {"name", "step", "pages", "outFiles", "translated", "settings", "sourcePath", "sourceMode", "chapterNumber"}
         for k, v in state_update.items():
             if k in allowed_keys and v is not None:
-                current[k] = v
+                ch_data[k] = v
 
-        current["updatedAt"] = datetime.now(timezone.utc).isoformat()
-        self._atomic_write_json(self._get_manifest_path(project_id), current)
-        return current
+        now_iso = datetime.now(timezone.utc).isoformat()
+        ch_data["updatedAt"] = now_iso
+        self._atomic_write_json(self._get_chapter_path(project_id, chapter_id), ch_data)
+
+        # Update summary in project.json
+        manifest_path = self._get_manifest_path(project_id)
+        if manifest_path.exists():
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                chapters = manifest.get("chapters", [])
+                pages = ch_data.get("pages", [])
+                done_count = sum(1 for p in pages if p.get("state") == "done")
+                for ch in chapters:
+                    if ch.get("id") == chapter_id:
+                        ch["name"] = ch_data.get("name", ch.get("name"))
+                        ch["chapterNumber"] = ch_data.get("chapterNumber", ch.get("chapterNumber"))
+                        ch["step"] = ch_data.get("step", ch.get("step", 1))
+                        ch["totalPages"] = len(pages)
+                        ch["donePages"] = done_count
+                        ch["updatedAt"] = now_iso
+                        if ch_data.get("sourcePath"):
+                            ch["sourcePath"] = ch_data["sourcePath"]
+                        if ch_data.get("sourceMode"):
+                            ch["sourceMode"] = ch_data["sourceMode"]
+                        break
+                manifest["chapters"] = chapters
+                manifest["updatedAt"] = now_iso
+                self._atomic_write_json(manifest_path, manifest)
+            except Exception:
+                pass
+
+        return ch_data
+
+    def delete_chapter(self, project_id: str, chapter_id: str) -> bool:
+        ch_path = self._get_chapter_path(project_id, chapter_id)
+        if ch_path.exists():
+            try:
+                ch_path.unlink()
+            except Exception:
+                pass
+
+        manifest_path = self._get_manifest_path(project_id)
+        if not manifest_path.exists():
+            return False
+
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            chapters = [c for c in manifest.get("chapters", []) if c.get("id") != chapter_id]
+            manifest["chapters"] = chapters
+            if manifest.get("activeChapterId") == chapter_id:
+                manifest["activeChapterId"] = chapters[0]["id"] if chapters else None
+            manifest["updatedAt"] = datetime.now(timezone.utc).isoformat()
+            self._atomic_write_json(manifest_path, manifest)
+            return True
+        except Exception:
+            return False
+
+    def set_active_chapter(self, project_id: str, chapter_id: str) -> Optional[Dict[str, Any]]:
+        ch = self.get_chapter(project_id, chapter_id)
+        if not ch:
+            return None
+        manifest_path = self._get_manifest_path(project_id)
+        if not manifest_path.exists():
+            return None
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            manifest["activeChapterId"] = chapter_id
+            manifest["updatedAt"] = datetime.now(timezone.utc).isoformat()
+            self._atomic_write_json(manifest_path, manifest)
+            return self.get_project(project_id, chapter_id)
+        except Exception:
+            return None
 
     def delete_project(self, project_id: str) -> bool:
         proj_dir = self._get_project_dir(project_id)

@@ -183,3 +183,158 @@ def test_create_job_from_path(temp_data_dir, monkeypatch):
     assert data["height"] == 100
     assert data["format"] == "PNG"
 
+
+def test_project_manager_chapters(temp_data_dir):
+    pm = ProjectManager(data_dir=temp_data_dir)
+    proj = pm.create_project(name="Solo Leveling")
+    proj_id = proj["id"]
+
+    # 1. Project automatically initializes with default chapter 1
+    chapters = pm.list_chapters(proj_id)
+    assert len(chapters) == 1
+    assert chapters[0]["chapterNumber"] == 1
+    assert chapters[0]["name"] == "چپتر ۱"
+    ch1_id = chapters[0]["id"]
+    assert proj["activeChapterId"] == ch1_id
+
+    # 2. Create chapter 2
+    ch2 = pm.create_chapter(proj_id, name="چپتر ۲")
+    assert ch2["chapterNumber"] == 2
+    assert ch2["name"] == "چپتر ۲"
+    ch2_id = ch2["id"]
+
+    # 3. List chapters shows both
+    chapters = pm.list_chapters(proj_id)
+    assert len(chapters) == 2
+    assert [c["chapterNumber"] for c in chapters] == [1, 2]
+
+    # 4. Save state in chapter 2 (isolation check)
+    pm.save_chapter_state(
+        proj_id,
+        ch2_id,
+        {
+            "step": 3,
+            "pages": [{"page": 1, "name": "c2_01.webp", "state": "done"}],
+            "translated": "ترجمه چپتر ۲",
+        }
+    )
+
+    # Ch2 has step 3 and 1 page
+    loaded_ch2 = pm.get_chapter(proj_id, ch2_id)
+    assert loaded_ch2["step"] == 3
+    assert len(loaded_ch2["pages"]) == 1
+    assert loaded_ch2["translated"] == "ترجمه چپتر ۲"
+
+    # Ch1 remains at step 1 and 0 pages
+    loaded_ch1 = pm.get_chapter(proj_id, ch1_id)
+    assert loaded_ch1["step"] == 1
+    assert len(loaded_ch1["pages"]) == 0
+
+    # 5. Switch active chapter
+    pm.set_active_chapter(proj_id, ch2_id)
+    loaded_proj = pm.get_project(proj_id)
+    assert loaded_proj["activeChapterId"] == ch2_id
+    assert loaded_proj["step"] == 3
+    assert len(loaded_proj["pages"]) == 1
+
+    # 6. Delete chapter
+    assert pm.delete_chapter(proj_id, ch2_id) is True
+    assert pm.get_chapter(proj_id, ch2_id) is None
+    chapters = pm.list_chapters(proj_id)
+    assert len(chapters) == 1
+    assert chapters[0]["id"] == ch1_id
+
+
+def test_legacy_project_migration(temp_data_dir):
+    pm = ProjectManager(data_dir=temp_data_dir)
+    proj_dir = temp_data_dir / "projects" / "proj_legacy"
+    proj_dir.mkdir(parents=True)
+    legacy_manifest = {
+        "id": "proj_legacy",
+        "name": "Legacy Manhwa",
+        "createdAt": "2026-11-20T10:00:00Z",
+        "updatedAt": "2026-11-20T10:00:00Z",
+        "step": 4,
+        "pages": [{"page": 1, "name": "old_01.jpg", "state": "done"}],
+        "translated": "متن قدیمی",
+        "outFiles": [],
+    }
+    (proj_dir / "project.json").write_text(json.dumps(legacy_manifest), encoding="utf-8")
+
+    # Load legacy project -> must migrate smoothly
+    proj = pm.get_project("proj_legacy")
+    assert proj is not None
+    assert "activeChapterId" in proj
+    assert "chapters" in proj
+    assert len(proj["chapters"]) == 1
+    assert proj["chapters"][0]["name"] == "چپتر ۱"
+    assert proj["step"] == 4
+    assert proj["translated"] == "متن قدیمی"
+
+    # Chapter file on disk exists
+    ch_file = proj_dir / "chapters" / f"{proj['activeChapterId']}.json"
+    assert ch_file.exists()
+
+
+def test_chapter_api_endpoints(temp_data_dir, monkeypatch):
+    monkeypatch.setenv("T4_DATA_DIR", str(temp_data_dir))
+    client = TestClient(app)
+
+    # 1. Create project
+    res = client.post("/api/projects", json={"name": "Tower of God"})
+    assert res.status_code == 200
+    proj = res.json()
+    proj_id = proj["id"]
+    ch1_id = proj["activeChapterId"]
+
+    # 2. List chapters
+    res = client.get(f"/api/projects/{proj_id}/chapters")
+    assert res.status_code == 200
+    chaps = res.json()
+    assert len(chaps) == 1
+    assert chaps[0]["id"] == ch1_id
+
+    # 3. Create chapter 2
+    res = client.post(
+        f"/api/projects/{proj_id}/chapters",
+        json={"name": "چپتر ۲", "chapter_number": 2}
+    )
+    assert res.status_code == 200
+    ch2 = res.json()
+    assert ch2["name"] == "چپتر ۲"
+    assert ch2["chapterNumber"] == 2
+    ch2_id = ch2["id"]
+
+    # 4. Get chapter 2
+    res = client.get(f"/api/projects/{proj_id}/chapters/{ch2_id}")
+    assert res.status_code == 200
+    assert res.json()["name"] == "چپتر ۲"
+
+    # 5. Save state in chapter 2
+    res = client.post(
+        f"/api/projects/{proj_id}/chapters/{ch2_id}/save-state",
+        json={"step": 2, "translated": "ترجمه چپتر ۲ برج خدا"}
+    )
+    assert res.status_code == 200
+    assert res.json()["step"] == 2
+    assert res.json()["translated"] == "ترجمه چپتر ۲ برج خدا"
+
+    # 6. Activate chapter 2
+    res = client.post(f"/api/projects/{proj_id}/chapters/{ch2_id}/activate")
+    assert res.status_code == 200
+    proj_updated = res.json()
+    assert proj_updated["activeChapterId"] == ch2_id
+    assert proj_updated["step"] == 2
+
+    # 7. Delete chapter 2
+    res = client.delete(f"/api/projects/{proj_id}/chapters/{ch2_id}")
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
+
+    # 8. List chapters again
+    res = client.get(f"/api/projects/{proj_id}/chapters")
+    assert res.status_code == 200
+    assert len(res.json()) == 1
+
+
+

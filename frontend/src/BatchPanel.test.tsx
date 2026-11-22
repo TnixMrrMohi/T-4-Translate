@@ -408,3 +408,70 @@ describe('مرحله‌های دسته‌ای و تلاش دوباره', () => {
       () => false, async () => undefined)).rejects.toThrow('ترجمه نیست');
   });
 });
+
+describe('مدیریت چندچپتری در BatchPanel', () => {
+  it('کنترل‌های چپتر (سلکت و دکمه چپتر جدید) رندر می‌شوند و امکان سوئیچ دارند', async () => {
+    const mockProject = {
+      id: 'proj_manga',
+      name: 'Solo Leveling',
+      activeChapterId: 'chap_01',
+      chapters: [
+        {id: 'chap_01', name: 'چپتر ۱', chapterNumber: 1, step: 2, totalPages: 5},
+        {id: 'chap_02', name: 'چپتر ۲', chapterNumber: 2, step: 1, totalPages: 0},
+      ],
+      pages: [
+        {page: 1, name: 'p1.png', jobId: 'j1', revision: 'r1', text: '[1] Hi', state: 'extracted'},
+      ],
+      step: 2,
+    };
+
+    const mockChapter2 = {
+      id: 'chap_02',
+      name: 'چپتر ۲',
+      chapterNumber: 2,
+      step: 1,
+      pages: [],
+      translated: '',
+      outFiles: [],
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/projects/proj_manga') {
+        return {ok: true, json: async () => mockProject};
+      }
+      if (url === '/api/projects/proj_manga/chapters/chap_02/activate') {
+        return {ok: true, json: async () => ({ok: true})};
+      }
+      if (url === '/api/projects/proj_manga/chapters/chap_02') {
+        return {ok: true, json: async () => mockChapter2};
+      }
+      if (url === '/api/projects/proj_manga/chapters') {
+        return {ok: true, json: async () => mockProject.chapters};
+      }
+      return {ok: true, json: async () => ({})};
+    }));
+
+    render(
+      <BatchPanel
+        onClose={() => {}}
+        prompt="p"
+        activeProjectId="proj_manga"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Solo Leveling')).toBeInTheDocument();
+      expect(screen.getByLabelText('انتخاب چپتر')).toBeInTheDocument();
+      expect(screen.getByRole('button', {name: /\+ چپتر جدید/i})).toBeInTheDocument();
+    });
+
+    const select = screen.getByLabelText('انتخاب چپتر') as HTMLSelectElement;
+    expect(select.value).toBe('chap_01');
+
+    fireEvent.change(select, {target: {value: 'chap_02'}});
+
+    await waitFor(() => {
+      expect(select.value).toBe('chap_02');
+    });
+  });
+});

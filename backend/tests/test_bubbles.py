@@ -190,6 +190,48 @@ def test_touching_bubbles_are_split_into_two(tmp_path):
     assert [block["lines"] for block in blocks] == [[1, 2], [3, 4]]
 
 
+def test_connected_figure8_bubbles_split_into_separate_lobes(tmp_path):
+    """بالن‌های متصل به هم بدون خط جداکننده (مثل آدم‌برفی/۸ لاتین) باید به دو بالن مجزا با کادر جدا تفکیک شوند."""
+    import cv2
+    import numpy as np
+    from app.rendering import plan_blocks
+
+    img_path = tmp_path / "snowman.png"
+    img = Image.new("RGB", (600, 800), (80, 80, 80))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([180, 100, 420, 340], fill=(255, 255, 255))
+    draw.ellipse([180, 300, 420, 540], fill=(255, 255, 255))
+    arr = np.array(img)
+    mask = (np.array(img.convert("L")) >= 200).astype(np.uint8)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(arr, cnts, -1, (0, 0, 0), 4)
+    Image.fromarray(arr).save(img_path)
+
+    lines = [
+        _line([220, 190, 380, 212]),
+        _line([220, 225, 380, 247]),
+        _line([220, 390, 380, 412]),
+        _line([220, 425, 380, 447]),
+    ]
+    result = bubbles.analyze(img_path, lines)
+    b_found = [b for b in result["bubbles"] if b["kind"] != "outside"]
+    assert len(b_found) == 2, result["bubbles"]
+    assert sorted(b["lines"] for b in b_found) == [[1, 2], [3, 4]]
+    # کادر حباب بالایی باید در نیمهٔ بالایی و حباب پایینی در نیمهٔ پایینی باشد
+    top_b = next(b for b in b_found if b["lines"] == [1, 2])
+    bottom_b = next(b for b in b_found if b["lines"] == [3, 4])
+    assert top_b["bbox"][1] + top_b["bbox"][3] <= 340
+    assert bottom_b["bbox"][1] >= 300
+
+    blist = bubbles.blocks(result, lines)
+    for idx, b in enumerate(blist, 1):
+        b["number"] = idx
+    planned = plan_blocks(img, blist, {1: "متن بالا", 2: "متن پایین"})
+    assert len(planned) == 2
+    assert planned[0]["center"][1] < 280
+    assert planned[1]["center"][1] > 360
+
+
 def test_single_bubble_with_two_lines_is_not_split(tmp_path):
     def shapes(draw, size):
         draw.ellipse([150, 250, 450, 550], outline=0, width=4)
@@ -498,12 +540,16 @@ def test_gulp_and_gulr_and_sfx_dropped():
         {"text": "GULR", "confidence": 0.85, "quad": [[10, 60], [50, 60], [50, 80], [10, 80]]},
         {"text": "POLICE", "confidence": 0.99, "quad": [[10, 100], [80, 100], [80, 120], [10, 120]]},
         {"text": "UTER ULTER", "confidence": 0.74, "quad": [[10, 140], [80, 140], [80, 160], [10, 160]]},
+        {"text": "URGH!", "confidence": 0.96, "quad": [[10, 180], [80, 180], [80, 200], [10, 200]]},
+        {"text": "TSK.", "confidence": 0.94, "quad": [[10, 220], [60, 220], [60, 240], [10, 240]]},
     ]
     raw_blocks = [
-        {"number": 1, "text": "GULP", "kind": "shout", "lines": [1]},
+        {"number": 1, "text": "GULP", "kind": "outside", "lines": [1]},
         {"number": 2, "text": "GULR", "kind": "outside", "lines": [2]},
         {"number": 3, "text": "POLICE", "kind": "shout", "lines": [3]},
         {"number": 4, "text": "UTER ULTER", "kind": "outside", "lines": [4]},
+        {"number": 5, "text": "URGH!", "kind": "shout", "lines": [5]},
+        {"number": 6, "text": "TSK.", "kind": "speech", "lines": [6]},
     ]
     filtered = bubbles.drop_junk_blocks(raw_blocks, lines)
     texts = [b["text"] for b in filtered]
@@ -511,5 +557,43 @@ def test_gulp_and_gulr_and_sfx_dropped():
     assert "GULR" not in texts
     assert "UTER ULTER" not in texts
     assert "POLICE" in texts
+    assert "URGH!" in texts
+    assert "TSK." in texts
+
+
+def test_row_vic_labor_and_distant_signage_filtered():
+    # جلوه‌های صوتی دست و پرتاب و لغزش
+    assert bubbles.is_sfx_text("SHF")
+    assert bubbles.is_sfx_text("FWIP")
+    assert bubbles.is_sfx_text("SHFF")
+
+    # تابلوها و علائم محیطی و نوشته‌های دوردست روی ساختمان
+    assert bubbles.is_environmental_sign("ROW", "outside")
+    assert bubbles.is_environmental_sign("VIC LABOR", "outside")
+    assert not bubbles.is_environmental_sign("JUST...", "speech")
+    assert not bubbles.is_environmental_sign("I'M STILL SLEEPY...", "speech")
+
+    row_block = {"number": 1, "text": "ROW", "kind": "outside", "bbox": [569, 2563, 643, 2601], "lines": [1]}
+    vic_block = {"number": 2, "text": "VIC LABOR", "kind": "outside", "bbox": [544, 2858, 635, 2890], "lines": [2]}
+    just_block = {"number": 3, "text": "JUST...", "kind": "speech", "bbox": [332, 3119, 547, 3190], "lines": [3]}
+    shf_block = {"number": 4, "text": "SHF", "kind": "outside", "bbox": [62, 2143, 197, 2269], "lines": [4]}
+    fwip_block = {"number": 5, "text": "FWIP", "kind": "outside", "bbox": [611, 2894, 786, 3062], "lines": [5]}
+
+    lines = [
+        {"text": "ROW", "confidence": 0.96},
+        {"text": "VIC LABOR", "confidence": 0.94},
+        {"text": "JUST...", "confidence": 0.99},
+        {"text": "SHF", "confidence": 0.95},
+        {"text": "FWIP", "confidence": 0.97},
+    ]
+
+    kept = bubbles.drop_junk_blocks([row_block, vic_block, just_block, shf_block, fwip_block], lines)
+    texts = [b["text"] for b in kept]
+    assert "ROW" not in texts
+    assert "VIC LABOR" not in texts
+    assert "SHF" not in texts
+    assert "FWIP" not in texts
+    assert "JUST..." in texts
+
 
 

@@ -459,6 +459,7 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
     layout = layout or {}
     if image.mode != "RGB":
         image = image.convert("RGB")
+    draw = ImageDraw.Draw(image)
     canvas_width, canvas_height = image.size
     entries: list[dict] = []
     total_blocks = len(blocks)
@@ -581,6 +582,10 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
             luminance = 0.299 * text_color[0] + 0.587 * text_color[1] + 0.114 * text_color[2]
             stroke_color = (255, 255, 255) if luminance < 128 else (0, 0, 0)
 
+        text_metrics = _line_metrics(draw, wrapped, font)
+        widest = max(width for _, _, width, _ in text_metrics) if text_metrics else 0
+        total_h = max(1.0, max(height for _, _, _, height in text_metrics) * 1.24) * len(wrapped) if text_metrics else 0
+
         entries.append({
             "number": number,
             "kind": kind,
@@ -596,6 +601,9 @@ def plan_blocks(image: Image.Image, blocks: list, translations: dict,
             "wrapped": list(wrapped),
             "center": [round(center_x, 2), round(center_y, 2)],
             "rotation": round(rotation, 2),
+            "align": (override.get("align") or block.get("align") or "center").lower(),
+            "textWidth": int(round(widest)),
+            "textHeight": int(round(total_h)),
             "color": text_color,
             "stroke": block.get("stroke") if block.get("stroke") is not None else (1 if kind in ("solar", "shout") else 0),
             "stroke_color": stroke_color,
@@ -640,6 +648,9 @@ def _draw_plan(canvas: Image.Image, draw, entry: dict) -> bool:
     color = tuple(entry.get("color") or (17, 17, 17))
     rotation = float(entry.get("rotation") or 0.0)
 
+    widest = max(width for _, _, width, _ in metrics) if metrics else 0
+    align = (entry.get("align") or "center").lower()
+
     if not rotation:
         # بدون چرخش همان رسم مستقیم قبلی است؛ خروجی بیت‌به‌بیت پایدار می‌ماند.
         start_y = center_y - block_height / 2
@@ -647,21 +658,30 @@ def _draw_plan(canvas: Image.Image, draw, entry: dict) -> bool:
         stroke_c = tuple(entry.get("stroke_color") or (0, 0, 0))
         for index, line in enumerate(wrapped):
             ink_left, ink_top, ink_width, ink_height = metrics[index]
-            target_left = center_x - ink_width / 2
+            if align == "right":
+                target_left = center_x + widest / 2 - ink_width
+            elif align == "left":
+                target_left = center_x - widest / 2
+            else:
+                target_left = center_x - ink_width / 2
             target_top = start_y + index * line_height + (line_height - ink_height) / 2
             draw_text(draw, (target_left - ink_left, target_top - ink_top), line, font, color,
                       stroke_width=stroke_w, stroke_fill=stroke_c)
         return True
 
     # چرخش: متن روی لایهٔ شفاف کشیده و بعد چرخانده و در مرکز چسبانده می‌شود.
-    widest = max(width for _, _, width, _ in metrics)
     layer_width = int(math.ceil(widest)) + 8
     layer_height = int(math.ceil(block_height)) + 8
     layer = Image.new("RGBA", (max(1, layer_width), max(1, layer_height)), (0, 0, 0, 0))
     layer_draw = ImageDraw.Draw(layer)
     for index, line in enumerate(wrapped):
         ink_left, ink_top, ink_width, ink_height = metrics[index]
-        target_left = (layer_width - ink_width) / 2
+        if align == "right":
+            target_left = (layer_width + widest) / 2 - ink_width
+        elif align == "left":
+            target_left = (layer_width - widest) / 2
+        else:
+            target_left = (layer_width - ink_width) / 2
         target_top = 4 + index * line_height + (line_height - ink_height) / 2
         draw_text(layer_draw, (target_left - ink_left, target_top - ink_top), line,
                   font, color + (255,))

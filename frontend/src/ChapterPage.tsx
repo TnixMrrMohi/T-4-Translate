@@ -1,6 +1,7 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {TextLayoutEditor} from './TextLayoutEditor';
 import type {LayoutBlock, LayoutDoc, TextOverrides} from './TextLayoutEditor';
+import {ManualCleanOverlay, SelectionInfo} from './ManualCleanOverlay';
 
 type Adjust = {grow: number; dx: number; dy: number};
 const ZERO: Adjust = {grow: 0, dx: 0, dy: 0};
@@ -26,10 +27,33 @@ async function send(path: string, init: RequestInit, what: string): Promise<Resp
  * فونت، اندازه، چرخش، جا، متن/خط‌بندی و «پاک‌سازی مجدد پشت آن» در دسترس است.
  * ویرایشگر فقط وقتی صفحه به دید می‌آید بارگذاری می‌شود تا فصل‌های بلند سنگین نشوند.
  */
-export function ChapterPage({jobId, label, index, version, plain = false}: {
-  jobId: string; label: string; index: number; version: number;
+export function ChapterPage({
+  jobId,
+  label,
+  index,
+  version,
+  plain = false,
+  tool = 'none',
+  brushSize = 35,
+  textPreview = '',
+  clearSignal = 0,
+  activeJobId = null,
+  onSelectionChange,
+  onCleanDone,
+}: {
+  jobId: string;
+  label: string;
+  index: number;
+  version: number;
   /** صفحهٔ بدون متن: فقط تصویر اصلی نشان داده می‌شود و چیزی برای ویرایش نیست. */
   plain?: boolean;
+  tool?: 'brush' | 'box' | 'patch' | 'text' | 'none';
+  brushSize?: number;
+  textPreview?: string;
+  clearSignal?: number;
+  activeJobId?: string | null;
+  onSelectionChange?: (selection: SelectionInfo | null) => void;
+  onCleanDone?: () => void;
 }) {
   const holder = useRef<HTMLElement>(null);
   const [seen, setSeen] = useState(typeof IntersectionObserver === 'undefined');
@@ -133,7 +157,7 @@ export function ChapterPage({jobId, label, index, version, plain = false}: {
   const num = (value: number) => value.toLocaleString('fa-IR');
 
   return (
-    <figure className="chapter-page" ref={holder}>
+    <figure className="chapter-page" ref={holder} style={{position: 'relative'}}>
       <figcaption>
         <span dir="ltr">{index}. {label}</span>
         <span className="chapter-actions">
@@ -142,60 +166,98 @@ export function ChapterPage({jobId, label, index, version, plain = false}: {
       </figcaption>
 
       {plain || !doc || doc.blocks.length === 0 ? (
-        <img loading="lazy" alt={`صفحهٔ ${index}${plain || !doc || doc.blocks.length === 0 ? ' (بدون متن)' : ''}`}
-          src={`/api/jobs/${jobId}/display/source?width=1400&v=${version}`} />
-      ) : (
-        <TextLayoutEditor
-          tall
-          floating
-          ghost
-          imageUrl={`/api/jobs/${jobId}/display/render?width=1400&v=${renderVer}`}
-          imageAlt={`خروجی صفحهٔ ${index}؛ روی هر متن کلیک کنید`}
-          width={doc.width}
-          height={doc.height}
-          blocks={doc.blocks}
-          fonts={doc.fonts}
-          value={doc.layout}
-          disabled={busy !== ''}
-          onCommit={next => void commitLayout(next)}
-          onSelect={setSelected}
-          stageExtra={(block, scale) => {
-            if (!block) return null;
-            const box = block.area && block.area.length === 4 ? block.area : block.bbox;
-            const value = current(block.number);
-            const left = (box[0] + value.dx - value.grow) * scale;
-            const top = (box[1] + value.dy - value.grow) * scale;
-            const width = Math.max(8, (box[2] - box[0] + 2 * value.grow) * scale);
-            const height = Math.max(8, (box[3] - box[1] + 2 * value.grow) * scale);
-            return <div className="chapter-area" aria-hidden="true"
-              style={{left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`}} />;
-          }}
-          toolbarExtra={block => block && selected === block.number && (
-            <div className="chapter-clean" role="group" aria-label={`پاک‌سازی پشت متن ${block.number}`}>
-              <b>پاک‌سازی پشت متن {num(block.number)}</b>
-              <span className="clean-size">
-                <span>اندازه</span>
-                <button type="button" className="ghost small" aria-label="کوچک‌تر"
-                  onClick={() => change(block.number, {grow: Math.max(-30, current(block.number).grow - 4)})}>−</button>
-                <output>{num(current(block.number).grow)}</output>
-                <button type="button" className="ghost small" aria-label="بزرگ‌تر"
-                  onClick={() => change(block.number, {grow: Math.min(80, current(block.number).grow + 4)})}>+</button>
-              </span>
-              <span className="clean-size">
-                <span>جابه‌جایی</span>
-                {([['↑', 0, -4, 'بالا'], ['↓', 0, 4, 'پایین'], ['←', -4, 0, 'چپ'], ['→', 4, 0, 'راست']] as const)
-                  .map(([glyph, dx, dy, name]) => (
-                    <button key={name} type="button" className="ghost small" aria-label={name}
-                      onClick={() => change(block.number, {
-                        dx: current(block.number).dx + dx, dy: current(block.number).dy + dy,
-                      })}>{glyph}</button>
-                  ))}
-              </span>
-              <button type="button" className="ocr" disabled={busy !== ''}
-                onClick={() => void recleanBlock(block)}>پاک‌سازی مجدد پشت این متن</button>
-            </div>
+        <div style={{position: 'relative', width: '100%', lineHeight: 0}}>
+          <img loading="lazy" alt={`صفحهٔ ${index}${plain || !doc || doc.blocks.length === 0 ? ' (بدون متن)' : ''}`}
+            src={`/api/jobs/${jobId}/display/source?width=1400&v=${version}`} />
+          {tool !== 'none' && (
+            <ManualCleanOverlay
+              jobId={jobId}
+              pageIndex={index}
+              pageName={label}
+              tool={tool}
+              brushSize={brushSize}
+              textPreview={textPreview}
+              clearSignal={clearSignal}
+              activeJobId={activeJobId}
+              onSelectionChange={onSelectionChange}
+              onCleanDone={() => {
+                onCleanDone?.();
+                void rerender().then(loadDoc);
+              }}
+            />
           )}
-        />
+        </div>
+      ) : (
+        <div style={{position: 'relative', width: '100%'}}>
+          <TextLayoutEditor
+            tall
+            floating
+            ghost
+            imageUrl={`/api/jobs/${jobId}/display/render?width=1400&v=${renderVer}`}
+            imageAlt={`خروجی صفحهٔ ${index}؛ روی هر متن کلیک کنید`}
+            width={doc.width}
+            height={doc.height}
+            blocks={doc.blocks}
+            fonts={doc.fonts}
+            value={doc.layout}
+            disabled={busy !== '' || tool !== 'none'}
+            onCommit={next => void commitLayout(next)}
+            onSelect={setSelected}
+            stageExtra={(block, scale) => {
+              if (!block) return null;
+              const box = block.area && block.area.length === 4 ? block.area : block.bbox;
+              const value = current(block.number);
+              const left = (box[0] + value.dx - value.grow) * scale;
+              const top = (box[1] + value.dy - value.grow) * scale;
+              const width = Math.max(8, (box[2] - box[0] + 2 * value.grow) * scale);
+              const height = Math.max(8, (box[3] - box[1] + 2 * value.grow) * scale);
+              return <div className="chapter-area" aria-hidden="true"
+                style={{left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`}} />;
+            }}
+            toolbarExtra={block => block && selected === block.number && (
+              <div className="chapter-clean" role="group" aria-label={`پاک‌سازی پشت متن ${block.number}`}>
+                <b>پاک‌سازی پشت متن {num(block.number)}</b>
+                <span className="clean-size">
+                  <span>اندازه</span>
+                  <button type="button" className="ghost small" aria-label="کوچک‌تر"
+                    onClick={() => change(block.number, {grow: Math.max(-30, current(block.number).grow - 4)})}>−</button>
+                  <output>{num(current(block.number).grow)}</output>
+                  <button type="button" className="ghost small" aria-label="بزرگ‌تر"
+                    onClick={() => change(block.number, {grow: Math.min(80, current(block.number).grow + 4)})}>+</button>
+                </span>
+                <span className="clean-size">
+                  <span>جابه‌جایی</span>
+                  {([['↑', 0, -4, 'بالا'], ['↓', 0, 4, 'پایین'], ['←', -4, 0, 'چپ'], ['→', 4, 0, 'راست']] as const)
+                    .map(([glyph, dx, dy, name]) => (
+                      <button key={name} type="button" className="ghost small" aria-label={name}
+                        onClick={() => change(block.number, {
+                          dx: current(block.number).dx + dx, dy: current(block.number).dy + dy,
+                        })}>{glyph}</button>
+                    ))}
+                </span>
+                <button type="button" className="ocr" disabled={busy !== ''}
+                  onClick={() => void recleanBlock(block)}>پاک‌سازی مجدد پشت این متن</button>
+              </div>
+            )}
+          />
+          {tool !== 'none' && (
+            <ManualCleanOverlay
+              jobId={jobId}
+              pageIndex={index}
+              pageName={label}
+              tool={tool}
+              brushSize={brushSize}
+              textPreview={textPreview}
+              clearSignal={clearSignal}
+              activeJobId={activeJobId}
+              onSelectionChange={onSelectionChange}
+              onCleanDone={() => {
+                onCleanDone?.();
+                void rerender().then(loadDoc);
+              }}
+            />
+          )}
+        </div>
       )}
       {note && <p className="wizard-note" role="status">{note}</p>}
     </figure>

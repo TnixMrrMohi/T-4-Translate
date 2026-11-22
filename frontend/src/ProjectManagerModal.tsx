@@ -1,5 +1,18 @@
 import React, {useEffect, useState} from 'react';
 import {Overlay} from './Overlay';
+import {ChapterCreateModal} from './ChapterCreateModal';
+
+export type ChapterSummary = {
+  id: string;
+  name: string;
+  chapterNumber: number;
+  sourcePath?: string;
+  sourceMode?: string;
+  step?: number;
+  totalPages?: number;
+  updatedAt?: string;
+  createdAt?: string;
+};
 
 export type ProjectSummary = {
   id: string;
@@ -12,6 +25,10 @@ export type ProjectSummary = {
   diskSizeMb: number;
   sourceMode: 'internal' | 'folder';
   sourcePath?: string;
+  activeChapterId?: string;
+  chapterName?: string;
+  chapterNumber?: number;
+  totalChapters?: number;
 };
 
 const STEP_LABELS: Record<number, string> = {
@@ -51,6 +68,76 @@ export function ProjectManagerModal({
 
   // Deletion confirmation
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  // Multi-chapter states
+  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
+  const [projectChaptersMap, setProjectChaptersMap] = useState<Record<string, ChapterSummary[]>>({});
+  const [chaptersLoadingId, setChaptersLoadingId] = useState<string | null>(null);
+  const [newChapterModalProject, setNewChapterModalProject] = useState<{id: string; name: string} | null>(null);
+
+  const handleToggleChapters = async (projectId: string) => {
+    if (expandedProjectId === projectId) {
+      setExpandedProjectId(null);
+      return;
+    }
+    setExpandedProjectId(projectId);
+    if (!projectChaptersMap[projectId]) {
+      setChaptersLoadingId(projectId);
+      try {
+        const res = await fetch(`/api/projects/${projectId}/chapters`);
+        if (res.ok) {
+          const chs = await res.json();
+          setProjectChaptersMap(prev => ({...prev, [projectId]: chs}));
+        }
+      } catch (err) {
+        console.error('Failed to load chapters:', err);
+      } finally {
+        setChaptersLoadingId(null);
+      }
+    }
+  };
+
+  const handleOpenChapter = async (projectId: string, chapterId: string) => {
+    try {
+      await fetch(`/api/projects/${projectId}/chapters/${chapterId}/activate`, {method: 'POST'});
+    } catch (err) {
+      console.error('Failed to activate chapter:', err);
+    }
+    onSelectProject(projectId);
+    onClose();
+  };
+
+  const handleCreateChapterForProject = async (
+    projectId: string,
+    chapterData: {name: string; chapterNumber: number; sourcePath?: string; sourceMode: string},
+    uploadedFiles?: File[]
+  ) => {
+    const res = await fetch(`/api/projects/${projectId}/chapters`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        name: chapterData.name,
+        chapter_number: chapterData.chapterNumber,
+        source_path: chapterData.sourcePath,
+        source_mode: chapterData.sourceMode,
+      }),
+    });
+    if (!res.ok) throw new Error('خطا در ایجاد چپتر');
+    const newCh = await res.json();
+    await fetch(`/api/projects/${projectId}/chapters/${newCh.id}/activate`, {method: 'POST'});
+    await fetchProjects();
+    const chListRes = await fetch(`/api/projects/${projectId}/chapters`);
+    if (chListRes.ok) {
+      const chs = await chListRes.json();
+      setProjectChaptersMap(prev => ({...prev, [projectId]: chs}));
+    }
+    if (uploadedFiles && uploadedFiles.length > 0) {
+      onSelectProject(projectId, uploadedFiles);
+    } else {
+      onSelectProject(projectId);
+    }
+    onClose();
+  };
 
   const fetchProjects = async () => {
     setLoading(true);
@@ -294,12 +381,15 @@ export function ProjectManagerModal({
                         <div className="project-card-title-row">
                           <h3 className="project-card-title">{proj.name}</h3>
                           {isCurrent && <span className="project-badge-active">پروژه فعال</span>}
+                          {proj.totalChapters && proj.totalChapters > 1 && (
+                            <span className="project-badge-chapters">📚 {proj.totalChapters} چپتر</span>
+                          )}
                           <span className="project-badge-mode">
                             {proj.sourceMode === 'folder' ? '📂 پوشه سیستم' : '📦 پروژه داخلی'}
                           </span>
                         </div>
                         <div className="project-card-meta">
-                          <span>{STEP_LABELS[proj.step] || `مرحله ${proj.step}`}</span>
+                          <span>{proj.chapterName ? `چپتر فعلی: ${proj.chapterName}` : (STEP_LABELS[proj.step] || `مرحله ${proj.step}`)}</span>
                           <span>•</span>
                           <span>
                             {proj.totalPages > 0
@@ -326,6 +416,14 @@ export function ProjectManagerModal({
                           }}
                         >
                           باز کردن و ادامه ↗
+                        </button>
+
+                        <button
+                          type="button"
+                          className="ghost small"
+                          onClick={() => handleToggleChapters(proj.id)}
+                        >
+                          {expandedProjectId === proj.id ? 'بستن چپترها ▴' : `چپترها (${proj.totalChapters || 1}) ▾`}
                         </button>
 
                         {isConfirming ? (
@@ -357,6 +455,56 @@ export function ProjectManagerModal({
                           </button>
                         )}
                       </div>
+
+                      {expandedProjectId === proj.id && (
+                        <div className="project-chapters-drawer">
+                          <div className="project-chapters-header">
+                            <span>فهرست چپترهای این پروژه:</span>
+                            <button
+                              type="button"
+                              className="batch-new-chapter-btn"
+                              onClick={() => setNewChapterModalProject({id: proj.id, name: proj.name})}
+                            >
+                              + افزودن چپتر جدید
+                            </button>
+                          </div>
+                          {chaptersLoadingId === proj.id ? (
+                            <div style={{fontSize: '0.8rem', color: '#94a3b8', padding: '6px 0'}}>
+                              در حال بارگذاری چپترها…
+                            </div>
+                          ) : (
+                            <div className="project-chapters-grid">
+                              {(projectChaptersMap[proj.id] || []).map(ch => {
+                                const isChActive = proj.activeChapterId ? ch.id === proj.activeChapterId : ch.chapterNumber === 1;
+                                return (
+                                  <div
+                                    key={ch.id}
+                                    className={`project-chapter-item ${isChActive ? 'is-active' : ''}`}
+                                    onClick={() => handleOpenChapter(proj.id, ch.id)}
+                                    title="کلیک برای باز کردن و ادامه این چپتر"
+                                  >
+                                    <div style={{display: 'flex', flexDirection: 'column', gap: '2px'}}>
+                                      <span style={{color: '#00ffcc', fontWeight: 600}}>
+                                        {ch.name} {isChActive && '★'}
+                                      </span>
+                                      <span style={{fontSize: '0.72rem', color: '#94a3b8'}}>
+                                        {ch.totalPages ? `${ch.totalPages} تصویر` : 'بدون تصویر'} • {STEP_LABELS[ch.step || 1] || `مرحله ${ch.step || 1}`}
+                                      </span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="ghost small"
+                                      style={{padding: '2px 6px', fontSize: '0.75rem'}}
+                                    >
+                                      ورود ↗
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })
@@ -504,6 +652,21 @@ export function ProjectManagerModal({
           )}
         </div>
       </div>
+
+      {newChapterModalProject && (
+        <ChapterCreateModal
+          open={Boolean(newChapterModalProject)}
+          projectName={newChapterModalProject.name}
+          nextChapterNumber={
+            ((projectChaptersMap[newChapterModalProject.id] || []).reduce((max, c) => Math.max(max, c.chapterNumber || 0), 0) || 1) + 1
+          }
+          onClose={() => setNewChapterModalProject(null)}
+          onCreateChapter={async (chData, files) => {
+            await handleCreateChapterForProject(newChapterModalProject.id, chData, files);
+            setNewChapterModalProject(null);
+          }}
+        />
+      )}
     </Overlay>
   );
 }

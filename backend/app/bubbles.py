@@ -526,33 +526,68 @@ def _split_bubbles(mask, line_boxes: dict, origin: tuple[int, int] = (0, 0)):
         return [(mask, numbers)]
 
     counts = {value: int((labels == value).sum()) for value in np.unique(labels) if value > 0}
-    parts = []
-    assigned: dict[int, list[int]] = {}
+    lobes = []
     for value, area in counts.items():
-        if area < mask.sum() * 0.12:
+        if area < mask.sum() * 0.08:
             continue
         part = (labels == value).astype(np.uint8)
-        part_numbers = []
-        for number in numbers:
-            top, bottom, left, right = line_boxes[number]
-            local_top = int(max(0, top - origin[1]))
-            local_left = int(max(0, left - origin[0]))
-            local_bottom = int(min(part.shape[0], bottom - origin[1] + 1))
-            local_right = int(min(part.shape[1], right - origin[0] + 1))
-            window = part[local_top:local_bottom, local_left:local_right]
-            if window.size and window.sum() >= 0.3 * window.size:
-                part_numbers.append(number)
-        if not part_numbers:
-            continue
-        parts.append((part, part_numbers))
-        assigned[value] = part_numbers
-    # هر خط باید فقط در یک لوب باشد؛ در هم‌پوشانی، لوبی که خط بیشتر در آن است برنده است.
-    seen: dict[int, int] = {}
-    for value, part_numbers in assigned.items():
-        for number in part_numbers:
-            seen[number] = seen.get(number, 0) + 1
-    if any(count > 1 for count in seen.values()):
+        lobes.append((value, part))
+
+    if len(lobes) < 2:
         return [(mask, numbers)]
+
+    # اختصاص هر خط به لوبی که بیشترین هم‌پوشانی را با آن دارد
+    line_assigned: dict[int, int] = {}
+    for number in numbers:
+        box = line_boxes.get(number)
+        if not box:
+            continue
+        top, bottom, left, right = box
+        local_top = int(max(0, top - origin[1]))
+        local_left = int(max(0, left - origin[0]))
+        local_bottom = int(min(mask.shape[0], bottom - origin[1] + 1))
+        local_right = int(min(mask.shape[1], right - origin[0] + 1))
+
+        best_val = None
+        best_ratio = 0.0
+        for val, part in lobes:
+            window = part[local_top:local_bottom, local_left:local_right]
+            if window.size:
+                ratio = float(window.sum()) / float(window.size)
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_val = val
+        if best_val is not None and best_ratio >= 0.2:
+            line_assigned[number] = best_val
+
+    parts = []
+    for val, part in lobes:
+        part_numbers = [num for num, assigned_val in line_assigned.items() if assigned_val == val]
+        if part_numbers:
+            parts.append((part, part_numbers))
+
+    # اگر خطی به هیچ لوبی نرسید ولی لوب‌هایی داریم، خط را به نزدیک‌ترین لوب ملحق می‌کنیم تا متنی حذف نشود
+    unassigned = [num for num in numbers if num not in line_assigned]
+    if unassigned and parts:
+        for num in unassigned:
+            box = line_boxes.get(num)
+            if not box:
+                continue
+            line_cy = (box[0] + box[1]) / 2.0 - origin[1]
+            line_cx = (box[2] + box[3]) / 2.0 - origin[0]
+            best_part_idx = 0
+            best_dist = float("inf")
+            for idx, (part, _) in enumerate(parts):
+                py, px = np.nonzero(part)
+                if len(px):
+                    part_cx = float(np.mean(px))
+                    part_cy = float(np.mean(py))
+                    dist = (line_cx - part_cx) ** 2 + (line_cy - part_cy) ** 2
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_part_idx = idx
+            parts[best_part_idx][1].append(num)
+
     if len(parts) < 2:
         return [(mask, numbers)]
     return parts
@@ -609,18 +644,9 @@ def _analyze_crop(gray, lines: list, image_source, np, cv2) -> tuple[list[dict],
             shared = int((left & right).sum())
             smaller = min(int(left.sum()), int(right.sum()))
             if smaller and shared / smaller >= 0.5:
-                # خطوط یک بالن دیالوگ نمی‌توانند فاصلهٔ عمودی نامتعارف داشته باشند.
-                # فاصلهٔ بیشتر از ۳ برابر ارتفاع خط یعنی دو نوشتهٔ دور از هم روی یک پس‌زمینهٔ مشترک‌اند.
-                line1 = lines[found[first]["line"] - 1]
-                line2 = lines[found[second]["line"] - 1]
-                b1 = _line_bbox(line1.get("quad") if isinstance(line1, dict) else None, width, height)
-                b2 = _line_bbox(line2.get("quad") if isinstance(line2, dict) else None, width, height)
-                if b1 is not None and b2 is not None:
-                    h1 = max(1.0, float(b1[3] - b1[1]))
-                    h2 = max(1.0, float(b2[3] - b2[1]))
-                    v_gap = max(0.0, float(b2[1] - b1[3])) if b2[1] >= b1[3] else max(0.0, float(b1[1] - b2[3]))
-                    if v_gap > max(90.0, 3.0 * min(h1, h2)):
-                        continue
+                # بالن‌های به هم چسبیده (دارای ناحیهٔ روشن یکپارچه با گردنه/کمر باریک)
+                # در یک والد ادغام می‌شوند تا در مرحلهٔ _split_bubbles بر اساس تبدیل فاصله
+                # و خطوط هر لوب، کادرهای جداگانه و تمیز دریافت کنند.
                 parent[find(second)] = find(first)
 
     groups: dict[int, list[int]] = {}
@@ -1206,6 +1232,9 @@ SFX_WORDS = {
     "stagger", "stager", "suiagcer", "swagger", "slagger", "totter", "wobble", "sway", "jolt",
     # لغزش، سر خوردن و کشیده شدن
     "srk", "srrk", "srrrk", "srks", "srrks", "skrr", "skrk", "ssrk",
+    "shf", "shff", "shfff", "shhff", "shhhf",
+    # حرکت سریع دست، پرتاب و پرش
+    "fwip", "fwipp", "fwwip", "thwip", "thwipp", "fwp", "fip", "whuff", "whuf", "flump",
     # جهت و نگاه
     "lookup", "look-up",
     # ضربه، برخورد و صداهای محیطی
@@ -1289,26 +1318,74 @@ SIGNAGE_WORDS = {
     "escalator", "restroom", "toilet", "wc", "office", "dept", "department",
     "zone", "gate", "terminal", "floor", "lobby", "block", "sector",
     "corridor", "hall", "plaza", "center", "centre", "avenue", "street",
+    "row", "labor", "labour", "corp", "co", "ltd", "inc", "tower", "lane", "road",
+    "dr", "drive", "blvd", "way", "inn", "bar", "pub", "brand", "label",
+    "market", "bldg", "building", "level", "apt", "apartment", "city",
+    "company", "club", "pharmacy", "clinic", "cinema", "theatre", "theater",
+    "post", "room", "suite", "unit",
+    "flame", "endure", "endures", "billboard", "neon", "sign", "ad", "ads",
 }
 
 
 def is_environmental_sign(text: str, kind: str) -> bool:
-    """تابلوها و نشانه‌های محیطی روی دیوار/ساختمان (مثل POLICE یا SECTION B) که خارج حباب دیالوگ‌اند."""
+    """تابلوها و نشانه‌های محیطی روی دیوار/ساختمان (مثل POLICE یا SECTION B یا VIC LABOR) که خارج حباب دیالوگ‌اند."""
     if kind not in ("outside", "unknown", "square"):
         return False
     raw = (text or "").strip()
+    if any(c in raw for c in ("?", "!")):
+        return False
     words = re.findall(r"[A-Za-z]+", raw)
     if not words:
         return False
-    # کلمات تک مثل POLICE یا SECTION
+    # کلمات تک مثل POLICE یا SECTION یا ROW
     if len(words) == 1 and words[0].lower() in SIGNAGE_WORDS:
         return True
-    # عبارات کوتاه حداکثر ۲ کلمه‌ای مثل SECTION B یا POLICE STATION
-    if len(words) <= 2:
+    # عبارات کوتاه حداکثر ۳ کلمه‌ای که دارای کلمه تابلو/محیطی هستند (مثل SECTION B یا POLICE STATION یا VIC LABOR)
+    if len(words) <= 3:
         lowers = [w.lower() for w in words]
         if any(w in SIGNAGE_WORDS for w in lowers):
-            non_sign = [w for w in lowers if w not in SIGNAGE_WORDS]
-            if not non_sign or all(len(w) == 1 for w in non_sign):
+            if not any(w in COMMON_DIALOGUE_WORDS and w not in SIGNAGE_WORDS for w in lowers):
+                return True
+    return False
+
+
+def is_distant_background_text(item: dict, lines: list) -> bool:
+    """متن‌های بسیار ریز، دوردست، برچسب‌ها و تابلوهای ساختمانی در پس‌زمینه که خارج از هرگونه حباب گفتگو قرار دارند."""
+    kind = item.get("kind", "unknown")
+    # دیالوگ‌های درون حباب هرگز فیلتر نمی‌شوند (نظیر JUST... یا دیالوگ‌های کوتاه دیگر)
+    if kind not in ("outside", "unknown", "square"):
+        return False
+    text = (item.get("text") or "").strip()
+    if not text:
+        return False
+    if any(c in text for c in ("?", "!")):
+        return False
+    words = re.findall(r"[A-Za-z]+", text)
+    if not words:
+        return False
+    lowers = [w.lower() for w in words]
+    has_signage = any(w in SIGNAGE_WORDS for w in lowers)
+    if "..." in text and not has_signage:
+        return False
+    bbox = item.get("bbox") or []
+    if len(bbox) == 4:
+        w = max(0, bbox[2] - bbox[0])
+        h = max(0, bbox[3] - bbox[1])
+        area = w * h
+        # ۱. اگر کلمات تابلو یا برچسب ساختمانی در متن باشد و متن کوتاه باشد (<= 4 کلمه)
+        if has_signage and len(words) <= 4:
+            if h <= 65 and w <= 380:
+                return True
+        # ۲. نوشته‌های بسیار ریز یا دوردست در پس‌زمینه بیرون حباب (تا ۳ کلمه، ابعاد کوچک و بدون علائم نگارشی)
+        if kind in ("outside", "unknown") and len(words) <= 3:
+            if h <= 46 and w <= 200:
+                return True
+            if area < 6500 and h <= 48:
+                return True
+        elif len(words) <= 2:
+            if h <= 42 and w <= 160:
+                return True
+            if area < 5000 and h <= 45:
                 return True
     return False
 
@@ -1394,6 +1471,15 @@ def _partition_sfx_groups(numbers: list[int], by_number: dict) -> list[list[int]
     return groups
 
 
+# اصوات، ناله‌ها، واکنش‌های بیانی و تک‌واژه‌های درون حباب که دیالوگ کاراکتر محسوب می‌شوند
+BUBBLE_DIALOGUE_VOCALIZATIONS = {
+    "urgh", "argh", "ugh", "uggh", "ugghh", "ack", "gah", "gahh", "tsk", "tch", "phew", "whew",
+    "gasp", "sigh", "eek", "kya", "eep", "groan", "grunt", "ouch", "ah", "ahh", "oh",
+    "ohh", "eh", "ehh", "huh", "hm", "hmm", "hmmm", "huff", "puff", "pfft", "gawd",
+    "whoa", "woah", "damn", "dang", "ha", "haha", "hehe", "kuku", "fufu",
+}
+
+
 def drop_junk_blocks(block_list: list, lines: list) -> list:
     """بلوک‌هایی که همهٔ خطوطشان بی‌معنی‌اند کنار گذاشته می‌شوند (شماره‌گذاری بعداً دوباره ساخته می‌شود)."""
     kept = []
@@ -1409,14 +1495,22 @@ def drop_junk_blocks(block_list: list, lines: list) -> list:
         if is_junk_text(text, confidence):
             continue
         kind = item.get("kind", "unknown")
-        # تابلوها و علائم محیطی بیرون حباب (مثل POLICE، SECTION B) نباید وارد دیالوگ شوند
+        # تابلوها و علائم محیطی بیرون حباب (مثل POLICE، SECTION B، VIC LABOR) نباید وارد دیالوگ شوند
         if is_environmental_sign(text, kind):
             continue
+        # نوشته‌های بسیار ریز و دوردست در پس‌زمینه بیرون حباب فیلتر می‌شوند
+        if is_distant_background_text(item, lines):
+            continue
         # صداواژه‌ها و افکت‌های صوتی از فهرست ترجمه کنار گذاشته می‌شوند:
-        # ۱. در بیرون بالن، بالن‌های فریاد/نامشخص (shout, outside, unknown, square): تمام صداواژه‌ها و افکت‌ها حذف می‌شوند.
-        # ۲. در بالن صحبت (speech): صداهای بدنی و محیطی (قورت دادن، هورت کشیدن، سرفه، عطسه و...) حذف می‌شوند،
-        #    اما خنده‌های بیانی شخصیت‌ها (مثل Haha!) باقی می‌مانند.
+        # متونی که اصوات، ناله‌ها یا واکنش‌های بیانی شخصیت هستند و درون حباب (speech, shout, thought_bubble و...)
+        # قرار دارند، دیالوگ کاراکتر محسوب شده و برای ترجمه حفظ می‌شوند.
         if is_sfx_text(text):
+            words = set(re.findall(r"[a-z]+", text.lower()))
+            is_vocalization = bool((words and words.issubset(BUBBLE_DIALOGUE_VOCALIZATIONS)) or
+                                   re.fullmatch(r"[\s*]*(ha|he|ku|fu|ah|oh|eh|hm)+[\s*!.]*", text, re.I))
+            if kind not in ("outside", "unknown") and is_vocalization:
+                kept.append(item)
+                continue
             if kind in ("outside", "unknown", "shout", "square"):
                 continue
             if not re.fullmatch(r"[\s*]*(ha|he|ku|fu|ah|oh)+[\s*!.]*", text, re.I):
