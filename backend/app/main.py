@@ -1289,6 +1289,8 @@ def get_clean(job_id: str):
             translation = read_translation(job_id)
             if not stamp.get("manual") and (translation["stale"] or stamp != {"sourceRevision": translation["sourceRevision"], "translations": translation["translations"]}):
                 raise HTTPException(409, "ترجمه یا OCR تغییر کرده است؛ دوباره پاک‌سازی کنید.")
+        except HTTPException:
+            raise
         except Exception:
             pass
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
@@ -2582,9 +2584,6 @@ async def _preview_source(job_id: str, kind: str) -> Path:
             clean_file = workspace / "clean.png"
             if clean_file.is_file():
                 return clean_file
-        src = workspace / "source.img"
-        if src.is_file():
-            return src
     raise HTTPException(404, "پیش‌نمایش موجود نیست.")
 
 
