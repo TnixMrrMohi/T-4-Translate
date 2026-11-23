@@ -50,6 +50,7 @@ def test_refine_blends_into_classical_not_original_text(monkeypatch):
 
 @pytest.mark.parametrize("shape", [(37, 9), (512, 512), (513, 515), (1033, 1101), (1400, 80)])
 def test_tiles_bound_input_and_preserve_geometry_without_resize(monkeypatch, shape):
+    monkeypatch.setattr(inpaint, "_fixed_tile", lambda: 512)
     rng = np.random.default_rng(42)
     image = rng.integers(0, 256, (*shape, 3), dtype=np.uint8)
     mask = np.ones(shape, np.uint8) * 255
@@ -69,6 +70,7 @@ def test_tiles_bound_input_and_preserve_geometry_without_resize(monkeypatch, sha
 
 
 def test_tile_overlap_has_smooth_normalized_transition(monkeypatch):
+    monkeypatch.setattr(inpaint, "_fixed_tile", lambda: 512)
     image = np.zeros((100, 960, 3), np.uint8)
     calls = []
 
