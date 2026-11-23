@@ -232,6 +232,44 @@ def test_connected_figure8_bubbles_split_into_separate_lobes(tmp_path):
     assert planned[1]["center"][1] > 360
 
 
+def test_triple_connected_bubbles_split_into_three_separate_lobes(tmp_path):
+    """سه حباب متصل به هم به صورت زنجیره‌ای یا خوشه‌ای باید به سه حباب مستقل با دیالوگ‌های جدا تفکیک شوند."""
+    import cv2
+    import numpy as np
+
+    img_path = tmp_path / "triple.png"
+    img = Image.new("RGB", (700, 900), (80, 80, 80))
+    draw = ImageDraw.Draw(img)
+    # حباب ۱ (بالا راست)
+    draw.ellipse([350, 80, 600, 320], fill=(255, 255, 255))
+    # حباب ۲ (وسط چپ)
+    draw.ellipse([100, 240, 380, 520], fill=(255, 255, 255))
+    # حباب ۳ (پایین راست)
+    draw.ellipse([320, 450, 600, 720], fill=(255, 255, 255))
+
+    arr = np.array(img)
+    mask = (np.array(img.convert("L")) >= 200).astype(np.uint8)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(arr, cnts, -1, (0, 0, 0), 4)
+    Image.fromarray(arr).save(img_path)
+
+    lines = [
+        # حباب ۱
+        _line([400, 150, 550, 175]),
+        _line([400, 185, 550, 210]),
+        # حباب ۲
+        _line([160, 330, 320, 355]),
+        _line([160, 365, 320, 390]),
+        # حباب ۳
+        _line([380, 530, 540, 555]),
+        _line([380, 565, 540, 590]),
+    ]
+    result = bubbles.analyze(img_path, lines)
+    b_found = [b for b in result["bubbles"] if b["kind"] != "outside"]
+    assert len(b_found) == 3, [b["lines"] for b in result["bubbles"]]
+    assert sorted(b["lines"] for b in b_found) == [[1, 2], [3, 4], [5, 6]]
+
+
 def test_single_bubble_with_two_lines_is_not_split(tmp_path):
     def shapes(draw, size):
         draw.ellipse([150, 250, 450, 550], outline=0, width=4)
@@ -594,6 +632,32 @@ def test_row_vic_labor_and_distant_signage_filtered():
     assert "SHF" not in texts
     assert "FWIP" not in texts
     assert "JUST..." in texts
+
+
+def test_watermark_and_promo_domains_never_dropped_by_junk_filters():
+    """واترمارک‌ها و آدرس‌های وب مانند VORTEXSCANS.COM یا watermark.vortexscan.com نباید به عنوان نویز یا متن دوردست فیلتر شوند."""
+    assert bubbles.is_promotional("VORTEXSCANS.COM")
+    assert bubbles.is_promotional("watermark.vortexscan.com")
+    assert bubbles.is_promotional("vortexscans .com")
+    assert bubbles.is_promotional("WATERMARK")
+    assert bubbles.is_promotional("ASURASCANS.COM")
+
+    lines = [
+        {"text": "VORTEXSCANS.COM", "confidence": 0.98, "quad": [[75, 4780], [227, 4780], [227, 4816], [75, 4816]]},
+        {"text": "watermark.vortexscan.com", "confidence": 0.95, "quad": [[10, 10], [100, 10], [100, 30], [10, 30]]},
+        {"text": "ROW", "confidence": 0.95, "quad": [[500, 500], [550, 500], [550, 520], [500, 520]]},
+    ]
+
+    vortex_block = {"number": 1, "text": "VORTEXSCANS.COM", "kind": "outside", "bbox": [75, 4780, 227, 4816], "lines": [1]}
+    watermark_block = {"number": 2, "text": "watermark.vortexscan.com", "kind": "outside", "bbox": [10, 10, 100, 30], "lines": [2]}
+    row_block = {"number": 3, "text": "ROW", "kind": "outside", "bbox": [500, 500, 550, 520], "lines": [3]}
+
+    kept = bubbles.drop_junk_blocks([vortex_block, watermark_block, row_block], lines)
+    texts = [b["text"] for b in kept]
+    assert "VORTEXSCANS.COM" in texts
+    assert "watermark.vortexscan.com" in texts
+    assert "ROW" not in texts
+
 
 
 

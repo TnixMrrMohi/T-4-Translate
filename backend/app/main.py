@@ -862,7 +862,7 @@ def _check_promo(action: str) -> str:
     return action
 
 
-BUBBLE_VERSION = 4  # با هر تغییر در هندسهٔ تشخیص/گروه‌بندی یک پله بالا می‌رود تا کش کهنه شود
+BUBBLE_VERSION = 5  # با هر تغییر در هندسهٔ تشخیص/گروه‌بندی یک پله بالا می‌رود تا کش کهنه شود
 
 
 def bubbles_for(job_id: str, lines: list) -> dict:

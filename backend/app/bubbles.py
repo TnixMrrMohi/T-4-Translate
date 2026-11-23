@@ -144,11 +144,17 @@ KIND_COLORS = {
 # دعوت به کانال. الگوها محافظه‌کارانه‌اند تا دیالوگ عادی به‌اشتباه تبلیغ شمرده نشود.
 PROMO_PATTERNS = (
     r"https?://", r"www\.",
-    r"\b[a-z0-9-]+\.(com|net|org|ofg|orn|orq|c0m|con|ir|me|xyz|tv|co|io|info|site|online|link|top|vip)\b",
+    # دامنه‌ها و آدرس‌های اینترنتی (با پسوندهای رایج و غلط‌های املایی OCR و فاصله‌های احتمالی دور نقطه)
+    r"\b[a-z0-9_-]+(?:\s*\.\s*[a-z0-9_-]+)*\s*\.\s*(com|net|org|ofg|orn|orq|0rg|c0m|con|corn|ir|me|xyz|tv|co|io|info|site|online|link|top|vip|cc|to|is|in|club|gg|live|shop|app|dev|ru|us)\b",
+    # هر متنی که دارای .com یا پسوندهای وب باشد (مثل vortexscans.com یا watermark.vortexscan.com)
+    r"\.\s*(com|net|org|ofg|orn|orq|0rg|c0m|con|corn|xyz|site|online|top|vip|cc|club|gg|live|shop|app)\b",
     r"\bt\.me/", r"\bdiscord\.gg/", r"@[a-z0-9_]{4,}\b",
+    r"\bwater\s*marks?\b", r"واترمارک",
     r"instagram", r"telegram", r"facebook", r"twitter", r"patreon", r"ko-?fi",
     r"translated by", r"translation (by|group)", r"scanlat", r"scans? by", r"scan team",
     r"\b[a-z0-9_-]*(scans?|scanlat|comics?|webtoon|manga)\b",
+    r"\b(asura|flame|reaper|vortex|luminous|zero|night|realm|void|astra|dragon|cosmic|alpha|surya|reset)\s*scans?\b",
+    r"\b(mangadex|mangahub|bato|1stkiss|topmanhua|zinmanga|kunmanga)\b",
     r"read (more|online|at)", r"follow us", r"join (us|our)", r"subscribe",
     r"free webtoon", r"raw provider", r"proofreader", r"\b[vy]iclabor\b",
     r"تبلیغ", r"کانال", r"تلگرام", r"اینستاگرام", r"تخفیف", r"خرید", r"فروش",
@@ -503,94 +509,128 @@ def _split_bubbles(mask, line_boxes: dict, origin: tuple[int, int] = (0, 0)):
     if peak <= 1.0:
         return [(mask, numbers)]
 
-    labels = None
-    for ratio in (0.72, 0.62, 0.52, 0.44, 0.36):
+    best_parts = [(mask, numbers)]
+
+    # بررسی نسبت‌های مختلف برای یافتن بهترین تفکیک لوب‌ها بر اساس قله‌های فاصله
+    for ratio in (0.75, 0.70, 0.65, 0.60, 0.55, 0.50, 0.45, 0.40, 0.35):
         seeds = (distance >= peak * ratio).astype(np.uint8)
         count, seed_labels, stats, _ = cv2.connectedComponentsWithStats(seeds, connectivity=8)
         kept = [index for index in range(1, count)
-                if stats[index][4] >= mask.sum() * 0.02]
+                if stats[index][4] >= mask.sum() * 0.015]
         if len(kept) < 2:
             continue
         labels = np.zeros(mask.shape, np.int32)
         for new_index, old_index in enumerate(kept, 1):
             labels[seed_labels == old_index] = new_index
-        # رشد دانه‌ها تا پر شدن ناحیه؛ مرزها با نزدیک‌ترین دانه پر می‌شوند.
         refined = labels.copy()
         cv2.watershed(np.dstack([distance] * 3).astype(np.uint8), refined)
         grown = np.where(mask > 0, refined, 0)
-        if len({value for value in np.unique(grown) if value > 0}) >= 2:
-            labels = grown
-            break
-        labels = None
-    if labels is None:
-        return [(mask, numbers)]
 
-    counts = {value: int((labels == value).sum()) for value in np.unique(labels) if value > 0}
-    lobes = []
-    for value, area in counts.items():
-        if area < mask.sum() * 0.08:
+        counts = {value: int((grown == value).sum()) for value in np.unique(grown) if value > 0}
+        lobes = []
+        for value, area in counts.items():
+            if area < mask.sum() * 0.05:
+                continue
+            part = (grown == value).astype(np.uint8)
+            lobes.append((value, part))
+
+        if len(lobes) < 2:
             continue
-        part = (labels == value).astype(np.uint8)
-        lobes.append((value, part))
 
-    if len(lobes) < 2:
-        return [(mask, numbers)]
-
-    # اختصاص هر خط به لوبی که بیشترین هم‌پوشانی را با آن دارد
-    line_assigned: dict[int, int] = {}
-    for number in numbers:
-        box = line_boxes.get(number)
-        if not box:
-            continue
-        top, bottom, left, right = box
-        local_top = int(max(0, top - origin[1]))
-        local_left = int(max(0, left - origin[0]))
-        local_bottom = int(min(mask.shape[0], bottom - origin[1] + 1))
-        local_right = int(min(mask.shape[1], right - origin[0] + 1))
-
-        best_val = None
-        best_ratio = 0.0
-        for val, part in lobes:
-            window = part[local_top:local_bottom, local_left:local_right]
-            if window.size:
-                ratio = float(window.sum()) / float(window.size)
-                if ratio > best_ratio:
-                    best_ratio = ratio
-                    best_val = val
-        if best_val is not None and best_ratio >= 0.2:
-            line_assigned[number] = best_val
-
-    parts = []
-    for val, part in lobes:
-        part_numbers = [num for num, assigned_val in line_assigned.items() if assigned_val == val]
-        if part_numbers:
-            parts.append((part, part_numbers))
-
-    # اگر خطی به هیچ لوبی نرسید ولی لوب‌هایی داریم، خط را به نزدیک‌ترین لوب ملحق می‌کنیم تا متنی حذف نشود
-    unassigned = [num for num in numbers if num not in line_assigned]
-    if unassigned and parts:
-        for num in unassigned:
-            box = line_boxes.get(num)
+        # اختصاص هر خط به لوبی که بیشترین هم‌پوشانی را با آن دارد
+        line_assigned: dict[int, int] = {}
+        for number in numbers:
+            box = line_boxes.get(number)
             if not box:
                 continue
-            line_cy = (box[0] + box[1]) / 2.0 - origin[1]
-            line_cx = (box[2] + box[3]) / 2.0 - origin[0]
-            best_part_idx = 0
-            best_dist = float("inf")
-            for idx, (part, _) in enumerate(parts):
-                py, px = np.nonzero(part)
-                if len(px):
-                    part_cx = float(np.mean(px))
-                    part_cy = float(np.mean(py))
-                    dist = (line_cx - part_cx) ** 2 + (line_cy - part_cy) ** 2
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_part_idx = idx
-            parts[best_part_idx][1].append(num)
+            top, bottom, left, right = box
+            local_top = int(max(0, top - origin[1]))
+            local_left = int(max(0, left - origin[0]))
+            local_bottom = int(min(mask.shape[0], bottom - origin[1] + 1))
+            local_right = int(min(mask.shape[1], right - origin[0] + 1))
 
-    if len(parts) < 2:
-        return [(mask, numbers)]
-    return parts
+            best_val = None
+            best_ratio = 0.0
+            for val, part in lobes:
+                window = part[local_top:local_bottom, local_left:local_right]
+                if window.size:
+                    ratio_val = float(window.sum()) / float(window.size)
+                    if ratio_val > best_ratio:
+                        best_ratio = ratio_val
+                        best_val = val
+            if best_val is not None and best_ratio >= 0.2:
+                line_assigned[number] = best_val
+
+        candidate_parts = []
+        for val, part in lobes:
+            part_numbers = [num for num, assigned_val in line_assigned.items() if assigned_val == val]
+            if part_numbers:
+                candidate_parts.append((part, part_numbers))
+
+        # اگر خطی به هیچ لوبی نرسید، به نزدیک‌ترین لوب ملحق می‌شود تا متنی حذف نشود
+        unassigned = [num for num in numbers if num not in line_assigned]
+        if unassigned and candidate_parts:
+            for num in unassigned:
+                box = line_boxes.get(num)
+                if not box:
+                    continue
+                line_cy = (box[0] + box[1]) / 2.0 - origin[1]
+                line_cx = (box[2] + box[3]) / 2.0 - origin[0]
+                best_part_idx = 0
+                best_dist = float("inf")
+                for idx, (part, _) in enumerate(candidate_parts):
+                    py, px = np.nonzero(part)
+                    if len(px):
+                        part_cx = float(np.mean(px))
+                        part_cy = float(np.mean(py))
+                        dist = (line_cx - part_cx) ** 2 + (line_cy - part_cy) ** 2
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_part_idx = idx
+                candidate_parts[best_part_idx][1].append(num)
+
+        if len(candidate_parts) > len(best_parts):
+            best_parts = candidate_parts
+            if len(best_parts) >= len(numbers):
+                break
+
+    # لایهٔ دوم: اگر در یک لوب خطوطی با فاصلهٔ عمودی یا هندسی زیاد وجود داشت، تفکیک خوشه‌ای
+    final_parts = []
+    for part_mask, part_lines in best_parts:
+        if len(part_lines) < 2:
+            final_parts.append((part_mask, part_lines))
+            continue
+        ordered = sorted(part_lines, key=lambda n: (line_boxes[n][0], line_boxes[n][2]))
+        clusters = [[ordered[0]]]
+        for n in ordered[1:]:
+            prev_n = clusters[-1][-1]
+            b_prev = line_boxes[prev_n]
+            b_cur = line_boxes[n]
+            h_prev = max(1.0, b_prev[1] - b_prev[0])
+            h_cur = max(1.0, b_cur[1] - b_cur[0])
+            v_gap = max(0.0, b_cur[0] - b_prev[1])
+            h_overlap = min(b_prev[3], b_cur[3]) - max(b_prev[2], b_cur[2])
+            # فاصلهٔ عمودی نامتعارف یا فاصلهٔ محسوس بدون هم‌پوشانی افقی
+            if v_gap > max(80.0, 2.5 * min(h_prev, h_cur)) or (v_gap > 45.0 and h_overlap < -30):
+                clusters.append([n])
+            else:
+                clusters[-1].append(n)
+        if len(clusters) == 1:
+            final_parts.append((part_mask, part_lines))
+        else:
+            for c in clusters:
+                c_top = min(line_boxes[num][0] for num in c) - origin[1]
+                c_bottom = max(line_boxes[num][1] for num in c) - origin[1]
+                pad = 40
+                y_start = max(0, int(c_top - pad))
+                y_end = min(part_mask.shape[0], int(c_bottom + pad))
+                sub_mask = np.zeros_like(part_mask)
+                sub_mask[y_start:y_end, :] = part_mask[y_start:y_end, :]
+                if not sub_mask.any():
+                    sub_mask = part_mask
+                final_parts.append((sub_mask, c))
+
+    return final_parts
 
 
 def _analyze_crop(gray, lines: list, image_source, np, cv2) -> tuple[list[dict], list[int]]:
@@ -1187,6 +1227,8 @@ def is_junk_text(text: str, confidence: float | None = None) -> bool:
     value = (text or "").strip()
     if not value:
         return True
+    if is_promotional(value):
+        return False
     letters = _LATIN.findall(value)
     # خط/هانگول/کانا بدون متن لاتین: نوشتهٔ داخل هنر، نه دیالوگ.
     if _CJK.search(value) and len(letters) < 3:
@@ -1251,11 +1293,16 @@ COMMON_DIALOGUE_WORDS = {
     # کلمات پرسشی و ربطی
     "what", "when", "where", "which", "while", "whose", "why", "how", "that", "this", "then", "them", "they",
     # ضمایر و صفات اشاره/شخصی
-    "their", "theirs", "there", "these", "those", "each", "every", "some", "such", "much", "many", "more", "most",
+    "i", "me", "my", "mine", "you", "your", "yours", "he", "him", "his", "she", "her", "hers", "it", "its",
+    "we", "us", "our", "ours", "they", "them", "their", "theirs", "there", "these", "those",
+    "each", "every", "some", "such", "much", "many", "more", "most",
     "other", "another", "thing", "things", "someone", "something", "anyone", "anything", "everyone", "everything",
     "nothing", "myself", "yourself", "himself", "herself", "itself", "ourselves", "themselves",
+    # افعال کمکی و ربطی
+    "am", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+    "do", "does", "did", "done", "can", "could", "will", "would", "shall", "should", "may", "might", "must",
     # افعال و کلمات پرکاربرد دیالوگ
-    "wait", "want", "went", "were", "will", "well", "with", "without", "within", "have", "here", "hear", "heard",
+    "wait", "want", "went", "well", "with", "without", "within", "here", "hear", "heard",
     "help", "head", "hand", "hands", "hold", "take", "make", "know", "knew", "look", "like", "love", "live", "life",
     "dead", "kill", "stop", "step", "stay", "stand", "shut", "open", "door", "room", "back", "away", "down", "over",
     "under", "again", "never", "always", "maybe", "please", "sorry", "thank", "thanks", "hello", "good", "great",
@@ -1329,6 +1376,8 @@ SIGNAGE_WORDS = {
 
 def is_environmental_sign(text: str, kind: str) -> bool:
     """تابلوها و نشانه‌های محیطی روی دیوار/ساختمان (مثل POLICE یا SECTION B یا VIC LABOR) که خارج حباب دیالوگ‌اند."""
+    if is_promotional(text):
+        return False
     if kind not in ("outside", "unknown", "square"):
         return False
     raw = (text or "").strip()
@@ -1351,12 +1400,12 @@ def is_environmental_sign(text: str, kind: str) -> bool:
 
 def is_distant_background_text(item: dict, lines: list) -> bool:
     """متن‌های بسیار ریز، دوردست، برچسب‌ها و تابلوهای ساختمانی در پس‌زمینه که خارج از هرگونه حباب گفتگو قرار دارند."""
-    kind = item.get("kind", "unknown")
-    # دیالوگ‌های درون حباب هرگز فیلتر نمی‌شوند (نظیر JUST... یا دیالوگ‌های کوتاه دیگر)
-    if kind not in ("outside", "unknown", "square"):
-        return False
     text = (item.get("text") or "").strip()
-    if not text:
+    if not text or is_promotional(text):
+        return False
+    kind = item.get("kind", "unknown")
+    # دیالوگ‌های درون حباب یا بلوک‌های نامشخص هرگز به عنوان تابلو/پس‌زمینه دوردست حذف نمی‌شوند
+    if kind != "outside":
         return False
     if any(c in text for c in ("?", "!")):
         return False
@@ -1364,6 +1413,10 @@ def is_distant_background_text(item: dict, lines: list) -> bool:
     if not words:
         return False
     lowers = [w.lower() for w in words]
+    if any(w in COMMON_DIALOGUE_WORDS for w in lowers):
+        return False
+    if any(w.upper() in _SHORT_OK for w in words):
+        return False
     has_signage = any(w in SIGNAGE_WORDS for w in lowers)
     if "..." in text and not has_signage:
         return False
@@ -1371,21 +1424,9 @@ def is_distant_background_text(item: dict, lines: list) -> bool:
     if len(bbox) == 4:
         w = max(0, bbox[2] - bbox[0])
         h = max(0, bbox[3] - bbox[1])
-        area = w * h
-        # ۱. اگر کلمات تابلو یا برچسب ساختمانی در متن باشد و متن کوتاه باشد (<= 4 کلمه)
+        # اگر کلمات تابلو یا برچسب ساختمانی در متن باشد و متن کوتاه باشد (<= 4 کلمه)
         if has_signage and len(words) <= 4:
             if h <= 65 and w <= 380:
-                return True
-        # ۲. نوشته‌های بسیار ریز یا دوردست در پس‌زمینه بیرون حباب (تا ۳ کلمه، ابعاد کوچک و بدون علائم نگارشی)
-        if kind in ("outside", "unknown") and len(words) <= 3:
-            if h <= 46 and w <= 200:
-                return True
-            if area < 6500 and h <= 48:
-                return True
-        elif len(words) <= 2:
-            if h <= 42 and w <= 160:
-                return True
-            if area < 5000 and h <= 45:
                 return True
     return False
 
@@ -1484,6 +1525,12 @@ def drop_junk_blocks(block_list: list, lines: list) -> list:
     """بلوک‌هایی که همهٔ خطوطشان بی‌معنی‌اند کنار گذاشته می‌شوند (شماره‌گذاری بعداً دوباره ساخته می‌شود)."""
     kept = []
     for item in block_list:
+        text = item.get("text", "")
+        # متن تبلیغاتی، واترمارک یا آدرس سایت (حتی با فونت ریز یا در حاشیهٔ تصویر) باید حفظ شود
+        # تا در بخش «مدیریت واترمارک» با moonb.ir جایگزین یا طبق تنظیم کاربر حذف شود.
+        if is_promotional(text):
+            kept.append(item)
+            continue
         scores = []
         for number in item.get("lines") or []:
             if 1 <= number <= len(lines):
