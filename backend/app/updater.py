@@ -881,9 +881,15 @@ def apply_script_text(plan: dict, restart_exe: str) -> str:
         return f"""@echo off
 rem T-4 Translate - apply the downloaded update after the app exits
 setlocal
-timeout /t 2 /nobreak >nul
+:wait_app_exit
+tasklist /fi "imagename eq T4Translate.exe" 2>nul | find /i "T4Translate.exe" >nul
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto wait_app_exit
+)
+timeout /t 1 /nobreak >nul
 {backup_block}
-robocopy "{staging}" "{install}" /E /NFL /NDL /NJH /NJS /R:2 /W:1 >nul
+robocopy "{staging}" "{install}" /E /NFL /NDL /NJH /NJS /R:30 /W:2 >nul
 {removals}
 del /f /q "{plan['staging'].replace('/', chr(92))}\\..\\pending.json" 2>nul
 start "" "{restart_exe.replace('/', chr(92))}"

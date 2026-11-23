@@ -659,5 +659,27 @@ def test_watermark_and_promo_domains_never_dropped_by_junk_filters():
     assert "ROW" not in texts
 
 
+def test_connected_multi_lobed_bubble_is_partitioned():
+    """حباب‌های متصل چندبخشی با گپ عمودی بزرگ باید به بلوک‌های مجزا با کادر اختصاصی شکسته شوند."""
+    lines = [
+        # لوب اول
+        {"text": "LINE ONE", "confidence": 0.98, "quad": [[100, 100], [300, 100], [300, 130], [100, 130]]},
+        {"text": "LINE TWO", "confidence": 0.98, "quad": [[100, 138], [300, 138], [300, 168], [100, 168]]},
+        # لوب دوم (فاصله ۵۲ پیکسلی = بیش از ۱٫۵ برابر ارتفاع خط)
+        {"text": "LOBE TWO A", "confidence": 0.98, "quad": [[150, 220], [350, 220], [350, 250], [150, 250]]},
+        {"text": "LOBE TWO B", "confidence": 0.98, "quad": [[150, 258], [350, 258], [350, 288], [150, 288]]},
+    ]
+    doc = {"bubbles": [{"id": 1, "kind": "speech", "lines": [1, 2, 3, 4], "bbox": [80, 80, 300, 220]}]}
+    blks = bubbles.blocks(doc, lines)
+    assert len(blks) == 2
+    assert blks[0]["lines"] == [1, 2]
+    assert blks[0]["text"] == "LINE ONE LINE TWO"
+    assert blks[0]["bbox"] == [100, 100, 300, 168]
+    assert blks[1]["lines"] == [3, 4]
+    assert blks[1]["text"] == "LOBE TWO A LOBE TWO B"
+    assert blks[1]["bbox"] == [150, 220, 350, 288]
+
+
+
 
 

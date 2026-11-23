@@ -147,13 +147,14 @@ PROMO_PATTERNS = (
     # دامنه‌ها و آدرس‌های اینترنتی (با پسوندهای رایج و غلط‌های املایی OCR و فاصله‌های احتمالی دور نقطه)
     r"\b[a-z0-9_-]+(?:\s*\.\s*[a-z0-9_-]+)*\s*\.\s*(com|net|org|ofg|orn|orq|0rg|c0m|con|corn|ir|me|xyz|tv|co|io|info|site|online|link|top|vip|cc|to|is|in|club|gg|live|shop|app|dev|ru|us)\b",
     # هر متنی که دارای .com یا پسوندهای وب باشد (مثل vortexscans.com یا watermark.vortexscan.com)
-    r"\.\s*(com|net|org|ofg|orn|orq|0rg|c0m|con|corn|xyz|site|online|top|vip|cc|club|gg|live|shop|app)\b",
+    r"(?:\.|\b)(com|net|org|ofg|orn|orq|0rg|c0m|con|corn|xyz|site|online|top|vip|cc|club|gg|live|shop|app)\b",
     r"\bt\.me/", r"\bdiscord\.gg/", r"@[a-z0-9_]{4,}\b",
     r"\bwater\s*marks?\b", r"واترمارک",
     r"instagram", r"telegram", r"facebook", r"twitter", r"patreon", r"ko-?fi",
     r"translated by", r"translation (by|group)", r"scanlat", r"scans? by", r"scan team",
     r"\b[a-z0-9_-]*(scans?|scanlat|comics?|webtoon|manga)\b",
     r"\b(asura|flame|reaper|vortex|luminous|zero|night|realm|void|astra|dragon|cosmic|alpha|surya|reset)\s*scans?\b",
+    r"\b(vortex|vortexscan|vortexscans|asurascans?|reaperscans?|flamescans?)\b",
     r"\b(mangadex|mangahub|bato|1stkiss|topmanhua|zinmanga|kunmanga)\b",
     r"read (more|online|at)", r"follow us", r"join (us|our)", r"subscribe",
     r"free webtoon", r"raw provider", r"proofreader", r"\b[vy]iclabor\b",
@@ -1190,9 +1191,13 @@ def blocks(document: dict, lines: list) -> list[dict]:
                     result.append(_block(group, by_number, "outside", []))
         else:
             features = bubble.get("features") or {}
-            for group in _partition_sfx_groups(numbers, by_number):
-                result.append(_block(group, by_number, bubble.get("kind", "unknown"),
-                                     bubble.get("bbox") or [], float(features.get("solidity") or 1.0)))
+            for sfx_group in _partition_sfx_groups(numbers, by_number):
+                subgroups = _partition_bubble_lines(sfx_group, by_number)
+                is_multi = len(subgroups) > 1
+                for group in subgroups:
+                    group_bbox = [] if is_multi else (bubble.get("bbox") or [])
+                    result.append(_block(group, by_number, bubble.get("kind", "unknown"),
+                                         group_bbox, float(features.get("solidity") or 1.0)))
     for number in sorted(set(by_number) - seen):
         result.append(_block([number], by_number, "unknown", []))
 
@@ -1510,6 +1515,59 @@ def _partition_sfx_groups(numbers: list[int], by_number: dict) -> list[list[int]
     if current:
         groups.append(current)
     return groups
+
+
+def _partition_bubble_lines(numbers: list[int], by_number: dict) -> list[list[int]]:
+    """خطوط درون یک بالن بزرگ یا حباب‌های چندبخشی به هم چسبیده را به بخش‌های مجزا می‌شکند.
+
+    گاهی دو یا چند حباب به هم چسبیده‌اند یا یک حباب چندبخشی (چند لاله/لوب) است.
+    در این حالت فاصلهٔ عمودی خط پایانی بخش اول تا خط اول بخش دوم خیلی بیشتر از
+    فاصله‌سطر عادیِ داخل یک دیالوگ است (معمولاً ۱٫۳۵ تا ۲ برابر ارتفاع خط).
+    اگر این‌ها یک بلوک شوند، متن به هم می‌ریزد و از حباب بیرون می‌زند (اسلاید ۲).
+    با تفکیک این خطوط، هر بخش کادر متنی و ترجمهٔ تمیز و مستقل خود را می‌گیرد.
+    """
+    if len(numbers) <= 1:
+        return [numbers] if numbers else []
+    ordered = sorted(numbers, key=lambda n: (
+        (_line_box(by_number.get(n)) or (0, 0, 0, 0))[0],
+        (_line_box(by_number.get(n)) or (0, 0, 0, 0))[2],
+    ))
+    subgroups: list[list[int]] = []
+    current_group: list[int] = [ordered[0]]
+    for i in range(len(ordered) - 1):
+        curr_num = ordered[i]
+        next_num = ordered[i + 1]
+        b1 = _line_box(by_number.get(curr_num))
+        b2 = _line_box(by_number.get(next_num))
+        if b1 is None or b2 is None:
+            current_group.append(next_num)
+            continue
+        h1 = max(1.0, b1[1] - b1[0])
+        h2 = max(1.0, b2[1] - b2[0])
+        h_ref = (h1 + h2) / 2.0
+        gap_y = b2[0] - b1[1]
+        overlap_x = min(b1[3], b2[3]) - max(b1[2], b2[2])
+        min_w = max(1.0, min(b1[3] - b1[2], b2[3] - b2[2]))
+
+        is_split = False
+        # ۱. فاصلهٔ عمودی زیاد بین آخرین خط بخش قبل و اولین خط بخش بعد
+        if gap_y >= max(20.0, 1.35 * h_ref):
+            is_split = True
+        # ۲. جابه‌جایی افقی کامل ستون‌ها به همراه جدایی عمودی
+        elif overlap_x <= 0 and gap_y >= 0.4 * h_ref:
+            is_split = True
+        # ۳. همپوشانی افقی ناچیز همراه با فاصلهٔ عمودی در حد یک خط
+        elif (overlap_x / min_w) < 0.2 and gap_y >= 1.0 * h_ref:
+            is_split = True
+
+        if is_split:
+            subgroups.append(current_group)
+            current_group = [next_num]
+        else:
+            current_group.append(next_num)
+    if current_group:
+        subgroups.append(current_group)
+    return subgroups
 
 
 # اصوات، ناله‌ها، واکنش‌های بیانی و تک‌واژه‌های درون حباب که دیالوگ کاراکتر محسوب می‌شوند

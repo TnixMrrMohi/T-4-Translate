@@ -680,7 +680,7 @@ async def run_ocr(job_id: str, filter_slanted: bool = True) -> dict:
             progress.fail(job_id, "پردازش OCR ناموفق بود.")
             raise HTTPException(500, "پردازش OCR ناموفق بود.") from None
         raw_lines = list(lines)
-        active_lines = [l for l in raw_lines if not ocr.is_slanted_quad(l.get("quad"))] if filter_slanted else list(raw_lines)
+        active_lines = [l for l in raw_lines if not ocr.is_slanted_quad(l.get("quad")) or bubbles.is_promotional(l.get("text", ""))] if filter_slanted else list(raw_lines)
         result = {
             "jobId": job_id,
             "provider": "rapidocr-experimental",
@@ -767,7 +767,7 @@ async def update_ocr_settings(job_id: str, payload: OcrSettingsPayload) -> dict:
 
     filter_slanted = payload.filterSlanted
     if filter_slanted:
-        active_lines = [l for l in raw_lines if not ocr.is_slanted_quad(l.get("quad"))]
+        active_lines = [l for l in raw_lines if not ocr.is_slanted_quad(l.get("quad")) or bubbles.is_promotional(l.get("text", ""))]
     else:
         active_lines = list(raw_lines)
 

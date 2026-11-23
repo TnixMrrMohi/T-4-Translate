@@ -190,3 +190,26 @@ def test_replace_mode_cleans_and_writes_moonb_ir(monkeypatch, tmp_path):
         assert client.post(f'/api/jobs/{job}/clean').status_code == 200
         assert _dark_pixels(client, job, LINES[1]['quad']) == 0
         assert client.post(f'/api/jobs/{job}/render').status_code == 200
+
+
+def test_slanted_promo_is_never_dropped_by_filter_slanted(monkeypatch, tmp_path):
+    """خط تبلیغاتی/واترمارک حتی اگر مایل/کج باشد نباید توسط فیلتر خطوط کج حذف شود."""
+    slanted_lines = [
+        {'text': 'SLANTED SFX', 'confidence': 0.9, 'quad': [[10, 10], [90, 50], [70, 70], [10, 30]]},
+        {'text': 'VORTEXSCANS.COM', 'confidence': 0.95, 'quad': [[10, 100], [90, 140], [70, 160], [10, 120]]},
+        {'text': 'NORMAL DIALOGUE', 'confidence': 0.95, 'quad': [[10, 200], [100, 200], [100, 230], [10, 230]]},
+    ]
+    monkeypatch.setenv('T4_DATA_DIR', str(tmp_path))
+    monkeypatch.setattr(ocr, 'recognize', lambda path, on_progress=None: [dict(l) for l in slanted_lines])
+    monkeypatch.setattr('app.main.bubbles_for', lambda job_id, lines: {'bubbles': []})
+
+    with TestClient(app) as client:
+        job = create(client)
+        res = client.post(f'/api/jobs/{job}/ocr', json={'filterSlanted': True})
+        assert res.status_code == 200
+        ocr_doc = client.get(f'/api/jobs/{job}/ocr').json()
+        active_texts = [l['text'] for l in ocr_doc['lines']]
+        assert 'SLANTED SFX' not in active_texts
+        assert 'VORTEXSCANS.COM' in active_texts
+        assert 'NORMAL DIALOGUE' in active_texts
+
