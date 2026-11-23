@@ -1580,7 +1580,7 @@ export function BatchPanel({
     if (failed.length) parts.push(`${failed.length} فایل خوانده نشد (دکمهٔ «تلاش دوباره برای فایل‌های ناموفق» را بزنید؛ بقیه دست‌نخورده می‌مانند)`);
     if (errors.length) parts.push(`خطاها: ${errors.join(' | ')}`);
     setMessage(parts.join('؛ ') + '.');
-    if (found.length > 0) {
+    if (found.length > 0 && failed.length === 0 && errors.length === 0) {
       setBatchStep(2);
     }
   }

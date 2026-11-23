@@ -79,7 +79,8 @@ def _worker(kind: str, payload: dict, directory: str, profile: dict):
     hardware.set_profile(profile)
     hardware.configure_native_threads(profile)
     root=Path(directory)
-    _limit_handle = _windows_limit(2048)  # keep the handle until worker exit
+    worker_limit_mb = max(4096, int(profile.get('memoryBudgetMb', 3584) * 2))
+    _limit_handle = _windows_limit(worker_limit_mb)  # keep the handle until worker exit
     try:
         import psutil
         process=psutil.Process()
@@ -320,10 +321,10 @@ async def run(kind: str, payload: dict, workspace: Path, key: str | None = None)
                                         etaStartedAt=data.get('etaStartedAt'),
                                         etaBaseFraction=data.get('etaBaseFraction'))
                         progress.set_resources(key,child_profile)
-                    if child_profile.get('name') in ('Low','Medium','High'):
-                        rank={'Low':0,'Medium':1,'High':2}
+                    if child_profile.get('name') in ('Low', 'Medium'):
+                        rank = {'Low': 0, 'Medium': 1}
                         current_name = hardware.current_profile()['name']
-                        if rank[child_profile['name']] < rank[current_name]:
+                        if rank.get(child_profile['name'], 0) < rank.get(current_name, 0):
                             diagnostics.log_event(
                                 'resources.profile.downgraded', level=logging.WARNING, operation=kind,
                                 previous=current_name, new=child_profile['name'],

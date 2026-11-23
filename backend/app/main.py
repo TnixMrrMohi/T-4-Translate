@@ -112,6 +112,24 @@ def system_report() -> dict:
     return report
 
 
+class HardwareSettingsInput(BaseModel):
+    allowMedium: bool
+
+
+@app.get("/api/hardware/settings")
+def get_hardware_settings_api() -> dict:
+    """دریافت تنظیمات سخت‌افزاری پردازش."""
+    return hardware.get_hardware_settings()
+
+
+@app.post("/api/hardware/settings")
+def save_hardware_settings_api(body: HardwareSettingsInput) -> dict:
+    """به‌روزرسانی تنظیمات سخت‌افزاری پردازش (مانند فعال/غیرفعال بودن حالت Medium)."""
+    saved = hardware.save_hardware_settings(body.model_dump())
+    updated_profile = hardware.current_profile(refresh=True)
+    return {"settings": saved, "resources": updated_profile}
+
+
 @app.get("/api/models")
 def models_state() -> dict:
     """فهرست مدل‌ها، وضعیت نصب/دانلود و حجم اشغال‌شده."""

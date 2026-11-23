@@ -51,6 +51,16 @@ export type SystemReport = {
     ocrModel: boolean;
   };
   diagnosticsLog?: string | null;
+  resources?: {
+    name: 'Medium' | 'Low' | string;
+    allowMedium?: boolean;
+    availableRamMb?: number;
+    totalRamMb?: number;
+    cpuThreads?: number;
+  };
+  hardwareSettings?: {
+    allowMedium: boolean;
+  };
 };
 
 const PERCENT = (fraction: number) => `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}٪`;
@@ -96,6 +106,8 @@ export default function SystemPanel({buttonLabel}: {buttonLabel?: string}) {
   const [store, setStore] = useState<ModelsState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [allowMedium, setAllowMedium] = useState<boolean>(true);
+  const [savingSettings, setSavingSettings] = useState(false);
   // مدلی که همین حالا «نصب» زده شده ولی سرور هنوز درصد نداده است.
   const [starting, setStarting] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -107,8 +119,14 @@ export default function SystemPanel({buttonLabel}: {buttonLabel?: string}) {
       readApi<ModelsState>('/api/models', 'خواندن فهرست مدل‌ها ناموفق بود'),
     ]);
     const errors: string[] = [];
-    if (systemResult.status === 'fulfilled') setReport(systemResult.value);
-    else errors.push(systemResult.reason instanceof Error ? systemResult.reason.message : 'خواندن سخت‌افزار ناموفق بود.');
+    if (systemResult.status === 'fulfilled') {
+      setReport(systemResult.value);
+      if (systemResult.value.hardwareSettings?.allowMedium !== undefined) {
+        setAllowMedium(systemResult.value.hardwareSettings.allowMedium);
+      }
+    } else {
+      errors.push(systemResult.reason instanceof Error ? systemResult.reason.message : 'خواندن سخت‌افزار ناموفق بود.');
+    }
     if (modelsResult.status === 'fulfilled') setStore(modelsResult.value);
     else errors.push(modelsResult.reason instanceof Error ? modelsResult.reason.message : 'خواندن فهرست مدل‌ها ناموفق بود.');
     setError(errors.length ? errors.join(' · ') : null);
@@ -164,6 +182,27 @@ export default function SystemPanel({buttonLabel}: {buttonLabel?: string}) {
       // روشن‌کردن نخِ دانلود، پیشرفت را ثبت می‌کند، پس نوار یک لحظه هم خالی نمی‌ماند.
       setStarting(null);
       setBusyId(null);
+    }
+  };
+
+  const toggleAllowMedium = async (checked: boolean) => {
+    setSavingSettings(true);
+    setAllowMedium(checked);
+    try {
+      const response = await fetch('/api/hardware/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({allowMedium: checked}),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || 'خطا در ذخیره تنظیمات');
+      }
+      await load();
+    } catch (problem) {
+      setError(problem instanceof Error ? problem.message : 'خطا در ذخیره تنظیمات');
+    } finally {
+      setSavingSettings(false);
     }
   };
 
@@ -244,13 +283,13 @@ export default function SystemPanel({buttonLabel}: {buttonLabel?: string}) {
                   <dd>{report.ramMb ? formatSize(report.ramMb * 1024 * 1024) : 'نامعلوم'}</dd>
                   <dt>کارت گرافیک</dt>
                   <dd>
-                    {hasGpu ? report.gpu.name : 'شناسایی نشد (پردازش با پردازنده)'}
+                    {hasGpu ? `${report.gpu.name} (غیرفعال - پردازش ۱۰۰٪ با CPU و رم)` : 'شناسایی نشد (پردازش با پردازنده)'}
                     {hasGpu && report.gpu.memory ? ` · ${report.gpu.memory}` : ''}
                   </dd>
                   <dt>شتاب‌دهنده</dt>
                   <dd dir="ltr" style={{textAlign: 'right'}}>
                     {report.providers.length ? report.providers.join(', ') : 'CPU'}
-                    {report.accelerated ? ' (فعال)' : ''}
+                    {report.accelerated ? ' (فعال)' : ' (غیرفعال جهت پایداری)'}
                   </dd>
                   <dt>فضای آزاد</dt>
                   <dd>{formatSize(report.disk.freeMb * 1024 * 1024)} از {formatSize(report.disk.totalMb * 1024 * 1024)}</dd>
@@ -265,6 +304,36 @@ export default function SystemPanel({buttonLabel}: {buttonLabel?: string}) {
                     <span dir="ltr" style={{unicodeBidi: 'plaintext'}}>{report.diagnosticsLog}</span>
                   </p>
                 )}
+              </section>
+            )}
+
+            {report && (
+              <section className="system-block" aria-label="تنظیمات پردازش سخت‌افزاری">
+                <h4>تنظیمات پردازش (سی‌پی‌یو و رم)</h4>
+                <div style={{display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px'}}>
+                  <label className="update-check" style={{cursor: 'pointer'}}>
+                    <input
+                      type="checkbox"
+                      checked={allowMedium}
+                      disabled={savingSettings}
+                      onChange={e => void toggleAllowMedium(e.target.checked)}
+                    />
+                    <span style={{fontWeight: 600}}>
+                      اجازهٔ استفاده از حالت Medium (متعادل) در صورت توانایی سیستم
+                    </span>
+                  </label>
+                  <p className="system-note" style={{margin: '2px 0 6px'}}>
+                    {allowMedium
+                      ? '• حالت فعال: اگر سیستم کشش کافی داشته باشد (رم آزاد و هستهٔ کافی)، پردازش با سرعت بالاتر (Medium) انجام می‌شود؛ در غیر این صورت به طور خودکار به حالت سبک (Low) سوییچ می‌کند.'
+                      : '• حالت خاموش: پردازش به طور دائم در سبک‌ترین و کم‌مصرف‌ترین حالت (Low) اجرا می‌شود (مناسب سیستم‌های حساس یا منابع محدود).'}
+                  </p>
+                  <div style={{background: '#0f1e24', borderRadius: '8px', padding: '7px 10px', fontSize: '13px', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                    <span style={{color: '#8fb0ac'}}>پروفایل فعال فعلی:</span>
+                    <span style={{color: report.resources?.name === 'Medium' ? '#00ffcc' : '#f59e0b', fontWeight: 'bold'}}>
+                      {report.resources?.name === 'Medium' ? 'Medium (متعادل و سریع)' : 'Low (سبک و کم‌مصرف)'}
+                    </span>
+                  </div>
+                </div>
               </section>
             )}
 

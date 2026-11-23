@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
@@ -184,9 +185,38 @@ def disk() -> dict:
         return {"path": str(root), "freeMb": None, "totalMb": None}
 
 
+def get_hardware_settings() -> dict:
+    """تنظیمات سخت‌افزاری پردازش (مانند فعال/غیرفعال بودن حالت Medium)."""
+    path = Path(os.environ.get("T4_DATA_DIR") or Path.home() / ".t4-translate") / "hardware-settings.json"
+    try:
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {"allowMedium": bool(data.get("allowMedium", True))}
+    except Exception:
+        pass
+    return {"allowMedium": True}
+
+
+def save_hardware_settings(settings: dict) -> dict:
+    """ذخیره تنظیمات سخت‌افزاری و بازنشانی پروفایل فعال."""
+    current = get_hardware_settings()
+    if "allowMedium" in settings:
+        current["allowMedium"] = bool(settings["allowMedium"])
+    path = Path(os.environ.get("T4_DATA_DIR") or Path.home() / ".t4-translate") / "hardware-settings.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    global _profile
+    with _profile_lock:
+        _profile = None
+    return current
+
+
 def report() -> dict:
     """خلاصهٔ سخت‌افزار و نرم‌افزار برای پنل تنظیمات."""
-    providers = onnx_providers()
     return {
         "platform": platform.platform(),
         "machine": platform.machine(),
@@ -194,16 +224,16 @@ def report() -> dict:
         "cores": os.cpu_count() or 1,
         "ramMb": total_ram_mb(),
         "gpu": gpu(),
-        "providers": providers,
-        "accelerated": any(provider in ACCELERATORS for provider in providers),
+        "providers": ["CPUExecutionProvider"],
+        "accelerated": False,
         "libraries": libraries(),
         "disk": disk(),
         "resources": current_profile(refresh=True),
+        "hardwareSettings": get_hardware_settings(),
     }
 
 
-# Conservative policy: a registered CUDA provider alone is NOT proof of a GPU.
-# Re-evaluated between work units; a running job only downgrades, never oscillates.
+# پردازش ۱۰۰٪ مبتنی بر CPU و RAM است؛ کارت گرافیک جهت پایداری کامل و جلوگیری از خطاهای کرش/TDR استفاده نمی‌شود.
 import threading
 
 _profile_lock = threading.Lock()
@@ -230,44 +260,42 @@ def resource_snapshot() -> dict:
         cores = min(cores, len(psutil.Process().cpu_affinity()))
     except (AttributeError, psutil.Error):
         pass
-    providers = onnx_providers()
-    device = gpu()
-    physical = bool(device.get('name')) and not any(
-        word in device['name'].lower() for word in ('basic render', 'remote display', 'virtual'))
-    # انتخاب هوشمند شتاب‌دهنده بر اساس سازنده کارت:
-    # انویدیا اولویت با CUDA؛ ای‌ام‌دی (AMD) و اینتل در ویندوز اولویت با DirectML (DML)
-    vendor = device.get('vendor', '')
-    if vendor == 'nvidia':
-        preferred = ['CUDAExecutionProvider', 'DmlExecutionProvider']
-    elif vendor in ('amd', 'intel'):
-        preferred = ['DmlExecutionProvider', 'CUDAExecutionProvider']
-    else:
-        preferred = ['CUDAExecutionProvider', 'DmlExecutionProvider']
-    accelerators = [p for p in preferred if p in providers]
-    return {'availableRamMb': available, 'totalRamMb': total, 'cores': max(1, cores),
-            'cpuPercent': psutil.cpu_percent(interval=None),
-            'gpuUsable': bool(physical and accelerators), 'gpuProviders': accelerators}
+    # شتاب‌دهندهٔ گرافیکی (GPU) به طور کامل کنار گذاشته شده است و تمام محاسبات روی پردازنده انجام می‌گیرد.
+    return {
+        'availableRamMb': available,
+        'totalRamMb': total,
+        'cores': max(1, cores),
+        'cpuPercent': psutil.cpu_percent(interval=None),
+        'gpuUsable': False,
+        'gpuProviders': [],
+    }
 
 
 def choose_profile(info: dict) -> dict:
+    allow_medium = get_hardware_settings().get("allowMedium", True)
     free = info.get('availableRamMb')
     cores = max(1, int(info.get('cores') or 1))
     load = info.get('cpuPercent')
-    if free is None or load is None or free < 3072 or load >= 80 or cores < 4:
+    # حالت High کلاً حذف شده است؛ فقط بین Medium و Low انتخاب می‌شود.
+    # اگر تنظیمات Medium خاموش باشد، همیشه Low استفاده می‌شود.
+    # اگر Medium روشن باشد، در صورت کشش سیستم (رم و هسته کافی) Medium وگرنه خودکار Low.
+    if not allow_medium or free is None or load is None or free < 3072 or load >= 80 or cores < 4:
         name = 'Low'
-    elif info.get('gpuUsable') and free >= 6144 and load < 70:
-        name = 'High'
     else:
         name = 'Medium'
-    return {**info, 'name': name, 'tile': {'High': 512, 'Medium': 384, 'Low': 256}[name],
-            'cpuThreads': 1 if name == 'Low' else max(1, cores // 2),
-            'workers': 1,
-            'providers': (info.get('gpuProviders') or []) + ['CPUExecutionProvider']
-                         if info.get('gpuUsable') else ['CPUExecutionProvider'],
-            'pauseSeconds': .01 if name != 'High' else 0,
-            'maxPixels': {'High': 150000000, 'Medium': 120000000, 'Low': 6000000}[name],
-            'memoryBudgetMb': 2560 if name != 'Low' else 1536,
-            'quality': 'classical-or-small-dynamic-model' if name == 'Low' else 'full'}
+    return {
+        **info,
+        'name': name,
+        'allowMedium': allow_medium,
+        'tile': {'Medium': 384, 'Low': 256}[name],
+        'cpuThreads': 1 if name == 'Low' else max(1, cores // 2),
+        'workers': 1,
+        'providers': ['CPUExecutionProvider'],
+        'pauseSeconds': .01 if name == 'Low' else 0,
+        'maxPixels': {'Medium': 120000000, 'Low': 6000000}[name],
+        'memoryBudgetMb': 2560 if name == 'Medium' else 1536,
+        'quality': 'classical-or-small-dynamic-model' if name == 'Low' else 'full',
+    }
 
 
 def set_profile(profile: dict) -> None:
@@ -289,7 +317,7 @@ def _sample_profile() -> dict:
         free = info.get('availableRamMb')
         cores = max(1, int(info.get('cores') or 1))
         load = info.get('cpuPercent')
-        if (policy['name'] == 'Low' and free is not None and free >= 3072
+        if (policy['name'] == 'Low' and policy.get('allowMedium', True) and free is not None and free >= 3072
                 and cores >= 4 and load is not None and load >= 80):
             # Upload/spawn spikes can trip one psutil(interval=None) read; confirm over 150ms before capping to Low.
             time.sleep(0.15)
@@ -321,21 +349,16 @@ def current_profile(refresh: bool = False) -> dict:
         else:
             if _cpu_pressure['profile_obj'] is not _profile:
                 _cpu_pressure = {'profile_obj': _profile, 'count': 0, 'since': 0.0}
-            rank = {'Low': 0, 'Medium': 1, 'High': 2}
-            if candidate and rank[candidate['name']] < rank[_profile['name']]:
+            rank = {'Low': 0, 'Medium': 1}
+            if candidate and rank.get(candidate['name'], 0) < rank.get(_profile['name'], 0):
                 free = candidate.get('availableRamMb')
                 cores = int(candidate.get('cores') or 1)
                 load = candidate.get('cpuPercent')
-                gpu_lost = (_profile['name'] == 'High' and not candidate.get('gpuUsable'))
-                urgent = (
-                    free is None or load is None or free < 3072 or cores < 4
-                    or gpu_lost or (_profile['name'] == 'High' and free < 6144)
-                )
+                urgent = (free is None or load is None or free < 3072 or cores < 4)
                 if urgent:
                     _profile = candidate
                     _cpu_pressure = {'profile_obj': _profile, 'count': 0, 'since': 0.0}
                 else:
-                    # جهش‌های کوتاه CPU هنگام راه‌اندازی worker یا بارگذاری مدل نباید کل کار را به Low بیندازد.
                     threshold = 88.0 if candidate['name'] == 'Low' else 75.0
                     if load >= threshold:
                         if _cpu_pressure['count'] == 0:
@@ -349,12 +372,12 @@ def current_profile(refresh: bool = False) -> dict:
                     else:
                         _cpu_pressure['count'] = 0
                         _cpu_pressure['since'] = 0.0
-                    for key in ('availableRamMb','totalRamMb','cpuPercent','cores','gpuUsable','gpuProviders'):
+                    for key in ('availableRamMb', 'totalRamMb', 'cpuPercent', 'cores', 'gpuUsable', 'gpuProviders', 'allowMedium'):
                         _profile[key] = candidate.get(key)
             elif candidate:
                 _cpu_pressure['count'] = 0
                 _cpu_pressure['since'] = 0.0
-                for key in ('availableRamMb','totalRamMb','cpuPercent','cores','gpuUsable','gpuProviders'):
+                for key in ('availableRamMb', 'totalRamMb', 'cpuPercent', 'cores', 'gpuUsable', 'gpuProviders', 'allowMedium'):
                     _profile[key] = candidate.get(key)
         return dict(_profile)
 
@@ -375,22 +398,15 @@ def ort_options(ort, profile: dict | None = None):
     profile = profile or current_profile()
     options = ort.SessionOptions()
     options.intra_op_num_threads = profile['cpuThreads']
-    options.inter_op_num_threads = 2 if profile['name'] == 'High' else 1
+    options.inter_op_num_threads = 1
     options.enable_cpu_mem_arena = False
     options.enable_mem_pattern = False
-    options.execution_mode = (ort.ExecutionMode.ORT_PARALLEL if profile['name'] == 'High'
-                              and 'DmlExecutionProvider' not in profile['providers']
-                              else ort.ExecutionMode.ORT_SEQUENTIAL)
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     return options
 
 
 def confirm_session(session) -> None:
-    """A CUDA/DML DLL failure can silently leave ORT on CPU: downgrade for real."""
-    profile=current_profile()
-    if profile['name']=='High' and hasattr(session,'get_providers'):
-        actual=session.get_providers()
-        if not any(p in actual for p in ('CUDAExecutionProvider','DmlExecutionProvider')):
-            set_profile(choose_profile({**profile,'gpuUsable':False,'gpuProviders':[]}))
+    pass
 
 
 def begin_job_profile() -> dict:

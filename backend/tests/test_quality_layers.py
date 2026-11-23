@@ -196,7 +196,7 @@ def test_ocr_model_options_point_to_installed_server_model(tmp_path, monkeypatch
     assert "rec_keys_path" not in trimmed and len(trimmed) == 2
 
 
-def test_ocr_engine_uses_detailed_model_and_falls_back(tmp_path, monkeypatch):
+def test_ocr_engine_uses_cpu_options_and_skips_gpu(tmp_path, monkeypatch):
     import sys
     import types
 
@@ -205,22 +205,17 @@ def test_ocr_engine_uses_detailed_model_and_falls_back(tmp_path, monkeypatch):
     class FakeRapid:
         def __init__(self, **kwargs):
             calls.append(kwargs)
-            if 'det_model_path' in kwargs:
-                raise RuntimeError("مدل دقیق بارگذاری نشد")
 
     module = types.ModuleType("rapidocr_onnxruntime")
     module.RapidOCR = FakeRapid
     monkeypatch.setitem(sys.modules, "rapidocr_onnxruntime", module)
-    monkeypatch.setattr(ocr, "_model_options", lambda: {"det_model_path": "d", "rec_model_path": "r"})
     getattr(ocr._engine, "cache_clear", lambda: None)()
     engine = ocr._engine()
     assert isinstance(engine, FakeRapid)
-    # اول با مدل دقیق تلاش شد، بعد مدل پیش‌فرض ساخته شد.
-    assert calls[0]['det_model_path']=='d' and calls[0]['rec_model_path']=='r'
-    assert 'det_model_path' not in calls[1] and 'rec_model_path' not in calls[1]
-    assert calls[1]['intra_op_num_threads']==4
-    assert calls[1]['inter_op_num_threads']==1
-    assert calls[1]['use_cls'] is False
+    assert calls[0]['use_cuda'] is False
+    assert calls[0]['use_dml'] is False
+    assert calls[0]['inter_op_num_threads'] == 1
+    assert calls[0]['use_cls'] is False
     getattr(ocr._engine, "cache_clear", lambda: None)()
 
 
@@ -238,8 +233,8 @@ def test_textdet_is_disabled_on_cpu_only_profiles(monkeypatch):
     assert textdet.available() is False
 
 
-def test_ocr_engine_skips_server_model_on_cpu_medium_without_gpu(monkeypatch):
-    """مدل سنگین ocr-server روی CPU (حتی Medium) بارگذاری نمی‌شود تا پردازنده قفل نکند و خطوط به تکه‌های ریز خرد نشوند."""
+def test_ocr_engine_skips_server_model_on_cpu_profiles(monkeypatch):
+    """مدل سنگین ocr-server روی CPU بارگذاری نمی‌شود تا پردازنده قفل نکند و خطوط به تکه‌های ریز خرد نشوند."""
     import rapidocr_onnxruntime
     from app import hardware
 
@@ -261,12 +256,12 @@ def test_ocr_engine_skips_server_model_on_cpu_medium_without_gpu(monkeypatch):
         "availableRamMb": 8192, "totalRamMb": 16384, "cores": 8,
         "cpuPercent": 20, "gpuUsable": False, "gpuProviders": [],
     })
-    gpu_high = hardware.choose_profile({
-        "availableRamMb": 8192, "totalRamMb": 16384, "cores": 8,
-        "cpuPercent": 20, "gpuUsable": True, "gpuProviders": ["CUDAExecutionProvider"],
+    cpu_low = hardware.choose_profile({
+        "availableRamMb": 1500, "totalRamMb": 8192, "cores": 2,
+        "cpuPercent": 20, "gpuUsable": False, "gpuProviders": [],
     })
     assert cpu_medium["name"] == "Medium"
-    assert gpu_high["name"] == "High"
+    assert cpu_low["name"] == "Low"
 
     ocr._engine.cache_clear()
     try:
@@ -277,15 +272,13 @@ def test_ocr_engine_skips_server_model_on_cpu_medium_without_gpu(monkeypatch):
         assert "det_model_path" not in calls[-1]
         assert calls[-1]["det_limit_side_len"] == 960
 
-        # روی GPU High: مدل دقیق سرور فعال می‌شود
+        # روی CPU Low: از مدل سرور صرف‌نظر شده و تنظیمات سبک‌تر اعمال می‌شود
         ocr._engine.cache_clear()
-        monkeypatch.setattr(hardware, "current_profile", lambda refresh=False: dict(gpu_high))
+        monkeypatch.setattr(hardware, "current_profile", lambda refresh=False: dict(cpu_low))
         ocr._engine()
         assert len(calls) == 2
-        assert calls[-1]["det_model_path"] == "det_server.onnx"
-        assert calls[-1]["rec_model_path"] == "rec_server.onnx"
-        assert calls[-1]["use_cuda"] is True
-        assert calls[-1]["det_limit_side_len"] == 1536
+        assert "det_model_path" not in calls[-1]
+        assert calls[-1]["det_limit_side_len"] == 640
     finally:
         ocr._engine.cache_clear()
 

@@ -24,8 +24,8 @@ def info(**overrides):
 
 
 @pytest.mark.parametrize('facts,name,tile,threads',[
-    (info(gpuUsable=True,gpuProviders=['CUDAExecutionProvider']),'High',512,4),
-    (info(gpuUsable=True,gpuProviders=['DmlExecutionProvider']),'High',512,4),
+    (info(gpuUsable=True,gpuProviders=['CUDAExecutionProvider']),'Medium',384,4),
+    (info(gpuUsable=True,gpuProviders=['DmlExecutionProvider']),'Medium',384,4),
     (info(),'Medium',384,4),
     (info(availableRamMb=2000),'Low',256,1),
     (info(availableRamMb=1000,gpuUsable=True),'Low',256,1),
@@ -34,11 +34,23 @@ def info(**overrides):
     (info(availableRamMb=None),'Low',256,1),
 ])
 def test_profile_policy(facts,name,tile,threads):
+    hardware.save_hardware_settings({"allowMedium": True})
     policy=hardware.choose_profile(facts)
     assert (policy['name'],policy['tile'],policy['cpuThreads'])==(name,tile,threads)
-    assert 1<=policy['workers']<=2
+    assert policy['workers']==1
     assert policy['memoryBudgetMb']<=2560
-    if name!='High': assert policy['providers']==['CPUExecutionProvider']
+    assert policy['providers']==['CPUExecutionProvider']
+
+
+def test_profile_policy_allow_medium_disabled():
+    hardware.save_hardware_settings({"allowMedium": False})
+    try:
+        policy = hardware.choose_profile(info(availableRamMb=16384, cores=16, cpuPercent=5))
+        assert policy['name'] == 'Low'
+        assert policy['tile'] == 256
+        assert policy['cpuThreads'] == 1
+    finally:
+        hardware.save_hardware_settings({"allowMedium": True})
 
 
 def test_registered_cuda_without_a_device_is_not_high(monkeypatch):
@@ -48,16 +60,16 @@ def test_registered_cuda_without_a_device_is_not_high(monkeypatch):
 
 
 def test_pressure_downgrades_and_never_upgrades_mid_job(monkeypatch):
-    hardware.set_profile(hardware.choose_profile(info(gpuUsable=True)))
+    hardware.set_profile(hardware.choose_profile(info(availableRamMb=8192)))
     monkeypatch.setattr(hardware,'resource_snapshot',lambda:info(availableRamMb=900))
     assert hardware.current_profile(refresh=True)['name']=='Low'
-    monkeypatch.setattr(hardware,'resource_snapshot',lambda:info(gpuUsable=True))
+    monkeypatch.setattr(hardware,'resource_snapshot',lambda:info(availableRamMb=8192))
     assert hardware.current_profile(refresh=True)['name']=='Low'
 
 
-@pytest.mark.parametrize('name,size',[('High',512),('Medium',384),('Low',256)])
+@pytest.mark.parametrize('name,size',[('Medium',384),('Low',256)])
 def test_model_tile_geometry_and_mask_values(monkeypatch,name,size):
-    facts=info(gpuUsable=name=='High',availableRamMb=2000 if name=='Low' else 8192)
+    facts=info(availableRamMb=2000 if name=='Low' else 8192)
     monkeypatch.setattr(hardware,'resource_snapshot',lambda:facts)
     hardware.set_profile(hardware.choose_profile(facts))
     calls=[]

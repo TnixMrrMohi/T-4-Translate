@@ -53,10 +53,12 @@ _gpu_disabled = False
 
 
 def _is_gpu_oom(exc: BaseException) -> bool:
-    """آیا خطا «کمبود حافظهٔ GPU» است؟ (DirectML: 8007000E، CUDA: out of memory)"""
+    """آیا خطا «کمبود حافظهٔ GPU» یا تعلیق سخت‌افزاری است؟"""
     message = str(exc).lower()
     return ("8007000e" in message or "not enough memory" in message
-            or "out of memory" in message or "outofmemory" in message)
+            or "out of memory" in message or "outofmemory" in message
+            or "887a0005" in message or "887a0006" in message or "887a0007" in message
+            or "device removed" in message or "device suspended" in message or "device reset" in message)
 
 
 def _disable_gpu() -> None:
@@ -116,25 +118,22 @@ def _engine():
     _silence_rapidocr_logs()
     import_started = time.perf_counter()
     profile = hardware.current_profile(refresh=True)
-    use_cuda = ('CUDAExecutionProvider' in profile['providers'] and profile.get('gpuUsable', False)
-                and not _gpu_disabled)
-    use_dml = ('DmlExecutionProvider' in profile['providers'] and profile.get('gpuUsable', False)
-               and not _gpu_disabled)
-    # مدل سنگین ocr-server فقط روی GPU (شتاب‌دهنده) فعال می‌شود؛ روی CPU (Medium و Low) مدل سبک استفاده می‌شود
-    # تا سرعت بالا حفظ شود و خطوط به قطعات ریز خرد نشوند.
-    use_server = (use_cuda or use_dml) and profile['name'] != 'Low'
-    options = _model_options() if use_server else {}
+    # پردازش ۱۰۰٪ روی CPU انجام می‌شود؛ شتاب‌دهنده‌های GPU برای پایداری کامل و جلوگیری از خطاهای حافظه خاموش هستند
+    use_cuda = False
+    use_dml = False
+    use_server = False
+    options = {}
     options.update(intra_op_num_threads=profile['cpuThreads'], inter_op_num_threads=1,
-                   use_cuda=use_cuda,
-                   use_dml=use_dml)
+                   use_cuda=False,
+                   use_dml=False)
     for module in ('det','cls','rec'):
-        options[f'{module}_use_cuda']=options['use_cuda']
-        options[f'{module}_use_dml']=options['use_dml']
+        options[f'{module}_use_cuda'] = False
+        options[f'{module}_use_dml'] = False
     options.update(use_cls=False,
-                   rec_batch_num=1 if profile['name']=='Low' else 6,
-                   cls_batch_num=1 if profile['name']=='Low' else 6,
+                   rec_batch_num=1 if profile['name'] == 'Low' else 6,
+                   cls_batch_num=1 if profile['name'] == 'Low' else 6,
                    det_limit_type='max',
-                   det_limit_side_len={'High':1536,'Medium':960,'Low':640}[profile['name']],
+                   det_limit_side_len={'Medium': 960, 'Low': 640}.get(profile['name'], 960),
                    det_unclip_ratio=1.5,
                    det_thresh=0.3,
                    det_box_thresh=0.55)
@@ -1224,8 +1223,8 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
     with Image.open(path) as source:
         width, height = source.size
         profile = hardware.current_profile(refresh=True)
-        strip_height = STRIP_HEIGHT if profile['name']=='High' else (640 if profile['name']=='Medium' else 384)
-        overlap = min(STRIP_OVERLAP, strip_height // 4)
+        strip_height = STRIP_HEIGHT if profile['name'] != 'Low' else 384
+        overlap = STRIP_OVERLAP if profile['name'] != 'Low' else min(STRIP_OVERLAP, strip_height // 4)
         total = max(1, -(-(height-strip_height)//(strip_height-overlap))+1) if height>strip_height+overlap else 1
         diagnostics.log_event(
             "ocr.page.start", width=width, height=height, strips=total,
@@ -1241,13 +1240,19 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
             stripOverlap=overlap,
             profile=profile["name"],
         )
+        import inspect
+        try:
+            _read_has_progress = 'on_progress' in inspect.signature(_read).parameters
+        except (ValueError, TypeError):
+            _read_has_progress = True
+
         if height <= strip_height + overlap:
             report(0.08, 'model')  # نخستین فراخوانی، مدل را در حافظه بار می‌کند
             def single_progress(frac, stage):
                 report(min(0.92, 0.08 + 0.84 * frac), stage)
-            try:
+            if _read_has_progress:
                 raw_read = _read(str(path), on_progress=single_progress)
-            except TypeError:
+            else:
                 raw_read = _read(str(path))
             result = _shift(raw_read, 0)
             report(0.94, 'strips')
@@ -1306,9 +1311,9 @@ def recognize(path: Path, on_progress: ProgressReporter | None = None) -> list[d
             strip_t0 = time.perf_counter()
             def strip_progress(frac, _substage=None):
                 report(min(0.94, strip_base + (strip_next - strip_base) * frac), 'strips', stripIndex=strip_num, totalStrips=total)
-            try:
+            if _read_has_progress:
                 raw_strip = _read(strip, on_progress=strip_progress)
-            except TypeError:
+            else:
                 raw_strip = _read(strip)
             strip_lines = _shift(raw_strip, top)
             result.extend(strip_lines)

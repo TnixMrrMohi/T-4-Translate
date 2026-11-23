@@ -48,6 +48,9 @@ beforeEach(() => {
     if (url === '/api/models/comic-text-detector' && init?.method === 'POST') {
       return json({started: true, status: [LAMA, DETECTOR]});
     }
+    if (url === '/api/hardware/settings' && init?.method === 'POST') {
+      return json({allowMedium: false});
+    }
     return json({}, 404);
   }));
 });
@@ -272,5 +275,18 @@ describe('هم‌زمانی دانلود مدل‌ها', () => {
     const install = await within(dialog).findByRole('button', {name: 'نصب'});
     expect(install).toBeDisabled();
     expect(install).toHaveAttribute('title', 'یک مدل دیگر در حال دانلود است');
+  });
+
+  it('تغییر وضعیت پروفایل Medium درخواست ذخیره را به سرور می‌فرستد', async () => {
+    const user = userEvent.setup();
+    render(<SystemPanel />);
+    await user.click(screen.getByRole('button', {name: 'تنظیمات و مدل‌ها'}));
+    const dialog = await screen.findByRole('dialog');
+    const checkbox = within(dialog).getByRole('checkbox', {
+      name: /اجازهٔ استفاده از حالت Medium/i,
+    });
+    expect(checkbox).toBeChecked();
+    await user.click(checkbox);
+    await waitFor(() => expect(calls).toContain('POST /api/hardware/settings'));
   });
 });
