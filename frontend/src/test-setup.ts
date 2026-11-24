@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import {afterEach} from 'vitest';
+import {afterEach, beforeEach} from 'vitest';
 import {cleanup} from '@testing-library/react';
 
 if (typeof localStorage === 'undefined' || !localStorage.clear) {
@@ -17,6 +17,13 @@ if (typeof localStorage === 'undefined' || !localStorage.clear) {
     writable: true,
   });
 }
+
+beforeEach(() => {
+  // آزمون‌های قدیمیِ تک‌تصویر به صورت پیش‌فرض در حالت تک‌تصویر اجرا می‌شوند
+  try {
+    localStorage.setItem('t4-active-mode', 'single');
+  } catch {}
+});
 
 if (typeof HTMLCanvasElement !== 'undefined') {
   HTMLCanvasElement.prototype.getContext = function () {

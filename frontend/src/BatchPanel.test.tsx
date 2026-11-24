@@ -354,6 +354,7 @@ describe('ناحیهٔ انداختن تصویر', () => {
     expect(screen.getByRole('button', {name: 'ذخیرهٔ ترجمه و ادامه ←'})).toBeInTheDocument();
 
     // رفتن به مرحلهٔ ۴ از سایدبار
+    fireEvent.click(screen.getByRole('button', {name: /نمایش مراحل/}));
     const step4Btn = screen.getByRole('button', {name: /[4۴]?\s*درج ترجمه/});
     fireEvent.click(step4Btn);
     expect(screen.getByRole('heading', {name: 'مرحله ۴: درج ترجمه'})).toBeInTheDocument();

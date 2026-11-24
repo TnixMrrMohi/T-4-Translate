@@ -549,12 +549,12 @@ def test_same_release_tag_is_never_offered_again(env, monkeypatch):
     assert state["updateAvailable"] is False
 
 
-def test_auto_download_setting_defaults_on_and_can_be_turned_off(env):
-    assert updater.public_settings()["autoDownload"] is True
-    assert updater.status()["autoDownload"] is True
-    saved = updater.save_settings({"autoDownload": False})
-    assert saved["autoDownload"] is False
+def test_auto_download_setting_defaults_off_and_can_be_turned_on(env):
+    assert updater.public_settings()["autoDownload"] is False
     assert updater.status()["autoDownload"] is False
+    saved = updater.save_settings({"autoDownload": True})
+    assert saved["autoDownload"] is True
+    assert updater.status()["autoDownload"] is True
 
 
 # --------------------------------------------------------------------------- API

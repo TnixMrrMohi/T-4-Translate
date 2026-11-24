@@ -953,6 +953,7 @@ describe('پیوند مستقیم به کار', () => {
 
     expect(await screen.findByRole('heading', {name: 'مرحله ۲: ترجمهٔ فارسی'})).toBeInTheDocument();
     expect(calls.some(call => call.url === `/api/jobs/${JOB_ID}`)).toBe(true);
+    window.history.replaceState({}, '', '/');
   });
 });
 
@@ -2210,12 +2211,13 @@ describe('رفتار دکمه ریست در هدر و حالت دسته‌ای',
 
 describe('سوئیچینگ حالت کاربری در هدر (تک‌تصویر و پردازش دسته‌ای)', () => {
   it('هر دو دکمه در کنترل سگمنتد حضور دارند و دکمهٔ حالت فعال روشن است', () => {
+    localStorage.removeItem('t4-active-mode');
     mockApi({jobs: []});
     render(<App />);
     const singleBtn = screen.getByRole('button', {name: 'تک‌تصویر'});
     const batchBtn = screen.getByRole('button', {name: 'پردازش دسته‌ای'});
-    expect(singleBtn).toHaveClass('is-active');
-    expect(batchBtn).not.toHaveClass('is-active');
+    expect(batchBtn).toHaveClass('is-active');
+    expect(singleBtn).not.toHaveClass('is-active');
   });
 
   it('در صورت داشتن کار در تک‌تصویر، برای تغییر به حالت دسته‌ای دیالوگ تأیید نشان می‌دهد', async () => {

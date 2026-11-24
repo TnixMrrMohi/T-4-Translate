@@ -1320,7 +1320,7 @@ export function BatchPanel({
 
   const combined = buildBatchText(pages);
   const doneCount = pages.filter(p => p.state === 'done').length;
-  const maxBatchStep = doneCount > 0 ? 5 : (pages.length > 0 ? 4 : 1);
+  const maxBatchStep = doneCount > 0 ? 5 : (pages.length > 0 ? (translated.trim() ? 3 : 2) : 1);
   const failedPages = pages.filter(p => p.state === 'failed');
   const needsTranslation = pages.some(p => !isPlainPage(p));
 
@@ -2446,15 +2446,13 @@ export function BatchPanel({
           <nav className="compact-step-nav" aria-label="ناوبری فشرده مراحل">
             <span style={{fontSize: '12px', color: '#94a3b8', marginInlineEnd: '4px'}}>مراحل:</span>
             {BATCH_STEPS.map(item => (
-              <button
+              <span
                 key={item.id}
-                type="button"
                 className={`compact-step-pill ${item.id === batchStep ? 'is-current' : ''}`}
-                onClick={() => setBatchStep(item.id)}
-                disabled={item.id > maxBatchStep || busy !== null}
+                title={item.title}
               >
                 {item.id}. {item.title}
-              </button>
+              </span>
             ))}
             <button
               type="button"
@@ -2495,17 +2493,11 @@ export function BatchPanel({
 
               {pages.length > 0 && !busy && (
                 <div className="batch-folder-card" style={{borderStyle: 'dashed', background: '#0d1822'}}>
-                  <h3>✨ صفحات ذخیره‌شدهٔ این پروژه موجود است ({pages.length} صفحه)</h3>
-                  <p>می‌توانید مستقیماً به مراحل بعدی بروید یا کار را از همان‌جا ادامه دهید:</p>
+                  <h3>✅ استخراج متن با موفقیت انجام شد ({pages.length} تصویر)</h3>
+                  <p>متن و کادرهای تمام صفحات آماده است؛ برای شروع ترجمه به مرحلهٔ بعد بروید:</p>
                   <div style={{display: 'flex', gap: '8px', justifyContent: 'center', flexWrap: 'wrap'}}>
                     <button type="button" className="primary small" onClick={() => setBatchStep(2)}>
                       رفتن به مرحله ۲: ترجمه فارسی →
-                    </button>
-                    <button type="button" className="ghost small" onClick={() => setBatchStep(3)}>
-                      رفتن به مرحله ۳: پاک‌سازی دستی
-                    </button>
-                    <button type="button" className="ghost small" onClick={() => setBatchStep(4)}>
-                      رفتن به مرحله ۴: خروجی نهایی
                     </button>
                   </div>
                 </div>
@@ -2623,7 +2615,7 @@ export function BatchPanel({
                 <div className="jobs">
                   <div className="jobs-header" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px'}}>
                     <h3 style={{margin: 0}}>تصویرهای انتخاب‌شده ({files.length})</h3>
-                    {files.length > 8 && (
+                    {files.length > 3 && (
                       <button
                         type="button"
                         className="ghost small"
@@ -2635,14 +2627,14 @@ export function BatchPanel({
                     )}
                   </div>
                   <ul className="batch-list" aria-label="فهرست تصویرها">
-                    {(showAllFiles ? files : files.slice(0, 8)).map((file, i) => (
+                    {(showAllFiles ? files : files.slice(0, 3)).map((file, i) => (
                       <li key={`${file.name}-${file.size}`} className="batch-row">
                         <span dir="ltr">{i + 1}. {file.name}</span>
                         <small className="fonts-note">{(file.size / 1024).toFixed(0)} KB</small>
                       </li>
                     ))}
                   </ul>
-                  {files.length > 8 && (
+                  {files.length > 3 && (
                     <div style={{display: 'flex', justifyContent: 'center', marginTop: '6px'}}>
                       <button
                         type="button"
@@ -2669,112 +2661,80 @@ export function BatchPanel({
 
           {batchStep === 2 && (
             <>
-              <h2 className="wizard-title">مرحله ۲: ترجمهٔ فارسی</h2>
+              <div className="step2-header-row">
+                <h2 className="wizard-title" style={{margin: 0}}>مرحله ۲: ترجمهٔ فارسی</h2>
 
-              {/* ردیف دوتایی تنظیمات: مدیریت واترمارک و فیلتر جلوه‌های صوتی مایل */}
-              <div className="batch-settings-grid">
-                {/* اعلام و تنظیم رفتار متن تبلیغاتی؛ همراه شماره‌گذاری انجام می‌شود */}
-                <div className="promo-setting" role="group" aria-label="رفتار متن تبلیغاتی">
-                  <div className="promo-setting-header">
-                    <div className="promo-setting-info">
-                      <span className="promo-setting-title">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '6px'}}>
-                          <path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/>
-                          <path d="M7 7h.01"/>
-                        </svg>
-                        مدیریت واترمارک و متن‌های تبلیغاتی
-                      </span>
-                    </div>
-                    <div className="promo-options">
-                      <button
-                        type="button"
-                        disabled={busy !== null || updatingSettings}
-                        className={promoAction === 'remove' ? 'is-active' : ''}
-                        aria-pressed={promoAction === 'remove'}
-                        onClick={() => void choosePromo('remove')}
-                      >
-                        حذف کامل
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy !== null || updatingSettings}
-                        className={promoAction === 'replace' ? 'is-active' : ''}
-                        aria-pressed={promoAction === 'replace'}
-                        onClick={() => void choosePromo('replace')}
-                      >
-                        جایگزینی با {PROMO_SITE}
-                      </button>
+                {/* ردیف دوتایی تنظیمات: مدیریت واترمارک و فیلتر جلوه‌های صوتی مایل */}
+                <div className="batch-settings-grid is-inline">
+                  {/* اعلام و تنظیم رفتار متن تبلیغاتی؛ همراه شماره‌گذاری انجام می‌شود */}
+                  <div className="promo-setting" role="group" aria-label="رفتار متن تبلیغاتی">
+                    <div className="promo-setting-header">
+                      <div className="promo-setting-info">
+                        <span className="promo-setting-title">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '4px'}}>
+                            <path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/>
+                            <path d="M7 7h.01"/>
+                          </svg>
+                          واترمارک:
+                        </span>
+                      </div>
+                      <div className="promo-options">
+                        <button
+                          type="button"
+                          disabled={busy !== null || updatingSettings}
+                          className={promoAction === 'remove' ? 'is-active' : ''}
+                          aria-pressed={promoAction === 'remove'}
+                          onClick={() => void choosePromo('remove')}
+                        >
+                          حذف کامل
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy !== null || updatingSettings}
+                          className={promoAction === 'replace' ? 'is-active' : ''}
+                          aria-pressed={promoAction === 'replace'}
+                          onClick={() => void choosePromo('replace')}
+                        >
+                          جایگزینی با {PROMO_SITE}
+                        </button>
+                      </div>
                     </div>
                   </div>
-                  <details className="promo-details">
-                    <summary>توضیحات</summary>
-                    <p className="promo-setting-desc">
-                      اگر در تصویر آدرس سایت قبلی، نام تیم اسکنر یا واترمارک باشد:
-                    </p>
-                    <div className="promo-hint">
-                      {promoAction === 'remove' ? (
-                        <span>
-                          <strong>حالت فعال:</strong> واترمارک‌ها و آدرس‌های سایت قبلی از متن شماره‌گذاری‌شده حذف می‌شوند.
-                        </span>
-                      ) : (
-                        <span>
-                          <strong>حالت فعال:</strong> به‌جای متن‌های تبلیغاتی شناسایی‌شده، آدرس <code>{PROMO_SITE}</code> قرار می‌گیرد تا به‌عنوان واترمارک شما در تصویر درج شود.
-                        </span>
-                      )}
-                    </div>
-                  </details>
-                </div>
 
-                {/* فیلتر متن‌های مایل و کج (جلوه‌های صوتی) */}
-                <div className="promo-setting" role="group" aria-label="فیلتر متن‌های مایل و کج">
-                  <div className="promo-setting-header">
-                    <div className="promo-setting-info">
-                      <span className="promo-setting-title">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '6px'}}>
-                          <circle cx="12" cy="12" r="10"/>
-                          <path d="m4.93 4.93 14.14 14.14"/>
-                        </svg>
-                        فیلتر جلوه‌های صوتی مایل (کج)
-                      </span>
-                    </div>
-                    <div className="promo-options">
-                      <button
-                        type="button"
-                        disabled={busy !== null || updatingSettings}
-                        className={filterSlanted ? 'is-active' : ''}
-                        aria-pressed={filterSlanted}
-                        onClick={() => void chooseFilterSlanted(true)}
-                      >
-                        حذف متن‌های کج
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy !== null || updatingSettings}
-                        className={!filterSlanted ? 'is-active' : ''}
-                        aria-pressed={!filterSlanted}
-                        onClick={() => void chooseFilterSlanted(false)}
-                      >
-                        شناسایی همه
-                      </button>
+                  {/* فیلتر متن‌های مایل و کج (جلوه‌های صوتی) */}
+                  <div className="promo-setting" role="group" aria-label="فیلتر متن‌های مایل و کج">
+                    <div className="promo-setting-header">
+                      <div className="promo-setting-info">
+                        <span className="promo-setting-title">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{display: 'inline-block', verticalAlign: 'text-bottom', marginInlineEnd: '4px'}}>
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="m4.93 4.93 14.14 14.14"/>
+                          </svg>
+                          متن‌های کج:
+                        </span>
+                      </div>
+                      <div className="promo-options">
+                        <button
+                          type="button"
+                          disabled={busy !== null || updatingSettings}
+                          className={filterSlanted ? 'is-active' : ''}
+                          aria-pressed={filterSlanted}
+                          onClick={() => void chooseFilterSlanted(true)}
+                        >
+                          حذف متن‌های کج
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy !== null || updatingSettings}
+                          className={!filterSlanted ? 'is-active' : ''}
+                          aria-pressed={!filterSlanted}
+                          onClick={() => void chooseFilterSlanted(false)}
+                        >
+                          شناسایی همه
+                        </button>
+                      </div>
                     </div>
                   </div>
-                  <details className="promo-details">
-                    <summary>توضیحات</summary>
-                    <p className="promo-setting-desc">
-                      متون با زاویهٔ مایل (صداهای بلعیدن، عطسه، سرفه و افکت‌ها):
-                    </p>
-                    <div className="promo-hint">
-                      {filterSlanted ? (
-                        <span>
-                          <strong>حالت فعال:</strong> کادرهایی که با زاویهٔ مایل نوشته شده‌اند (مثل جلوه‌های صوتی و صداهای پس‌زمینه) نادیده گرفته می‌شوند و در تصویر و فهرست ترجمه لحاظ نمی‌شوند.
-                        </span>
-                      ) : (
-                        <span>
-                          <strong>حالت غیرفعال:</strong> تمام کادرها حتی با زاویهٔ مایل تشخیص داده شده و شماره‌گذاری می‌شوند.
-                        </span>
-                      )}
-                    </div>
-                  </details>
                 </div>
               </div>
 

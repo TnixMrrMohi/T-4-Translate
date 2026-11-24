@@ -211,8 +211,8 @@ def settings() -> dict:
                                max(minimum, DEFAULT_CHECK_SECONDS)),
         "pollSeconds": _clamp(stored.get("pollSeconds"), MIN_POLL_SECONDS, MAX_POLL_SECONDS,
                               DEFAULT_POLL_SECONDS),
-        # «خودش آپدیت شود»: دانلود خودکار بستهٔ تغییرات به‌محض دیدن نسخهٔ تازه.
-        "autoDownload": bool(stored.get("autoDownload", True)),
+        # «خودش آپدیت شود»: دانلود خودکار بستهٔ تغییرات به‌محض دیدن نسخهٔ تازه (پیش‌فرض خاموش برای امنیت کاربر).
+        "autoDownload": bool(stored.get("autoDownload", False)),
         "minCheckSeconds": minimum,
         "anonymous": anonymous,
     }

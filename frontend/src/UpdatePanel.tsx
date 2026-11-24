@@ -93,7 +93,7 @@ export function useUpdateController() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
     repo: '', token: '', enabled: true, checkSeconds: 300, pollSeconds: DEFAULT_POLL_SECONDS,
-    autoDownload: true,
+    autoDownload: false,
   });
   const [minCheck, setMinCheck] = useState(60);
   const mounted = useRef(true);
@@ -211,7 +211,7 @@ export function useUpdateController() {
       setForm({
         repo: saved.repo, token: '', enabled: saved.enabled,
         checkSeconds: saved.checkSeconds, pollSeconds: saved.pollSeconds,
-        autoDownload: saved.autoDownload !== false,
+        autoDownload: Boolean(saved.autoDownload),
       });
       setMinCheck(saved.minCheckSeconds);
     } catch {

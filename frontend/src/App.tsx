@@ -1063,9 +1063,14 @@ export function App() {
   const [layoutModal, setLayoutModal] = useState(false);
   const [batchOpen, setBatchOpen] = useState(() => {
     try {
+      if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('job')) {
+        return false;
+      }
       const saved = localStorage.getItem(ACTIVE_MODE_KEY);
       if (saved === 'batch') return true;
       if (saved === 'single') return false;
+      const lastJob = localStorage.getItem('t4-last-job');
+      if (lastJob) return false;
       const batchData = localStorage.getItem('t4-batch-v2');
       if (batchData) {
         const parsed = JSON.parse(batchData);
@@ -1074,22 +1079,22 @@ export function App() {
     } catch {
       // ignore
     }
-    return false;
+    return true; // پیش‌فرض برنامه: پردازش دسته‌ای
   });
   // بخش دسته‌ای پس از اولین باز شدن زنده می‌ماند تا هنگام ویرایش یک صفحه، فصل از بین نرود.
   const [batchSeen, setBatchSeen] = useState(() => {
     try {
-      const saved = localStorage.getItem(ACTIVE_MODE_KEY);
-      if (saved === 'batch') return true;
-      const batchData = localStorage.getItem('t4-batch-v2');
-      if (batchData) {
-        const parsed = JSON.parse(batchData);
-        if (Array.isArray(parsed?.pages) && parsed.pages.length > 0) return true;
+      if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('job')) {
+        return false;
       }
+      const saved = localStorage.getItem(ACTIVE_MODE_KEY);
+      if (saved === 'single') return false;
+      const lastJob = localStorage.getItem('t4-last-job');
+      if (lastJob && !saved) return false;
+      return true;
     } catch {
-      // ignore
+      return true;
     }
-    return false;
   });
 
   const [projectModalOpen, setProjectModalOpen] = useState(false);
@@ -2130,7 +2135,7 @@ export function App() {
   const translatedAreas = cleanAreas.filter(area => area.translated);
 
   return (
-    <main className="page">
+    <main className={`page${batchOpen ? ' is-batch' : ''}`}>
       <header className="app-header">
         <div className="header-tools">
           <div className="mode-segmented" role="group" aria-label="انتخاب حالت کاربری">
