@@ -884,10 +884,10 @@ setlocal
 :wait_app_exit
 tasklist /fi "imagename eq T4Translate.exe" 2>nul | find /i "T4Translate.exe" >nul
 if not errorlevel 1 (
-    timeout /t 1 /nobreak >nul
+    ping 127.0.0.1 -n 2 >nul
     goto wait_app_exit
 )
-timeout /t 1 /nobreak >nul
+ping 127.0.0.1 -n 2 >nul
 {backup_block}
 robocopy "{staging}" "{install}" /E /NFL /NDL /NJH /NJS /R:30 /W:2 >nul
 {removals}
