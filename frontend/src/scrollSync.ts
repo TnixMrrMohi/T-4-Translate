@@ -22,7 +22,8 @@ export function findPageLineOffsets(text: string): Map<number, number> {
 }
 
 /**
- * با توجه به شماره خط، موقعیت اسکرول تخمینی را در المان محاسبه می‌کند.
+ * با توجه به شماره خط، موقعیت اسکرول را در المان محاسبه می‌کند به‌طوری‌که خط هدف
+ * در ابتدای کادر اسکرول قرار گیرد (یا با یک فاصلهٔ مناسب از بالا جهت وضوح بیشتر).
  */
 export function estimateScrollTopForLine(
   lineIndex: number,
@@ -31,9 +32,10 @@ export function estimateScrollTopForLine(
   clientHeight: number
 ): number {
   if (totalLines <= 1 || scrollHeight <= clientHeight) return 0;
+  const approxLineHeight = scrollHeight / totalLines;
+  const targetTop = Math.max(0, lineIndex * approxLineHeight - 12);
   const maxScroll = Math.max(0, scrollHeight - clientHeight);
-  const fraction = Math.max(0, Math.min(1, lineIndex / totalLines));
-  return Math.round(fraction * maxScroll);
+  return Math.min(maxScroll, Math.round(targetTop));
 }
 
 /**
@@ -47,8 +49,8 @@ export function findActivePageFromTextScroll(
   totalLines: number
 ): number | null {
   if (pageLineMap.size === 0 || totalLines <= 0) return null;
-  const maxScroll = Math.max(1, scrollHeight - clientHeight);
-  const currentLine = (scrollTop / maxScroll) * totalLines;
+  const approxLineHeight = scrollHeight / totalLines;
+  const currentLine = (scrollTop + 12) / approxLineHeight;
 
   let activePage: number | null = null;
   let minDiff = Infinity;

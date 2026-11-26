@@ -475,4 +475,36 @@ describe('مدیریت چندچپتری در BatchPanel', () => {
       expect(select.value).toBe('chap_02');
     });
   });
+
+  it('دکمهٔ قالب پرامپت مدال مدیریت قالب را باز می‌کند و امکان ذخیره و شخصی‌سازی پرامپت وجود دارد', async () => {
+    localStorage.setItem('t4-batch-v2', JSON.stringify({
+      pages: [
+        {page: 1, name: '1.png', jobId: 'j1', revision: 'r1', text: '[1] Test', state: 'extracted'},
+      ],
+      files: [{name: '1.png', pieces: [{jobId: 'j1', top: 0, bottom: 100}]}],
+      translated: '',
+    }));
+
+    render(<BatchPanel onClose={() => {}} prompt="FALLBACK_PROMPT" />);
+
+    const promptBtn = screen.getByRole('button', {name: /قالب پرامپت/i});
+    expect(promptBtn).toBeInTheDocument();
+
+    fireEvent.click(promptBtn);
+
+    expect(screen.getByRole('dialog', {name: 'مدیریت قالب پرامپت ترجمه'})).toBeInTheDocument();
+    const textarea = screen.getByLabelText('متن قالب پرامپت') as HTMLTextAreaElement;
+    expect(textarea.value).toContain('دستورالعمل ترجمه');
+
+    // ویرایش پرامپت
+    fireEvent.change(textarea, {target: {value: 'CUSTOM_TEMPLATE_FOR_TEST'}});
+
+    const saveBtn = screen.getByRole('button', {name: /ذخیره تغییرات/i});
+    fireEvent.click(saveBtn);
+
+    expect(localStorage.getItem('t4-prompt-template')).toBe('CUSTOM_TEMPLATE_FOR_TEST');
+
+    localStorage.removeItem('t4-prompt-template');
+    localStorage.removeItem('t4-batch-v2');
+  });
 });

@@ -7,6 +7,7 @@ import SystemPanel from './SystemPanel';
 import {BatchPanel} from './BatchPanel';
 import {ProjectManagerModal} from './ProjectManagerModal';
 import {copyToClipboard} from './clipboard';
+import {DEFAULT_TRANSLATION_PROMPT, getStoredPromptTemplate} from './promptTemplate';
 import type {LayoutDoc, TextOverrides} from './TextLayoutEditor';
 import './style.css';
 
@@ -1320,10 +1321,15 @@ export function App() {
   };
 
   /** پرامپت ترجمه با قاعدهٔ متن تبلیغاتیِ انتخاب‌شده. */
-  const translationPrompt = TRANSLATION_PROMPT.replace(
-    '- پرانتز لحن را در پاسخ تکرار نکن',
-    `${PROMO_RULES[promoAction]}\n- پرانتز لحن را در پاسخ تکرار نکن`,
-  );
+  const activePromptTemplate = getStoredPromptTemplate();
+  const translationPrompt = activePromptTemplate.includes(PROMO_RULES[promoAction])
+    ? activePromptTemplate
+    : activePromptTemplate.includes('- پرانتز لحن را در پاسخ تکرار نکن')
+      ? activePromptTemplate.replace(
+          '- پرانتز لحن را در پاسخ تکرار نکن',
+          `${PROMO_RULES[promoAction]}\n- پرانتز لحن را در پاسخ تکرار نکن`,
+        )
+      : `${activePromptTemplate}\n\n${PROMO_RULES[promoAction]}`;
 
   const numberedSource = source
     ? source.items.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n')

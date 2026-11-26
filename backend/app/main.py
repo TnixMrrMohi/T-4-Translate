@@ -798,8 +798,13 @@ async def update_ocr_settings(job_id: str, payload: OcrSettingsPayload) -> dict:
             pass
 
     async with _ocr_lock:
-        await run_native_safely(_write_overlay, workspace, active_lines)
         await run_native_safely(bubbles_for, job_id, active_lines)
+        block_list = None
+        try:
+            block_list = translation_blocks(job_id, active_lines, filter_sfx=False)
+        except Exception:
+            pass
+        await run_native_safely(_write_overlay, workspace, active_lines, block_list)
 
     return {"ok": True, "filterSlanted": filter_slanted, "linesCount": len(active_lines), "revision": rev}
 
@@ -902,9 +907,9 @@ def bubbles_for(job_id: str, lines: list) -> dict:
     return document
 
 
-def translation_blocks(job_id: str, lines: list) -> list:
-    """بلوک‌های ترجمه: هر بالن یک متن، نه هر خط یک متن."""
-    result = bubbles.drop_junk_blocks(bubbles.blocks(bubbles_for(job_id, lines), lines), lines)
+def translation_blocks(job_id: str, lines: list, filter_sfx: bool = False) -> list:
+    """بلوک‌های ترجمه: هر بالن یک متن، نه هر خط یک متن. به‌طور پیش‌فرض افکت‌های صوتی حفظ می‌شوند تا کاربر در رابط آن‌ها را فیلتر کند."""
+    result = bubbles.drop_junk_blocks(bubbles.blocks(bubbles_for(job_id, lines), lines), lines, filter_sfx=filter_sfx)
     for index, item in enumerate(result, 1):
         item["number"] = index
     return result
@@ -2435,9 +2440,9 @@ def get_source_img(job_id: str):
     return FileResponse(path, media_type=source_media_type(workspace), headers={"Cache-Control": "no-store"})
 
 
-def _write_overlay(workspace: Path, lines: list) -> None:
+def _write_overlay(workspace: Path, lines: list, blocks: list | None = None) -> None:
     """رندر پیش‌نمایش در نخ کارگر و ذخیرهٔ اتمی همراه با نسخهٔ OCR."""
-    image = preview.overlay(workspace / "source.img", lines)
+    image = preview.overlay(workspace / "source.img", lines, blocks=blocks)
     tmp = workspace / "ocr-preview.png.tmp"
     try:
         image.save(tmp, format="PNG")
@@ -2463,7 +2468,12 @@ async def _ensure_ocr_preview(job_id: str) -> Path:
             current = ""
         if current != revision or not path.is_file():
             try:
-                await run_native_safely(_write_overlay, workspace, result["lines"])
+                block_list = None
+                try:
+                    block_list = translation_blocks(job_id, result["lines"], filter_sfx=False)
+                except Exception:
+                    pass
+                await run_native_safely(_write_overlay, workspace, result["lines"], block_list)
             except preview.PreviewError as exc:
                 raise HTTPException(400, str(exc)) from None
             except Exception as exc:

@@ -1248,11 +1248,23 @@ def is_junk_text(text: str, confidence: float | None = None) -> bool:
     if len(_ODD.findall(value)) >= 1 and len(letters) <= 6:
         return True
     if confidence is not None:
-        # اطمینان پایین روی متن کوتاه یعنی تقریباً حتماً خواندنِ اشتباهِ هنر است.
-        if confidence < 0.62 and len(letters) <= 8:
-            return True
-        if len(words) == 1 and len(letters) <= 10 and confidence < 0.8:
-            return True
+        # اگر کلمه در لیست کلمات رایج دیالوگ، واکه‌های گفتگو (مثل Ugh/Ah/Oh) یا صداواژه‌ها باشد
+        # یا جزو کلمات کوتاه مجاز باشد، با اطمینان پایین فیلتر نمی‌شود
+        val_lower = value.lower()
+        words_lower = [w.lower() for w in words]
+        is_recognized = (
+            val_lower in BUBBLE_DIALOGUE_VOCALIZATIONS
+            or val_lower in COMMON_DIALOGUE_WORDS
+            or val_lower in SFX_WORDS
+            or any(w in BUBBLE_DIALOGUE_VOCALIZATIONS or w in COMMON_DIALOGUE_WORDS or w in SFX_WORDS for w in words_lower)
+            or "".join(words).upper() in _SHORT_OK
+        )
+        if not is_recognized:
+            # اطمینان پایین روی متن کوتاه یعنی تقریباً حتماً خواندنِ اشتباهِ هنر است.
+            if confidence < 0.62 and len(letters) <= 8:
+                return True
+            if len(words) == 1 and len(letters) <= 10 and confidence < 0.8:
+                return True
     return False
 
 
@@ -1579,7 +1591,7 @@ BUBBLE_DIALOGUE_VOCALIZATIONS = {
 }
 
 
-def drop_junk_blocks(block_list: list, lines: list) -> list:
+def drop_junk_blocks(block_list: list, lines: list, filter_sfx: bool = True) -> list:
     """بلوک‌هایی که همهٔ خطوطشان بی‌معنی‌اند کنار گذاشته می‌شوند (شماره‌گذاری بعداً دوباره ساخته می‌شود)."""
     kept = []
     for item in block_list:
@@ -1606,10 +1618,9 @@ def drop_junk_blocks(block_list: list, lines: list) -> list:
         # نوشته‌های بسیار ریز و دوردست در پس‌زمینه بیرون حباب فیلتر می‌شوند
         if is_distant_background_text(item, lines):
             continue
-        # صداواژه‌ها و افکت‌های صوتی از فهرست ترجمه کنار گذاشته می‌شوند:
-        # متونی که اصوات، ناله‌ها یا واکنش‌های بیانی شخصیت هستند و درون حباب (speech, shout, thought_bubble و...)
-        # قرار دارند، دیالوگ کاراکتر محسوب شده و برای ترجمه حفظ می‌شوند.
-        if is_sfx_text(text):
+        # صداواژه‌ها و افکت‌های صوتی:
+        # اگر filter_sfx غیرفعال باشد، تمام افکت‌های صوتی برای مدیریت توسط کاربر در لیست باقی می‌مانند.
+        if filter_sfx and is_sfx_text(text):
             words = set(re.findall(r"[a-z]+", text.lower()))
             is_vocalization = bool((words and words.issubset(BUBBLE_DIALOGUE_VOCALIZATIONS)) or
                                    re.fullmatch(r"[\s*]*(ha|he|ku|fu|ah|oh|eh|hm)+[\s*!.]*", text, re.I))

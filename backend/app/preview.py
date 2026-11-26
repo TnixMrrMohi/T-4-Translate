@@ -13,6 +13,9 @@ Image.MAX_IMAGE_PIXELS = 250_000_000
 MAX_PREVIEW_SIDE = 2400     # سقف عرض پیش‌نمایش
 MAX_PREVIEW_HEIGHT = 6000   # سقف ارتفاع؛ صفحهٔ بلند وب‌تون به یک نوار ناخوانا تبدیل نشود
 BOX_COLOR = (0, 200, 255)
+BLOCK_BOX_COLOR = (255, 68, 68)
+BLOCK_BADGE_COLOR = (200, 30, 30)
+BLOCK_BADGE_TEXT_COLOR = (255, 255, 255)
 AREA_COLOR = (0, 255, 204)      # ناحیه‌های پاک‌سازی‌شده (ترجمه‌دار)
 AREA_MUTED = (140, 150, 155)    # ناحیه‌های بدون ترجمه
 BADGE_COLOR = (0, 0, 0)
@@ -40,8 +43,8 @@ def _scaled_box(quad, scale: float, width: int, height: int):
     return [(min(max(0.0, x), width - 1), min(max(0.0, y), height - 1)) for x, y in points]
 
 
-def overlay(path: Path, lines: list) -> Image.Image:
-    """تصویر منبع را با کادر و شمارهٔ خطوط OCR برمی‌گرداند (برای تصاویر بزرگ کوچک‌سازی می‌شود)."""
+def overlay(path: Path, lines: list, blocks: list | None = None) -> Image.Image:
+    """تصویر منبع را با کادر و شمارهٔ خطوط OCR و بلوک‌های ترجمه برمی‌گرداند."""
     try:
         with Image.open(path) as source:
             image = source.convert("RGB")
@@ -65,15 +68,47 @@ def overlay(path: Path, lines: list) -> Image.Image:
         points = _scaled_box(quad, scale, image.width, image.height)
         if not points:
             continue
-        draw.line(points + [points[0]], fill=BOX_COLOR, width=line_width, joint="curve")
-        label = str(number)
-        left, top, right, bottom = draw.textbbox((0, 0), label, font=badge_font)
-        text_width, text_height = right - left, bottom - top
-        pad = max(2, line_width)
-        badge = (points[0][0], max(0, points[0][1] - text_height - 2 * pad),
-                 points[0][0] + text_width + 2 * pad, max(text_height + 2 * pad, points[0][1]))
-        draw.rectangle(badge, fill=BADGE_COLOR)
-        draw.text((badge[0] + pad, badge[1] + pad - left), label, fill=BADGE_TEXT_COLOR, font=badge_font)
+        draw.line(points + [points[0]], fill=BOX_COLOR, width=max(1, line_width - 1), joint="curve")
+        if not blocks:
+            label = str(number)
+            left, top, right, bottom = draw.textbbox((0, 0), label, font=badge_font)
+            text_width, text_height = right - left, bottom - top
+            pad = max(2, line_width)
+            badge = (points[0][0], max(0, points[0][1] - text_height - 2 * pad),
+                     points[0][0] + text_width + 2 * pad, max(text_height + 2 * pad, points[0][1]))
+            draw.rectangle(badge, fill=BADGE_COLOR)
+            draw.text((badge[0] + pad, badge[1] + pad - left), label, fill=BADGE_TEXT_COLOR, font=badge_font)
+
+    if blocks:
+        block_font = _font(max(14, min(32, round(min(image.size) / 25))))
+        for item in blocks:
+            bbox = item.get("bbox")
+            if not bbox or len(bbox) != 4:
+                continue
+            # کادر بلوک همیشه [چپ, بالا, راست, پایین] است
+            # با اضافه کردن حاشیه (padding) به اندازه چند پیکسل به بیرون کادر تا با خطوط OCR تداخل نداشته باشد
+            box_padding = max(4.0, float(line_width * 2))
+            left_v, top_v, right_v, bottom_v = [float(v) * scale for v in bbox]
+            b_left = min(max(0.0, left_v - box_padding), image.width - 1.0)
+            b_top = min(max(0.0, top_v - box_padding), image.height - 1.0)
+            b_right = min(max(b_left + 2.0, right_v + box_padding), image.width - 1.0)
+            b_bottom = min(max(b_top + 2.0, bottom_v + box_padding), image.height - 1.0)
+            b_points = [
+                (b_left, b_top),
+                (b_right, b_top),
+                (b_right, b_bottom),
+                (b_left, b_bottom),
+            ]
+            draw.line(b_points + [b_points[0]], fill=BLOCK_BOX_COLOR, width=line_width + 1, joint="curve")
+            label = f"[{item.get('number', '')}]"
+            left, top, right, bottom = draw.textbbox((0, 0), label, font=block_font)
+            text_width, text_height = right - left, bottom - top
+            pad = max(3, line_width)
+            badge = (b_points[0][0], max(0, b_points[0][1] - text_height - 2 * pad),
+                     b_points[0][0] + text_width + 2 * pad, max(text_height + 2 * pad, b_points[0][1]))
+            draw.rectangle(badge, fill=BLOCK_BADGE_COLOR)
+            draw.text((badge[0] + pad, badge[1] + pad - left), label, fill=BLOCK_BADGE_TEXT_COLOR, font=block_font)
+
     return image
 
 

@@ -12,7 +12,8 @@ def test_missing_duplicate_unknown_and_empty():
     assert result.translations == {1: 'جایگزین'}
     assert result.duplicates == [1]
     assert result.unknown == [9]
-    assert result.missing == [2, 3]
+    assert result.blanks == [2]
+    assert result.missing == [3]
 
 
 def test_tone_prefix_echoed_by_the_model_is_removed():

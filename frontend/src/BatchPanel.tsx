@@ -5,6 +5,12 @@ import {ManualCleanOverlay, SelectionInfo} from './ManualCleanOverlay';
 import {Overlay} from './Overlay';
 import {copyToClipboard} from './clipboard';
 import {
+  DEFAULT_TRANSLATION_PROMPT,
+  getStoredPromptTemplate,
+  saveStoredPromptTemplate,
+  resetStoredPromptTemplate,
+} from './promptTemplate';
+import {
   findPageLineOffsets,
   estimateScrollTopForLine,
   findActivePageFromTextScroll,
@@ -29,6 +35,14 @@ export type BatchFile = {name: string; pieces: BatchPiece[]; order?: number};
 /** فایلی که خواندنش شکست خورد (مثلاً حافظهٔ کم)؛ برای «تلاش دوباره» نگه داشته می‌شود. */
 type FailedFile = {file: File; order: number; error: string};
 
+export type FilterWordItem = {
+  id: string;
+  word: string;
+  enabled: boolean;
+};
+
+export const FILTER_WORDS_KEY = 't4-custom-filter-words';
+
 export type BatchPage = {
   page: number;
   name: string;
@@ -40,6 +54,7 @@ export type BatchPage = {
   manualCleaned?: boolean;
   revision: string;
   text: string;
+  sourceItems?: Array<{number: number; text: string; tone?: string}>;
   state: 'extracted' | 'running' | 'done' | 'failed';
   error?: string;
 };
@@ -277,7 +292,6 @@ function BatchProgressBar({
       >
         <div className="progress-fill" style={{width: `${percent}%`}} />
       </div>
-      {detail && <p className="progress-hint">{detail}</p>}
       {onCancel && (
         <button
           type="button"
@@ -847,6 +861,23 @@ export function BatchPanel({
     detail: '',
   });
 
+  const [filterWords, setFilterWords] = useState<FilterWordItem[]>(() => {
+    try {
+      const raw = localStorage.getItem(FILTER_WORDS_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return [];
+  });
+  const [filterModalOpen, setFilterModalOpen] = useState(false);
+  const [filterSearch, setFilterSearch] = useState('');
+  const [newFilterWord, setNewFilterWord] = useState('');
+  const [selectedFilterIds, setSelectedFilterIds] = useState<string[]>([]);
+
+  const [promptModalOpen, setPromptModalOpen] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState<string>(() => getStoredPromptTemplate());
+  const [promptDraft, setPromptDraft] = useState<string>(customPrompt);
+  const [promptSaveStatus, setPromptSaveStatus] = useState<string>('');
+
   function handleCancel() {
     cancel.current = true;
     setCancelPending(true);
@@ -1328,8 +1359,83 @@ export function BatchPanel({
     setPages(old => old.map((p, i) => (i === index ? {...p, ...patch} : p)));
   }
 
-  const toText = (items: {number: number; text: string; tone?: string}[]) =>
-    items.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
+  const toText = (items: {number: number; text: string; tone?: string}[]) => {
+    const activeFilters = filterWords
+      .filter(f => f.enabled && f.word.trim())
+      .map(f => f.word.trim().toLowerCase());
+    const kept = items.filter(item => {
+      if (!activeFilters.length) return true;
+      const lower = item.text.toLowerCase();
+      return !activeFilters.some(fw => lower.includes(fw));
+    });
+    return kept.map(item => `[${item.number}]${item.tone ? ` (لحن: ${item.tone})` : ''} ${item.text}`).join('\n');
+  };
+
+  const saveFilterWords = (items: FilterWordItem[]) => {
+    setFilterWords(items);
+    localStorage.setItem(FILTER_WORDS_KEY, JSON.stringify(items));
+  };
+
+  const handleAddFilterWord = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = newFilterWord.trim();
+    if (!trimmed) return;
+    if (filterWords.some(f => f.word.toLowerCase() === trimmed.toLowerCase())) {
+      setNewFilterWord('');
+      return;
+    }
+    const updated: FilterWordItem[] = [
+      {id: String(Date.now()), word: trimmed, enabled: true},
+      ...filterWords,
+    ];
+    saveFilterWords(updated);
+    setNewFilterWord('');
+  };
+
+  const handleToggleFilterWord = (id: string) => {
+    const updated = filterWords.map(f => f.id === id ? {...f, enabled: !f.enabled} : f);
+    saveFilterWords(updated);
+  };
+
+  const handleDeleteFilterWord = (id: string) => {
+    const updated = filterWords.filter(f => f.id !== id);
+    saveFilterWords(updated);
+    setSelectedFilterIds(prev => prev.filter(i => i !== id));
+  };
+
+  const handleBulkToggle = (enable: boolean) => {
+    const sel = new Set(selectedFilterIds);
+    const updated = filterWords.map(f => sel.has(f.id) ? {...f, enabled: enable} : f);
+    saveFilterWords(updated);
+  };
+
+  const handleBulkDelete = () => {
+    const sel = new Set(selectedFilterIds);
+    const updated = filterWords.filter(f => !sel.has(f.id));
+    saveFilterWords(updated);
+    setSelectedFilterIds([]);
+  };
+
+  const filteredWordsList = filterWords.filter(f =>
+    !filterSearch.trim() || f.word.toLowerCase().includes(filterSearch.trim().toLowerCase())
+  );
+
+  const handleSelectAllFilters = (checked: boolean) => {
+    if (checked) {
+      setSelectedFilterIds(filteredWordsList.map(f => f.id));
+    } else {
+      setSelectedFilterIds([]);
+    }
+  };
+
+  useEffect(() => {
+    if (!pages.length) return;
+    setPages(prev => prev.map(p => {
+      if (!p.sourceItems) return p;
+      const text = toText(p.sourceItems);
+      return {...p, text, noText: text.trim() === ''};
+    }));
+  }, [filterWords]);
 
   async function choosePromo(action: PromoAction) {
     if (action === promoAction || updatingSettings) return;
@@ -1344,9 +1450,10 @@ export function BatchPanel({
           try {
             const res = await call(`/api/jobs/${p.jobId}/translation-source?promo=${action}`, undefined, 'منبع ترجمه');
             const source = await res.json();
-            const text = toText(source.items);
+            const sourceItems = source.items || [];
+            const text = toText(sourceItems);
             const noText = text.trim() === '';
-            return {...p, revision: source.revision, text, noText, state: noText ? 'done' : (p.noText && !noText ? 'extracted' : p.state)};
+            return {...p, revision: source.revision, text, sourceItems, noText, state: noText ? 'done' : (p.noText && !noText ? 'extracted' : p.state)};
           } catch {
             return p;
           }
@@ -1380,9 +1487,10 @@ export function BatchPanel({
             }, 'تنظیمات OCR');
             const res = await call(`/api/jobs/${p.jobId}/translation-source?promo=${promoAction}`, undefined, 'منبع ترجمه');
             const source = await res.json();
-            const text = toText(source.items);
+            const sourceItems = source.items || [];
+            const text = toText(sourceItems);
             const noText = text.trim() === '';
-            return {...p, revision: source.revision, text, noText, state: noText ? 'done' : (p.noText && !noText ? 'extracted' : p.state)};
+            return {...p, revision: source.revision, text, sourceItems, noText, state: noText ? 'done' : (p.noText && !noText ? 'extracted' : p.state)};
           } catch {
             return p;
           }
@@ -1402,9 +1510,10 @@ export function BatchPanel({
   const loadPage = async (jobId: string, name: string, height: number): Promise<BatchPage> => {
     const source = await (await call(
       `/api/jobs/${jobId}/translation-source?promo=${promoAction}`, undefined, 'منبع ترجمه')).json();
-    const text = toText(source.items);
+    const sourceItems = source.items || [];
+    const text = toText(sourceItems);
     const noText = text.trim() === '';
-    return {page: 0, name, jobId, revision: source.revision, text, state: noText ? 'done' : 'extracted', height, noText};
+    return {page: 0, name, jobId, revision: source.revision, text, sourceItems, state: noText ? 'done' : 'extracted', height, noText};
   };
 
   /** اگر حافظهٔ دستگاه پر باشد، کمی صبر می‌کند و همان کار را دوباره می‌زند (به‌جای رد کردن صفحه). */
@@ -1558,8 +1667,9 @@ export function BatchPanel({
         at += 2;   // نوار مرزی را رد کن؛ مرز بعدی از برشِ پایینی شروع می‌شود
       } catch (error) {
         const reason = error instanceof Error ? error.message : 'خطا';
-        // صفحه‌هایی با عرض متفاوت (مثل جلد) هیچ‌وقت متن مرزی ندارند؛ خطایشان بی‌صدا رد می‌شود.
-        if (!reason.includes('عرض دو صفحه')) errors.push(`مرز ${upperPage.name}: ${reason}`);
+        // صفحه‌هایی با عرض متفاوت یا ارتفاع کوتاه برای نوار مرزی طبیعی هستند و خطای واقعی نیستند.
+        const isBenign = reason.includes('عرض دو صفحه') || reason.includes('کوتاه است') || reason.includes('409');
+        if (!isBenign) errors.push(`مرز ${upperPage.name}: ${reason}`);
         at += 1;
       }
     }
@@ -1934,8 +2044,19 @@ export function BatchPanel({
   }
 
   async function copyPrompt(withPrompt = true) {
-    const promoNote = `\n${PROMO_RULES[promoAction]}\n- پرانتز لحن را در پاسخ تکرار نکن`;
-    const payload = withPrompt ? `${prompt}${promoNote}${BATCH_PROMPT_NOTE}\n${combined}` : combined;
+    const template = (customPrompt || getStoredPromptTemplate() || prompt || DEFAULT_TRANSLATION_PROMPT).trim();
+    let basePrompt = template;
+    if (!basePrompt.includes(PROMO_RULES[promoAction])) {
+      if (basePrompt.includes('- پرانتز لحن را در پاسخ تکرار نکن')) {
+        basePrompt = basePrompt.replace(
+          '- پرانتز لحن را در پاسخ تکرار نکن',
+          `${PROMO_RULES[promoAction]}\n- پرانتز لحن را در پاسخ تکرار نکن`,
+        );
+      } else {
+        basePrompt = `${basePrompt}\n\n${PROMO_RULES[promoAction]}`;
+      }
+    }
+    const payload = withPrompt ? `${basePrompt}${BATCH_PROMPT_NOTE}\n\nمتن:\n${combined}` : combined;
     const ok = await copyToClipboard(payload);
     if (!ok) {
       setMessage('کپی در کلیپ‌بورد ممکن نشد؛ متن را دستی از کادر زیر انتخاب و کپی کنید.');
@@ -2491,18 +2612,6 @@ export function BatchPanel({
                 </div>
               )}
 
-              {pages.length > 0 && !busy && (
-                <div className="batch-folder-card" style={{borderStyle: 'dashed', background: '#0d1822'}}>
-                  <h3>✅ استخراج متن با موفقیت انجام شد ({pages.length} تصویر)</h3>
-                  <p>متن و کادرهای تمام صفحات آماده است؛ برای شروع ترجمه به مرحلهٔ بعد بروید:</p>
-                  <div style={{display: 'flex', gap: '8px', justifyContent: 'center', flexWrap: 'wrap'}}>
-                    <button type="button" className="primary small" onClick={() => setBatchStep(2)}>
-                      رفتن به مرحله ۲: ترجمه فارسی →
-                    </button>
-                  </div>
-                </div>
-              )}
-
               <div className="upload-bar">
                 <span className="upload-bar-label">تصویرهای ورودی</span>
                 {files.length > 0 && !busy && (
@@ -2734,6 +2843,30 @@ export function BatchPanel({
                         </button>
                       </div>
                     </div>
+
+                    <button
+                      type="button"
+                      className="filter-words-btn"
+                      onClick={() => setFilterModalOpen(true)}
+                      title="مدیریت کلمات و عبارات فیلترشده در استخراج انگلیسی"
+                    >
+                      <span className="filter-words-icon">⚙️</span>
+                      <span>مدیریت کلمات</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="filter-words-btn prompt-template-btn"
+                      onClick={() => {
+                        setPromptDraft(customPrompt);
+                        setPromptSaveStatus('');
+                        setPromptModalOpen(true);
+                      }}
+                      title="مدیریت و شخصی‌سازی قالب پرامپت ترجمه هوش مصنوعی"
+                    >
+                      <span className="filter-words-icon">📜</span>
+                      <span>قالب پرامپت</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -2741,7 +2874,7 @@ export function BatchPanel({
               {pages.length > 0 && (
                 <div className="step2-split-container">
                   {/* ستون اول: تصاویر و پیش‌نمایش صفحات با کادرهای OCR */}
-                  <div className="step2-pane">
+                  <div className="step2-pane step2-image-pane">
                     <div className="step2-pane-header">
                       <h3 className="step2-pane-title">
                         <span>🖼️</span>
@@ -2785,10 +2918,27 @@ export function BatchPanel({
                         </div>
                       ))}
                     </div>
+
+                    <div className="step2-image-footer">
+                      <button type="button" className="ghost" disabled={busy !== null} onClick={() => setBatchStep(1)}>
+                        → مرحلهٔ قبل: انتخاب تصویر
+                      </button>
+                      <button
+                        type="button"
+                        className="ocr"
+                        disabled={busy !== null || (needsTranslation && !translated.trim())}
+                        onClick={() => {
+                          setBatchStep(3);
+                          void run(undefined, 'clean');
+                        }}
+                      >
+                        ذخیرهٔ ترجمه و ادامه ←
+                      </button>
+                    </div>
                   </div>
 
                   {/* ستون دوم: متون و ترجمهٔ همگام */}
-                  <div className="step2-pane">
+                  <div className="step2-pane step2-text-pane">
                     <div className="step2-pane-header">
                       <h3 className="step2-pane-title">
                         <span>📝</span>
@@ -2826,32 +2976,25 @@ export function BatchPanel({
 
                     <div className="step2-text-scroll">
                       <div className="step2-textarea-box">
-                        <label className="wizard-subtitle" style={{margin: 0, fontSize: '0.88rem'}}>
-                          متن ترجمه‌شده (فارسی):
-                        </label>
                         <textarea
                           ref={persianTextRef}
-                          onScroll={handleTextScroll}
                           className="batch-text"
                           dir="rtl"
-                          aria-label="متن ترجمه‌شده"
+                          aria-label="متن ترجمه‌شده (فارسی)"
                           value={translated}
-                          placeholder="متن ترجمه‌شده را اینجا بچسبانید..."
+                          placeholder="متن ترجمه‌شده (فارسی) را اینجا وارد کنید..."
                           onChange={event => setTranslated(event.target.value)}
                         />
                       </div>
 
                       <div className="step2-textarea-box">
-                        <label className="wizard-subtitle" style={{margin: 0, fontSize: '0.88rem'}}>
-                          متن استخراج‌شده (انگلیسی):
-                        </label>
                         <textarea
                           ref={englishTextRef}
-                          onScroll={handleTextScroll}
                           className="batch-text"
                           readOnly
                           dir="ltr"
-                          aria-label="متن استخراج‌شده"
+                          aria-label="متن استخراج‌شده (انگلیسی)"
+                          placeholder="متن استخراج‌شده (انگلیسی)"
                           value={combined}
                         />
                       </div>
@@ -2859,23 +3002,6 @@ export function BatchPanel({
                   </div>
                 </div>
               )}
-
-              <div className="wizard-nav">
-                <button type="button" className="ghost" disabled={busy !== null} onClick={() => setBatchStep(1)}>
-                  → مرحلهٔ قبل: انتخاب تصویر
-                </button>
-                <button
-                  type="button"
-                  className="ocr"
-                  disabled={busy !== null || (needsTranslation && !translated.trim())}
-                  onClick={() => {
-                    setBatchStep(3);
-                    void run(undefined, 'clean');
-                  }}
-                >
-                  ذخیرهٔ ترجمه و ادامه ←
-                </button>
-              </div>
             </>
           )}
 
@@ -3342,6 +3468,243 @@ export function BatchPanel({
         }}
         onCleanDone={() => setChapterVersion(Date.now())}
       />
+
+      {filterModalOpen && (
+        <div className="filter-modal-backdrop" onClick={() => setFilterModalOpen(false)}>
+          <div className="filter-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="مدیریت کلمات فیلترشده">
+            <div className="filter-modal-header">
+              <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+                <span style={{fontSize: '1.2rem'}}>⚙️</span>
+                <h3 style={{margin: 0, fontSize: '1.05rem', color: '#00ffcc'}}>مدیریت کلمات و عبارات فیلترشده (بلک‌لیست)</h3>
+              </div>
+              <button type="button" className="icon-button close" onClick={() => setFilterModalOpen(false)} aria-label="بستن">
+                ✕
+              </button>
+            </div>
+
+            <p style={{margin: '8px 0 12px', fontSize: '0.85rem', color: '#94a3b8', lineHeight: 1.5}}>
+              کلماتی که در این لیست فعال باشند، از استخراج انگلیسی در باکس ترجمه کنار گذاشته می‌شوند.
+            </p>
+
+            <form onSubmit={handleAddFilterWord} className="filter-add-form">
+              <input
+                type="text"
+                className="filter-input"
+                placeholder="افزودن کلمه یا عبارت جدید (مثال: VORTEX SCANS یا BOOM)..."
+                value={newFilterWord}
+                onChange={e => setNewFilterWord(e.target.value)}
+              />
+              <button type="submit" className="primary small" disabled={!newFilterWord.trim()}>
+                افزودن ➕
+              </button>
+            </form>
+
+            <div className="filter-toolbar">
+              <input
+                type="search"
+                className="filter-search"
+                placeholder="🔍 جستجو در کلمات..."
+                value={filterSearch}
+                onChange={e => setFilterSearch(e.target.value)}
+              />
+
+              {selectedFilterIds.length > 0 && (
+                <div className="filter-bulk-actions">
+                  <span style={{fontSize: '0.8rem', color: '#00ffcc'}}>{selectedFilterIds.length} مورد انتخاب شده:</span>
+                  <button type="button" className="ghost small" onClick={() => handleBulkToggle(true)}>فعال‌سازی ▶️</button>
+                  <button type="button" className="ghost small" onClick={() => handleBulkToggle(false)}>غیرفعال‌سازی ⏸️</button>
+                  <button type="button" className="ghost small danger" onClick={handleBulkDelete}>حذف 🗑️</button>
+                </div>
+              )}
+            </div>
+
+            <div className="filter-table-wrap">
+              <table className="filter-table">
+                <thead>
+                  <tr>
+                    <th style={{width: '36px', textAlign: 'center'}}>
+                      <input
+                        type="checkbox"
+                        checked={filteredWordsList.length > 0 && selectedFilterIds.length === filteredWordsList.length}
+                        onChange={e => handleSelectAllFilters(e.target.checked)}
+                        aria-label="انتخاب همه"
+                      />
+                    </th>
+                    <th>کلمه یا عبارت</th>
+                    <th style={{width: '90px', textAlign: 'center'}}>وضعیت</th>
+                    <th style={{width: '70px', textAlign: 'center'}}>عملیات</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredWordsList.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} style={{textAlign: 'center', padding: '24px', color: '#64748b'}}>
+                        {filterWords.length === 0 ? 'هنوز کلمه‌ای فیلتر نشده است.' : 'هیچ کلمه‌ای با این جستجو پیدا نشد.'}
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredWordsList.map(item => {
+                      const isSelected = selectedFilterIds.includes(item.id);
+                      return (
+                        <tr key={item.id} className={isSelected ? 'is-selected' : ''}>
+                          <td style={{textAlign: 'center'}}>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={e => {
+                                if (e.target.checked) setSelectedFilterIds(prev => [...prev, item.id]);
+                                else setSelectedFilterIds(prev => prev.filter(i => i !== item.id));
+                              }}
+                            />
+                          </td>
+                          <td style={{fontWeight: 500, color: item.enabled ? '#f1f5f9' : '#64748b'}} dir="auto">
+                            {item.word}
+                          </td>
+                          <td style={{textAlign: 'center'}}>
+                            <button
+                              type="button"
+                              className={`filter-status-pill ${item.enabled ? 'is-enabled' : 'is-disabled'}`}
+                              onClick={() => handleToggleFilterWord(item.id)}
+                              title={item.enabled ? 'کلیک برای غیرفعال‌سازی' : 'کلیک برای فعال‌سازی'}
+                            >
+                              {item.enabled ? 'فعال' : 'غیرفعال'}
+                            </button>
+                          </td>
+                          <td style={{textAlign: 'center'}}>
+                            <button
+                              type="button"
+                              className="icon-button trash small"
+                              onClick={() => handleDeleteFilterWord(item.id)}
+                              title="حذف از لیست"
+                              aria-label="حذف از لیست"
+                            >
+                              🗑️
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="filter-modal-footer">
+              <span style={{fontSize: '0.8rem', color: '#64748b'}}>
+                مجموع کلمات: {filterWords.length} ({filterWords.filter(f => f.enabled).length} فعال)
+              </span>
+              <button type="button" className="ghost small" onClick={() => setFilterModalOpen(false)}>
+                بستن پنجره
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {promptModalOpen && (
+        <div className="filter-modal-backdrop" onClick={() => setPromptModalOpen(false)}>
+          <div
+            className="filter-modal prompt-modal"
+            onClick={e => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="مدیریت قالب پرامپت ترجمه"
+          >
+            <div className="filter-modal-header">
+              <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+                <span style={{fontSize: '1.2rem'}}>📜</span>
+                <h3 style={{margin: 0, fontSize: '1.05rem', color: '#00ffcc'}}>مدیریت قالب پرامپت ترجمه</h3>
+              </div>
+              <button
+                type="button"
+                className="icon-button close"
+                onClick={() => setPromptModalOpen(false)}
+                aria-label="بستن"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p style={{margin: '8px 0 10px', fontSize: '0.85rem', color: '#94a3b8', lineHeight: 1.6}}>
+              قالب اصلی دستورالعمل ترجمه را می‌توانید در کادر زیر شخصی‌سازی کنید. این متن در مرورگر ذخیره می‌شود و هنگام کلیک روی «کپی با پرامپت»، قوانین متن تبلیغاتی و لیست متون استخراج‌شده به‌صورت هوشمند به ادامهٔ آن افزوده خواهند شد.
+            </p>
+
+            <div className="prompt-modal-editor-wrap">
+              <textarea
+                className="prompt-modal-textarea"
+                dir="auto"
+                value={promptDraft}
+                onChange={e => {
+                  setPromptDraft(e.target.value);
+                  setPromptSaveStatus('');
+                }}
+                placeholder="قالب پرامپت ترجمه را اینجا وارد کنید..."
+                aria-label="متن قالب پرامپت"
+              />
+              <div className="prompt-modal-meta">
+                <span>{promptDraft.split('\n').length} خط · {promptDraft.length.toLocaleString('fa-IR')} کاراکتر</span>
+                {promptSaveStatus && (
+                  <span style={{color: '#00ffcc', fontWeight: 600}}>{promptSaveStatus}</span>
+                )}
+              </div>
+            </div>
+
+            <div className="filter-modal-footer">
+              <div style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
+                <button
+                  type="button"
+                  className="ghost small"
+                  onClick={() => {
+                    setPromptDraft(DEFAULT_TRANSLATION_PROMPT);
+                    setPromptSaveStatus('به پیش‌فرض اولیه بازگردانده شد (جهت ذخیره، روی ذخیره تغییرات بزنید).');
+                  }}
+                  title="بازنشانی متن به قالب پیش‌فرض کارخانه"
+                >
+                  بازنشانی به پیش‌فرض 🔄
+                </button>
+                <button
+                  type="button"
+                  className="ghost small"
+                  onClick={async () => {
+                    await copyToClipboard(promptDraft);
+                    setPromptSaveStatus('متن قالب کپی شد ✓');
+                    setTimeout(() => setPromptSaveStatus(''), 2500);
+                  }}
+                  title="کپی کردن متن همین قالب در کلیپ‌بورد"
+                >
+                  کپی قالب 📋
+                </button>
+              </div>
+
+              <div style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
+                <button
+                  type="button"
+                  className="ghost small"
+                  onClick={() => setPromptModalOpen(false)}
+                >
+                  بستن
+                </button>
+                <button
+                  type="button"
+                  className="primary small"
+                  onClick={() => {
+                    const trimmed = promptDraft.trim() || DEFAULT_TRANSLATION_PROMPT;
+                    setCustomPrompt(trimmed);
+                    saveStoredPromptTemplate(trimmed);
+                    setPromptSaveStatus('قالب پرامپت با موفقیت ذخیره شد ✓');
+                    setTimeout(() => {
+                      setPromptSaveStatus('');
+                      setPromptModalOpen(false);
+                    }, 600);
+                  }}
+                >
+                  ذخیره تغییرات 💾
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {chapterCreateOpen && activeProjectMeta && (
         <ChapterCreateModal

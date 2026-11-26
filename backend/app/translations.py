@@ -14,10 +14,15 @@ class ParseResult:
     missing: list[int]
     duplicates: list[int]
     unknown: list[int]
+    blanks: list[int] = None
+
+    def __post_init__(self):
+        if self.blanks is None:
+            self.blanks = []
 
 
 def parse_translation(text: str, expected: set[int]) -> ParseResult:
-    translations: dict[int, str] = {}
+    raw_translations: dict[int, str] = {}
     duplicates: set[int] = set()
     unknown: set[int] = set()
     current: int | None = None
@@ -29,12 +34,23 @@ def parse_translation(text: str, expected: set[int]) -> ParseResult:
             if current is None:
                 unknown.add(number)
                 continue
-            if current in translations:
+            if current in raw_translations:
                 duplicates.add(current)
             # Preserve original Unicode text, including Persian digits in the translation.
             end_of_marker = line.index(']') + 1
-            translations[current] = _TONE_PREFIX.sub("", line[end_of_marker:].strip())
+            raw_translations[current] = _TONE_PREFIX.sub("", line[end_of_marker:].strip())
         elif current is not None and line.strip():
-            translations[current] = (translations[current] + '\n' + line.strip()).strip()
-    translations = {number: value for number, value in translations.items() if value.strip()}
-    return ParseResult(translations, sorted(expected - translations.keys()), sorted(duplicates), sorted(unknown))
+            raw_translations[current] = (raw_translations[current] + '\n' + line.strip()).strip()
+
+    translations: dict[int, str] = {}
+    blanks: list[int] = []
+    for number, val in raw_translations.items():
+        trimmed = val.strip()
+        if trimmed:
+            translations[number] = trimmed
+        else:
+            blanks.append(number)
+
+    all_found = set(raw_translations.keys())
+    missing = sorted(expected - all_found)
+    return ParseResult(translations, missing, sorted(duplicates), sorted(unknown), sorted(blanks))
