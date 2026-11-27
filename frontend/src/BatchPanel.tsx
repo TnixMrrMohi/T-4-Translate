@@ -306,16 +306,8 @@ function BatchProgressBar({
   );
 }
 
-const FIRST_ZOOM = 0.5;
-const MAX_ZOOM = 4;
-const ZOOM_STEP = 0.25;
-const ZOOM_LADDER: number[] = (() => {
-  const steps: number[] = [];
-  for (let value = FIRST_ZOOM; value <= MAX_ZOOM + 1e-9; value += ZOOM_STEP) {
-    steps.push(Math.round(value * 100) / 100);
-  }
-  return steps;
-})();
+const ZOOM_LADDER: number[] = [0.2, 0.3, 0.4, 0.5, 1.0, 1.5, 2.0];
+const FIRST_ZOOM = ZOOM_LADDER[0];
 const LAST_ZOOM = ZOOM_LADDER[ZOOM_LADDER.length - 1];
 
 function BatchOcrModal({
@@ -337,7 +329,7 @@ function BatchOcrModal({
   onPageCleaned?: (jobId: string) => void;
   onCleanDone?: () => void;
 }) {
-  const [zoom, setZoom] = useState(FIRST_ZOOM);
+  const [zoom, setZoom] = useState(0.4);
   const [fit, setFit] = useState(false);
   const [modalTool, setModalTool] = useState<'brush' | 'box' | 'patch' | 'text' | 'none'>('none');
   const [modalBrushSize, setModalBrushSize] = useState(35);
@@ -356,7 +348,7 @@ function BatchOcrModal({
 
   useEffect(() => {
     if (open) {
-      setZoom(FIRST_ZOOM);
+      setZoom(0.4);
       setFit(false);
       setModalTool('none');
       setModalSelection(null);
@@ -517,8 +509,7 @@ function BatchOcrModal({
       if (event.key === 'Escape') handleModalClose();
       else if (event.key === '+' || event.key === '=') zoomIn();
       else if (event.key === '-') zoomOut();
-      else if (event.key === '0') showFit();
-      else if (event.key === 'w' || event.key === 'W') (!fit && zoom === 1 ? showFit() : showWidth());
+
     };
     window.addEventListener('keydown', onKey);
     return () => {
@@ -530,18 +521,13 @@ function BatchOcrModal({
   if (!open) return null;
 
   const zoomIn = () => {
-    if (fit) {setFit(false); setZoom(FIRST_ZOOM); return;}
     const next = ZOOM_LADDER.find(step => step > zoom + 1e-9);
     if (next !== undefined) setZoom(next);
   };
   const zoomOut = () => {
-    if (fit) return;
     const previous = [...ZOOM_LADDER].reverse().find(step => step < zoom - 1e-9);
-    if (previous === undefined) {setFit(true); setZoom(1); return;}
-    setZoom(previous);
+    if (previous !== undefined) setZoom(previous);
   };
-  const showWidth = () => {setFit(false); setZoom(1);};
-  const showFit = () => {setFit(true); setZoom(1);};
 
   const overlayLabel = kind === 'clean'
     ? 'پیش‌نمایش تصویرهای پاک‌شدهٔ فصل'
@@ -725,24 +711,20 @@ function BatchOcrModal({
               )}
             </div>
           )}
-          <button type="button" onClick={zoomOut} disabled={!fit && zoom <= FIRST_ZOOM + 1e-9} aria-label="کوچک‌تر">−</button>
-          <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
-          <button type="button" onClick={zoomIn} disabled={!fit && zoom >= LAST_ZOOM - 1e-9} aria-label="بزرگ‌تر">+</button>
-          <button type="button" onClick={showWidth} disabled={!fit && zoom === 1}>عرض کامل</button>
-          <button type="button" onClick={showFit} disabled={fit}>تناسب صفحه</button>
+          <button type="button" onClick={zoomOut} disabled={zoom <= FIRST_ZOOM + 1e-9} aria-label="کوچک‌تر">−</button>
+          <span className="modal-zoom" aria-live="polite">{`${Math.round(zoom * 100)}٪`}</span>
+          <button type="button" onClick={zoomIn} disabled={zoom >= LAST_ZOOM - 1e-9} aria-label="بزرگ‌تر">+</button>
           <button type="button" ref={closeRef} onClick={handleModalClose}>بستن ✕</button>
         </span>
       </div>
       <p className="modal-hint" aria-live="polite">
-        {fit
-          ? 'تناسب صفحه — برای بزرگ‌نمایی از دکمه‌های بالا یا کلیدهای + و − استفاده کنید'
-          : `${Math.round(zoom * 100)}٪ — پله‌های زوم از ۵۰٪ تا ۴۰۰٪`}
+        {`${Math.round(zoom * 100)}٪ — پله‌های زوم: ۲۰٪ تا ۵۰٪ (ده‌تایی) و سپس ۵۰٪ تا ۲۰۰٪ (پنجاه‌تایی)`}
       </p>
-      <div className={`modal-stage${fit ? ' fit' : ''}`} ref={stageRef} style={{display: 'block', overflowY: 'auto', maxHeight: 'calc(100vh - 100px)'}}>
+      <div className="modal-stage" ref={stageRef} style={{display: 'block', overflowY: 'auto', maxHeight: 'calc(100vh - 100px)'}}>
         <div
           style={{
-            width: fit ? '100%' : `${Math.round(zoom * 100)}%`,
-            maxWidth: fit ? '850px' : 'none',
+            width: `${Math.round(zoom * 100)}%`,
+            maxWidth: 'none',
             margin: '0 auto',
             display: 'flex',
             flexDirection: 'column',
@@ -2498,10 +2480,10 @@ export function BatchPanel({
       <section className="workspace" aria-label="محیط پردازش دسته‌ای">
         <div className="batch-project-bar">
           <div
-            className="batch-project-info"
-            onClick={onOpenProjectManager}
-            style={{cursor: onOpenProjectManager ? 'pointer' : 'default'}}
-            title={onOpenProjectManager ? 'کلیک برای باز کردن، تغییر یا ساخت پروژه جدید' : undefined}
+            className={`batch-project-info${busy ? " is-disabled" : ""}`}
+            onClick={busy ? undefined : onOpenProjectManager}
+            style={{cursor: !busy && onOpenProjectManager ? "pointer" : "default", opacity: busy ? 0.6 : 1}}
+            title={!busy && onOpenProjectManager ? "کلیک برای باز کردن، تغییر یا ساخت پروژه جدید" : undefined}
           >
             <span style={{fontSize: '16px'}}>📁</span>
             <strong>پروژه:</strong>
@@ -2521,6 +2503,7 @@ export function BatchPanel({
                 <select
                   id="batch-chapter-select"
                   aria-label="انتخاب چپتر"
+                  disabled={Boolean(busy)}
                   value={activeChapterId}
                   onChange={e => void handleSwitchChapter(e.target.value)}
                   className="batch-chapter-select"
@@ -2543,6 +2526,7 @@ export function BatchPanel({
                 <button
                   type="button"
                   className="ghost small"
+                  disabled={Boolean(busy)}
                   onClick={() => setChapterCreateOpen(true)}
                   style={{fontSize: '12px', padding: '2px 6px'}}
                   title="افزودن چپتر جدید به این پروژه"
@@ -2555,6 +2539,7 @@ export function BatchPanel({
               <button
                 type="button"
                 className="batch-project-btn"
+                disabled={Boolean(busy)}
                 onClick={onOpenProjectManager}
               >
                 مدیریت پروژه‌ها 📋
@@ -2735,7 +2720,7 @@ export function BatchPanel({
                       </button>
                     )}
                   </div>
-                  <ul className="batch-list" aria-label="فهرست تصویرها">
+                  <ul className={`batch-list${showAllFiles ? " is-scrollable" : ""}`} aria-label="فهرست تصویرها">
                     {(showAllFiles ? files : files.slice(0, 3)).map((file, i) => (
                       <li key={`${file.name}-${file.size}`} className="batch-row">
                         <span dir="ltr">{i + 1}. {file.name}</span>
@@ -2743,18 +2728,6 @@ export function BatchPanel({
                       </li>
                     ))}
                   </ul>
-                  {files.length > 3 && (
-                    <div style={{display: 'flex', justifyContent: 'center', marginTop: '6px'}}>
-                      <button
-                        type="button"
-                        className="ghost small"
-                        onClick={() => setShowAllFiles(prev => !prev)}
-                        style={{fontSize: '12px', padding: '4px 14px'}}
-                      >
-                        {showAllFiles ? 'بستن فهرست ▴' : `مشاهده همه (${files.length} تصویر) ▾`}
-                      </button>
-                    </div>
-                  )}
                 </div>
               )}
 

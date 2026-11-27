@@ -13,16 +13,8 @@ type Props = {
   onClose?: () => void;
 };
 
-const FIRST_ZOOM = 0.5;
-const ZOOM_STEP = 0.25;
-const MAX_ZOOM = 4.0;
-const ZOOM_LADDER: number[] = (() => {
-  const steps: number[] = [];
-  for (let value = FIRST_ZOOM; value <= MAX_ZOOM + 1e-9; value += ZOOM_STEP) {
-    steps.push(Math.round(value * 100) / 100);
-  }
-  return steps;
-})();
+const ZOOM_LADDER: number[] = [0.2, 0.3, 0.4, 0.5, 1.0, 1.5, 2.0];
+const FIRST_ZOOM = ZOOM_LADDER[0];
 const LAST_ZOOM = ZOOM_LADDER[ZOOM_LADDER.length - 1];
 
 /**
@@ -55,7 +47,7 @@ export function CompareSlider({
 
   useEffect(() => {
     if (modalOpen) {
-      setZoom(FIRST_ZOOM);
+      setZoom(0.5);
     }
   }, [modalOpen]);
 

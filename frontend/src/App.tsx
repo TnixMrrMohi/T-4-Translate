@@ -230,17 +230,8 @@ export function focusAreaView({stageWidth, stageHeight, pageWidth, pageHeight, b
   };
 }
 
-const MAX_ZOOM = 4;
-const ZOOM_STEP = 0.25;
-/** اولین پلهٔ زوم ۵۰٪ است و بعد هر پله ۲۵٪ بالا می‌رود: ۵۰، ۷۵، ۱۰۰، … ۴۰۰. */
-const FIRST_ZOOM = 0.5;
-const ZOOM_LADDER: number[] = (() => {
-  const steps: number[] = [];
-  for (let value = FIRST_ZOOM; value <= MAX_ZOOM + 1e-9; value += ZOOM_STEP) {
-    steps.push(Math.round(value * 100) / 100);
-  }
-  return steps;
-})();
+const ZOOM_LADDER: number[] = [0.2, 0.3, 0.4, 0.5, 1.0, 1.5, 2.0];
+const FIRST_ZOOM = ZOOM_LADDER[0];
 const LAST_ZOOM = ZOOM_LADDER[ZOOM_LADDER.length - 1];
 
 /** نسبت استاندارد قاب پیش‌نمایش؛ همهٔ صفحه‌ها (هر عرض/ارتفاعی) در همین قاب یک‌اندازه دیده می‌شوند. */
@@ -425,14 +416,14 @@ export function CleanCanvas({jobId, version, pageWidth, pageHeight, areas, disab
   };
   const closeModal = () => setModalOpen(false);
 
-  const [zoom, setZoom] = useState(FIRST_ZOOM);
+  const [zoom, setZoom] = useState(0.5);
   const modalCloseRef = useRef<HTMLButtonElement>(null);
   const modalStageRef = useRef<HTMLDivElement>(null);
   const modalPageRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (modalOpen) {
-      setZoom(FIRST_ZOOM);
+      setZoom(0.5);
     }
   }, [modalOpen]);
 
@@ -751,7 +742,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
       pageHeight: pageHeight || 1,
       box: request.box,
       minZoom: FIRST_ZOOM,
-      maxZoom: MAX_ZOOM,
+      maxZoom: LAST_ZOOM,
     });
     setZoom(view.zoom);
     scrollTarget.current = {top: view.scrollTop, left: view.scrollLeft};
@@ -765,30 +756,24 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
 
   // زوم پله‌پله: اولین پله ۵۰٪ و بعد هر پله ۲۵٪ بیشتر؛ از بالاترین پله به
   // «تناسب صفحه» برمی‌گردد. «عرض کامل» هم پلهٔ ۱۰۰٪ است، نه پرش مستقیم.
-  const zoomed = !fit;
   const zoomIn = () => {
     setFocusedLabel(null);
     scrollTarget.current = null;
-    if (fit) {setFit(false); setZoom(FIRST_ZOOM); return;}
     const next = ZOOM_LADDER.find(step => step > zoom + 1e-9);
     if (next !== undefined) setZoom(next);
   };
   const zoomOut = () => {
     setFocusedLabel(null);
     scrollTarget.current = null;
-    if (fit) return;
     const previous = [...ZOOM_LADDER].reverse().find(step => step < zoom - 1e-9);
-    if (previous === undefined) {setFit(true); setZoom(1); return;} // پایان پله‌ها: تناسب صفحه
-    setZoom(previous);
+    if (previous !== undefined) setZoom(previous);
   };
-  /** کلیک روی خود تصویر: یک پله بزرگ‌تر؛ پس از ۴۰۰٪ به تناسب صفحه برمی‌گردد. */
+  /** کلیک روی خود تصویر: یک پله بزرگ‌تر تا سقف ۲۰۰٪. */
   const nextZoomStep = () => {
-    if (zoomed && zoom >= LAST_ZOOM - 1e-9) {setFit(true); setZoom(1); return;}
+    if (zoom >= LAST_ZOOM - 1e-9) return;
     zoomIn();
   };
-  const showWidth = () => {setFit(false); setZoom(1); setFocusedLabel(null); scrollTarget.current = null;};
-  const showFit = () => {setFit(true); setZoom(1); setFocusedLabel(null); scrollTarget.current = null;};
-  const toggleLabel = zoomed ? 'تصویر: پلهٔ بعدی زوم' : 'تصویر: زوم پله‌پله از ۵۰٪';
+  const toggleLabel = 'تصویر: یک پله زوم بیشتر';
 
   // اگر بندانگشتی نیاید (۴۰۴/شبکه)، یک‌بار خودکار دوباره خواسته و بعد پیام روشن
   // نشان داده می‌شود؛ آیکون «عکس شکسته» مرورگر هرگز دیده نمی‌شود.
@@ -826,8 +811,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
       if (event.key === 'Escape') close();
       else if (event.key === '+' || event.key === '=') zoomIn();
       else if (event.key === '-') zoomOut();
-      else if (event.key === '0') showFit();
-      else if (event.key === 'w' || event.key === 'W') (zoomed && zoom === 1 ? showFit() : showWidth());
+
     };
     window.addEventListener('keydown', onKey);
     return () => {window.removeEventListener('keydown', onKey); document.body.style.overflow = previous;};
@@ -907,31 +891,26 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
               {alt} <span style={{color: '#7d9294', fontSize: '12px'}}>(Esc برای بستن)</span>
             </span>
             <span className="modal-actions">
-              <button type="button" onClick={zoomOut} disabled={!zoomed} aria-label="کوچک‌تر">−</button>
-              <span className="modal-zoom" aria-live="polite">{fit ? 'تناسب صفحه' : `${Math.round(zoom * 100)}٪`}</span>
-              <button type="button" onClick={zoomIn} disabled={zoomed && zoom >= LAST_ZOOM} aria-label="بزرگ‌تر">+</button>
-              <button type="button" onClick={showWidth} disabled={zoomed && zoom === 1}>عرض کامل</button>
-              <button type="button" onClick={showFit} disabled={fit}>تناسب صفحه</button>
+              <button type="button" onClick={zoomOut} disabled={zoom <= FIRST_ZOOM + 1e-9} aria-label="کوچک‌تر">−</button>
+              <span className="modal-zoom" aria-live="polite">{`${Math.round(zoom * 100)}٪`}</span>
+              <button type="button" onClick={zoomIn} disabled={zoom >= LAST_ZOOM - 1e-9} aria-label="بزرگ‌تر">+</button>
               <a href={fullUrl} download={downloadName ?? `${kind}.png`}>دانلود</a>
               <button type="button" ref={closeRef} onClick={close}>بستن ✕</button>
             </span>
           </div>
           {tall && <p style={{color: '#f2c14e', fontSize: '13px', margin: '0 0 8px'}}>این صفحه بلند است؛ کل صفحه نمایش داده می‌شود. برای خواندن متن روی «+» بزنید یا روی تصویر کلیک کنید تا به عرض صفحه در بیاید.</p>}
           <p className="modal-hint" aria-live="polite">
-            {!zoomed
-              ? 'تناسب صفحه — روی تصویر کلیک کنید تا زوم پله‌پله از ۵۰٪ شروع شود (هر پله ۲۵٪)'
-              : zoom >= LAST_ZOOM
-                ? 'بالاترین پله (۴۰۰٪) — کلیک بعدی به تناسب صفحه برمی‌گردد'
-                : `${Math.round(zoom * 100)}٪ — کلیک روی تصویر: یک پله بالاتر`}
+            {zoom >= LAST_ZOOM
+              ? 'بالاترین پله (۲۰۰٪)'
+              : `${Math.round(zoom * 100)}٪ — کلیک روی تصویر: یک پله بالاتر`}
           </p>
-          <div className={`modal-stage${fit ? ' fit' : ''}`} ref={stageRef}>
-            {/* کلیک روی تصویر عرض را به عرض صفحه می‌برد و کلیک دوم برمی‌گرداند. */}
+          <div className="modal-stage" ref={stageRef}>
             <div
               className="modal-image"
               role="button"
               tabIndex={0}
               aria-label={toggleLabel}
-              title={zoomed && zoom >= LAST_ZOOM ? 'کلیک: برگشت به تناسب صفحه' : 'کلیک: یک پله زوم بیشتر'}
+              title={zoom >= LAST_ZOOM ? 'بالاترین زوم (۲۰۰٪)' : 'کلیک: یک پله زوم بیشتر'}
               onClick={nextZoomStep}
               onKeyDown={event => {
                 if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); nextZoomStep();}
@@ -940,7 +919,7 @@ function ImagePreview({jobId, kind, version, caption, alt, downloadName, aspect 
               <img
                 src={fullUrl}
                 alt={alt}
-                style={fit ? undefined : {width: `${Math.round(zoom * 100)}%`, maxWidth: 'none', height: 'auto'}}
+                style={{width: `${Math.round(zoom * 100)}%`, maxWidth: 'none', height: 'auto'}}
                 onLoad={() => {
                   // نسخهٔ کامل ساخته شد؛ بندانگشتی هم دوباره خواسته می‌شود.
                   if (thumbFailed) {setThumbFailed(false); setThumbRetry(value => value + 1);}
@@ -2165,7 +2144,7 @@ export function App() {
             </button>
           </div>
           <button className="ocr reset" disabled={batchOpen ? batchBusy : busy} onClick={() => void resetApp()}>ریست</button>
-          <SystemPanel buttonLabel="تنظیمات" />
+          <SystemPanel buttonLabel="تنظیمات" disabled={batchOpen ? batchBusy : (busy || loadingData)} />
         </div>
         <span className="brand" dir="ltr">T-4 TRANSLATE</span>
         <span className="status" role="status">{status}</span>

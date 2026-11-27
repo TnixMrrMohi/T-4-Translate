@@ -1006,19 +1006,24 @@ async def save_translation(job_id: str, body: TranslationInput) -> dict:
             raise HTTPException(409, "متنی برای ترجمه وجود ندارد.")
         parsed = parse_translation(body.text, {item["number"] for item in source["items"]})
         # هر بلوک (بالن) یک متن دارد؛ برای پاک‌سازی، همان متن به همهٔ خطوط بلوک نسبت داده می‌شود.
+        # اگر براکت خالی باشد (بدون متن)، متن خالی یا فاصله است ولی در خطوط پاک‌سازی ثبت می‌شود تا تمیز شود بدون اینکه متنی درج گردد.
         line_translations: dict[str, str] = {}
+        blanks_set = set(parsed.blanks)
         for item in source["items"]:
-            text = parsed.translations.get(item["number"])
+            num = item["number"]
+            text = parsed.translations.get(num)
             if not text and item.get("promo"):
                 # شمارهٔ تبلیغاتی جا افتاده است؛ همان جانشین پیش‌فرض نوشته می‌شود.
                 text = bubbles.PROMO_REPLACEMENT
-                parsed.translations[item["number"]] = text
-                if item["number"] in parsed.missing:
-                    parsed.missing.remove(item["number"])
-            if not text:
+                parsed.translations[num] = text
+                if num in parsed.missing:
+                    parsed.missing.remove(num)
+            if not text and num not in blanks_set:
                 continue
+            # برای براکت‌های خالی، یک کاراکتر فاصله‌ای به کار می‌رود تا در خطوط پاک‌سازی لحاظ شود
+            val = text if text else ' '
             for line_number in item["lines"]:
-                line_translations[str(line_number)] = text
+                line_translations[str(line_number)] = val
         # متن تبلیغاتیِ «حذف‌شده» شماره‌ای در فهرست ندارد (شماره‌گذاری دوباره شده)،
         # پس برای این‌که از تصویر هم پاک شود، خط‌هایش جداگانه علامت می‌خورند.
         promo_lines = sorted({line for item in translation_blocks(job_id, get_ocr(job_id)["lines"])
@@ -1026,6 +1031,7 @@ async def save_translation(job_id: str, body: TranslationInput) -> dict:
                               for line in item["lines"]})
         result = {"sourceRevision": source["revision"], "promo": source["promo"], "text": body.text,
                   "translations": parsed.translations, "lineTranslations": line_translations,
+                  "blanks": parsed.blanks,
                   "blocks": [{"number": item["number"], "lines": item["lines"], "bbox": item["bbox"],
                               "kind": item["kind"], "tone": item["tone"]} for item in source["items"]],
                   "missing": parsed.missing,
@@ -1156,13 +1162,13 @@ async def clean_job(job_id: str, body: CleanInput | None = Body(default=None)) -
         translation = read_translation(job_id)
         if translation["stale"]:
             raise HTTPException(409, "OCR تغییر کرده است؛ ترجمه را دوباره بررسی و ذخیره کنید.")
-        if not translation["translations"]:
+        line_translations = translation.get("lineTranslations") or translation.get("translations") or {}
+        if not translation["translations"] and not line_translations:
             source = get_ocr(job_id)
             if len(source.get("lines", [])) == 0:
                 return {"jobId": job_id, "cleaned": 0, "message": "تصویر متنی برای پاک‌سازی ندارد."}
             raise HTTPException(409, "ترجمه‌ای برای پاک‌سازی وجود ندارد.")
         source = get_ocr(job_id)
-        line_translations = translation.get("lineTranslations") or translation["translations"]
         areas = None
         if body is not None and body.areas is not None:
             block_list = saved_translation_blocks(job_id, source["lines"], translation)
@@ -1293,12 +1299,15 @@ def clean_areas(job_id: str) -> dict:
     source = get_ocr(job_id)
     block_list = saved_translation_blocks(job_id, source["lines"], translation)
     texts = translation.get("translations") or {}
+    blanks_set = set(translation.get("blanks") or [])
     areas = []
     for item in block_list:
-        text = str(texts.get(str(item["number"])) or "").strip()
-        areas.append({"number": item["number"], "lines": item["lines"], "bbox": item["bbox"],
+        num = item["number"]
+        text = str(texts.get(str(num)) or texts.get(num) or "").strip()
+        is_clean_only = num in blanks_set and not text
+        areas.append({"number": num, "lines": item["lines"], "bbox": item["bbox"],
                       "area": item.get("area"), "kind": item["kind"], "kindLabel": item["kindLabel"],
-                      "text": text, "translated": bool(text)})
+                      "text": text, "translated": bool(text) or is_clean_only, "cleanOnly": is_clean_only})
     return {"jobId": job_id, "areas": areas, "blockCount": len(areas),
             "cleaned": (workspace_for(job_id) / "clean.png").is_file()}
 

@@ -97,7 +97,7 @@ export function modelPercent(row: ModelRow): number | null {
  * یک‌بار دانلود می‌شوند و بیرون از پوشهٔ نصب می‌مانند، پس با آپدیت برنامه دوباره
  * گرفته نمی‌شوند؛ همین‌جا می‌شود دید کدام نصب است، چقدر جا گرفته و چقدر دانلود شده.
  */
-export default function SystemPanel({buttonLabel}: {buttonLabel?: string}) {
+export default function SystemPanel({buttonLabel, disabled}: {buttonLabel?: string; disabled?: boolean}) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'system' | 'update'>('system');
   const updateController = useUpdateController();
@@ -218,6 +218,7 @@ export default function SystemPanel({buttonLabel}: {buttonLabel?: string}) {
       <button
         type="button"
         className="ocr settings-open"
+        disabled={disabled}
         onClick={() => setOpen(true)}
         aria-haspopup="dialog"
         aria-label="تنظیمات و مدل‌ها"

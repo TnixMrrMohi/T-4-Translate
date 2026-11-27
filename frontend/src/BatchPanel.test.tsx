@@ -194,29 +194,27 @@ describe('ناحیهٔ انداختن تصویر', () => {
     fireEvent.click(zoomBtn);
     expect(screen.getByRole('dialog', {name: 'پیش‌نمایش پیوستهٔ کادرهای OCR فصل'})).toBeInTheDocument();
 
-    // زوم اولیه ۵۰٪ است
-    expect(screen.getByText('50٪')).toBeInTheDocument();
+    // زوم اولیه ۴۰٪ است
+    expect(screen.getByText('40٪')).toBeInTheDocument();
 
-    // بزرگ‌تر (+) به ۷۵٪ می‌رود
+    // بزرگ‌تر (+) به ۵۰٪ و سپس ۱۰۰٪ می‌رود
     const zoomInBtn = screen.getByRole('button', {name: 'بزرگ‌تر'});
     fireEvent.click(zoomInBtn);
-    expect(screen.getByText('75٪')).toBeInTheDocument();
+    expect(screen.getByText('50٪')).toBeInTheDocument();
+    fireEvent.click(zoomInBtn);
+    expect(screen.getByText('100٪')).toBeInTheDocument();
 
-    // کوچک‌تر (−) به ۵۰٪ برمی‌گردد
+    // کوچک‌تر (−) به ۵۰٪، ۴۰٪، ۳۰٪ و ۲۰٪ می‌رود
     const zoomOutBtn = screen.getByRole('button', {name: 'کوچک‌تر'});
     fireEvent.click(zoomOutBtn);
     expect(screen.getByText('50٪')).toBeInTheDocument();
-
-    // دکمهٔ «عرض کامل» به ۱۰۰٪ می‌برد
-    const fullWidthBtn = screen.getByRole('button', {name: 'عرض کامل'});
-    fireEvent.click(fullWidthBtn);
-    expect(screen.getByText('100٪')).toBeInTheDocument();
-
-    // دکمهٔ «تناسب صفحه» به حالت fit می‌برد
-    const fitBtn = screen.getByRole('button', {name: 'تناسب صفحه'});
-    fireEvent.click(fitBtn);
-    expect(fitBtn).toBeDisabled();
-    expect(document.querySelector('.modal-zoom')?.textContent).toBe('تناسب صفحه');
+    fireEvent.click(zoomOutBtn);
+    expect(screen.getByText('40٪')).toBeInTheDocument();
+    fireEvent.click(zoomOutBtn);
+    expect(screen.getByText('30٪')).toBeInTheDocument();
+    fireEvent.click(zoomOutBtn);
+    expect(screen.getByText('20٪')).toBeInTheDocument();
+    expect(zoomOutBtn).toBeDisabled();
 
     // بستن مودال با کلید Escape
     fireEvent.keyDown(window, {key: 'Escape'});

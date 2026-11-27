@@ -809,58 +809,50 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
   it('پیش‌نمایش با زوم ۵۰٪ باز می‌شود و کلیک روی تصویر زوم را پله‌پله بالا می‌برد', async () => {
     const user = await openPreview();
 
-    const imageButton = screen.getByRole('button', {name: 'تصویر: پلهٔ بعدی زوم'});
+    const imageButton = screen.getByRole('button', {name: 'تصویر: یک پله زوم بیشتر'});
     const image = within(imageButton).getByRole('img', {name: ALT});
     // پیش‌فرض هنگام باز شدن: زوم ۵۰٪.
     expect(image).toHaveStyle({width: '50%'});
     expect(screen.getByText('50٪')).toBeInTheDocument();
 
     await user.click(imageButton);
-    expect(image).toHaveStyle({width: '75%'});
-    expect(screen.getByText('75٪')).toBeInTheDocument();
-
-    await user.click(imageButton);
     expect(image).toHaveStyle({width: '100%'});
     expect(screen.getByText('100٪')).toBeInTheDocument();
-    expect(screen.getByRole('button', {name: 'عرض کامل'})).toBeDisabled();
 
     await user.click(imageButton);
-    expect(image).toHaveStyle({width: '125%'});
-    expect(screen.getByText('125٪')).toBeInTheDocument();
+    expect(image).toHaveStyle({width: '150%'});
+    expect(screen.getByText('150٪')).toBeInTheDocument();
+
+    await user.click(imageButton);
+    expect(image).toHaveStyle({width: '200%'});
+    expect(screen.getByText('200٪')).toBeInTheDocument();
   });
 
-  it('دکمهٔ «−» یک پله پایین و از پلهٔ اول به تناسب صفحه برمی‌گردد', async () => {
+  it('دکمهٔ «−» یک پله پایین می‌رود تا به زوم ۲۰٪ برسد', async () => {
     const user = await openPreview();
     const smaller = screen.getByRole('button', {name: 'کوچک‌تر'});
-    // شروع در پلهٔ اول (۵۰٪) است؛ با یک کلیک به تناسب صفحه برمی‌گردد.
+    // شروع در ۵۰٪ است؛ با پله‌های ۱۰ تایی پایین می‌رود تا ۲۰٪.
     expect(smaller).toBeEnabled();
     await user.click(smaller);
-    expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
+    expect(screen.getByText('40٪')).toBeInTheDocument();
+    await user.click(smaller);
+    expect(screen.getByText('30٪')).toBeInTheDocument();
+    await user.click(smaller);
+    expect(screen.getByText('20٪')).toBeInTheDocument();
     expect(smaller).toBeDisabled();
 
     await user.click(screen.getByRole('button', {name: 'بزرگ‌تر'}));
-    expect(screen.getByText('50٪')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', {name: 'بزرگ‌تر'}));
-    expect(screen.getByText('75٪')).toBeInTheDocument();
-
-    await user.click(smaller);
-    expect(screen.getByText('50٪')).toBeInTheDocument();
-    await user.click(smaller);
-    expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
-    expect(screen.getByRole('button', {name: 'کوچک‌تر'})).toBeDisabled();
+    expect(screen.getByText('30٪')).toBeInTheDocument();
   });
 
-  it('از بالاترین پله (۴۰۰٪) کلیک بعدی به تناسب صفحه برمی‌گردد', async () => {
+  it('از بالاترین پله (۲۰۰٪) دکمه بزرگ‌تر غیرفعال می‌شود', async () => {
     const user = await openPreview();
-    for (let step = 0; step < 14; step += 1) {
-      await user.click(screen.getByRole('button', {name: /تصویر: (زوم پله‌پله از ۵۰٪|پلهٔ بعدی زوم)/}));
+    for (let step = 0; step < 3; step += 1) {
+      await user.click(screen.getByRole('button', {name: /تصویر: یک پله زوم بیشتر/}));
     }
-    expect(screen.getByText('400٪')).toBeInTheDocument();
+    expect(screen.getByText('200٪')).toBeInTheDocument();
     expect(screen.getByRole('button', {name: 'بزرگ‌تر'})).toBeDisabled();
-    expect(screen.getByText(/بالاترین پله \(۴۰۰٪\)/)).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', {name: 'تصویر: پلهٔ بعدی زوم'}));
-    expect(screen.getByText(/تناسب صفحه —/)).toBeInTheDocument();
+    expect(screen.getByText(/بالاترین پله \(۲۰۰٪\)/)).toBeInTheDocument();
   });
 
   it('مودال بیرون از ستون چسبان باز می‌شود تا بندانگشتی روی آن نیفتد', async () => {
@@ -932,12 +924,12 @@ describe('بزرگ‌نمایی تصویر صفحه', () => {
 
   it('با صفحه‌کلید (Enter) هم یک پله زوم می‌شود', async () => {
     const user = await openPreview();
-    const imageButton = screen.getByRole('button', {name: 'تصویر: پلهٔ بعدی زوم'});
+    const imageButton = screen.getByRole('button', {name: 'تصویر: یک پله زوم بیشتر'});
     imageButton.focus();
     await user.keyboard('{Enter}');
-    expect(screen.getByText('75٪')).toBeInTheDocument();
-    await user.keyboard('{Enter}');
     expect(screen.getByText('100٪')).toBeInTheDocument();
+    await user.keyboard('{Enter}');
+    expect(screen.getByText('150٪')).toBeInTheDocument();
   });
 });
 

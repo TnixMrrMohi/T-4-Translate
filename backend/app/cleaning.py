@@ -1108,7 +1108,7 @@ def clean_image(path: Path, lines: list, translations: dict, *, base: Path | Non
             except (TypeError, ValueError, IndexError, OverflowError):
                 raise CleaningError('مختصات متن OCR نامعتبر است.') from None
             picked = only is None or number in only
-            translated = bool(translations.get(str(number), '').strip()) or bool(extra and number in extra)
+            translated = (str(number) in translations and translations[str(number)] is not None) or bool(extra and number in extra)
             if not translated or not picked:
                 ys = [p[1] for p in points]
                 items.append({
