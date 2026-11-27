@@ -2090,3 +2090,16 @@ button:disabled{cursor:default}
 .batch-list.is-scrollable::-webkit-scrollbar-thumb:hover {
   background: #00ffcc88;
 }
+
+/* استایل پیش‌نمایش پاک‌سازی زوم ۴۰٪ */
+.clean-stream-zoom40 {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+.clean-stream-zoom40 .batch-stream-item {
+  width: 40% !important;
+  max-width: 40% !important;
+  margin: 0 auto;
+}

@@ -907,6 +907,7 @@ export function BatchPanel({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [showAllFiles, setShowAllFiles] = useState(false);
   const [showAllCleanPages, setShowAllCleanPages] = useState(false);
+  const [showAllCleanList, setShowAllCleanList] = useState(false);
   const [syncScroll, setSyncScroll] = useState(true);
   const imageScrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -3016,33 +3017,50 @@ export function BatchPanel({
                 />
               )}
 
-              {(busy === 'apply' || failedPages.length > 0) && (
-                <ul className="batch-list">
-                  {pages.map(page => (
-                    <li key={page.jobId} className={`batch-row is-${page.state}`}>
-                      <span>{page.page}. {page.name}</span>
-                      <span className="batch-row-state">
-                        {page.state === 'done'
-                          ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده ✓')
-                          : page.state === 'running'
-                          ? 'در حال کار…'
-                          : page.state === 'failed'
-                          ? `ناموفق: ${page.error}`
-                          : (busy === 'apply' ? 'در صف انتظار…' : 'متن استخراج شد')}
-                        {page.state === 'failed' && (
-                          <button
-                            type="button"
-                            className="ghost small"
-                            disabled={busy !== null || (needsTranslation && !translated.trim())}
-                            onClick={() => void run([page.jobId], 'clean')}
-                          >
-                            تلاش دوباره
-                          </button>
-                        )}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+              {pages.length > 0 && (
+                <div>
+                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '8px 0 4px'}}>
+                    <h3 style={{margin: 0, fontSize: '13px', color: '#9bf3cc'}}>
+                      وضعیت صفحات فصل ({pages.filter(p => p.state === 'done').length} از {pages.length} آماده)
+                    </h3>
+                    {pages.length > 3 && (
+                      <button
+                        type="button"
+                        className="ghost small"
+                        onClick={() => setShowAllCleanList(prev => !prev)}
+                        style={{fontSize: '12px', padding: '3px 10px'}}
+                      >
+                        {showAllCleanList ? 'بستن فهرست ▴' : `مشاهده همه (${pages.length} تصویر) ▾`}
+                      </button>
+                    )}
+                  </div>
+                  <ul className={`batch-list${showAllCleanList ? " is-scrollable" : ""}`} aria-label="فهرست وضعیت پاک‌سازی صفحات">
+                    {(showAllCleanList ? pages : pages.slice(0, 3)).map(page => (
+                      <li key={page.jobId} className={`batch-row is-${page.state}`}>
+                        <span>{page.page}. {page.name}</span>
+                        <span className="batch-row-state">
+                          {page.state === 'done'
+                            ? (isPlainPage(page) ? 'بدون متن (همان تصویر اصلی)' : 'آماده ✓')
+                            : page.state === 'running'
+                            ? 'در حال کار…'
+                            : page.state === 'failed'
+                            ? `ناموفق: ${page.error}`
+                            : (busy === 'apply' ? 'در صف انتظار…' : 'متن استخراج شد')}
+                          {page.state === 'failed' && (
+                            <button
+                              type="button"
+                              className="ghost small"
+                              disabled={busy !== null || (needsTranslation && !translated.trim())}
+                              onClick={() => void run([page.jobId], 'clean')}
+                            >
+                              تلاش دوباره
+                            </button>
+                          )}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
 
               {!busy && pages.length > 0 && renderManualToolbar()}
@@ -3074,7 +3092,7 @@ export function BatchPanel({
                       )}
                     </figcaption>
                     <div
-                      className="preview-thumb is-scroll batch-stream"
+                      className="preview-thumb is-scroll batch-stream clean-stream-zoom40"
                       tabIndex={0}
                       role="region"
                       aria-label="پیش‌نمایش پیوستهٔ تصویرهای پاک‌شدهٔ فصل"
