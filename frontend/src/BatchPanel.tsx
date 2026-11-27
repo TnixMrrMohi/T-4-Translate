@@ -832,6 +832,7 @@ export function BatchPanel({
   const [message, setMessage] = useState('');
   const [progress, setProgress] = useState('');
   const cancel = useRef(false);
+  const currentRunningJobId = useRef<string | null>(null);
   const [cancelPending, setCancelPending] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{
     fraction: number;
@@ -863,6 +864,12 @@ export function BatchPanel({
   function handleCancel() {
     cancel.current = true;
     setCancelPending(true);
+    const activeId = currentRunningJobId.current;
+    if (activeId) {
+      void fetch(`/api/jobs/${activeId}/cancel?operation=clean`, {method: 'POST'}).catch(() => {});
+      void fetch(`/api/jobs/${activeId}/cancel?operation=render`, {method: 'POST'}).catch(() => {});
+      void fetch(`/api/jobs/${activeId}/cancel?operation=ocr`, {method: 'POST'}).catch(() => {});
+    }
     setProgress('در حال لغو…');
     setBatchProgress(prev => ({
       ...prev,
@@ -1832,6 +1839,7 @@ export function BatchPanel({
     for (let at = 0; at < targets.length; at += 1) {
       if (cancel.current) break;
       const page = targets[at];
+      currentRunningJobId.current = page.jobId;
       const index = pages.findIndex(entry => entry.jobId === page.jobId);
       const tag = `${at + 1} از ${targets.length} · ${page.name}`;
       const frac = at / Math.max(1, targets.length);
@@ -1957,6 +1965,7 @@ export function BatchPanel({
         bad += 1;
       }
     }
+    currentRunningJobId.current = null;
     setBusy(null);
     setCancelPending(false);
     setProgress('');
@@ -1966,6 +1975,7 @@ export function BatchPanel({
     }
     if (cancel.current) {
       setMessage(`عملیات متوقف شد (${ok} صفحه تکمیل شده بود).`);
+      setBatchStep(prev => (prev === 3 ? 2 : prev));
       return;
     }
     setMessage(bad
@@ -3066,93 +3076,66 @@ export function BatchPanel({
               {!busy && pages.length > 0 && renderManualToolbar()}
 
               {pages.length > 0 && (
-                <figure className="preview-card" style={{'--preview-ratio': '3 / 4'} as React.CSSProperties}>
-                    <figcaption style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px'}}>
-                      <button
-                        type="button"
-                        className="ghost small"
-                        onClick={() => {
-                          setPreviewModalKind('clean');
-                          setPreviewModalOpen(true);
-                        }}
-                        aria-label="بزرگ‌نمایی"
-                        title="بزرگ‌نمایی پیوستهٔ فصل"
-                      >
-                        بزرگ‌نمایی تصویر 🔍
-                      </button>
-                      {pages.length > 10 && (
-                        <button
-                          type="button"
-                          className="ghost small"
-                          onClick={() => setShowAllCleanPages(prev => !prev)}
-                          style={{fontSize: '12px', padding: '3px 10px'}}
-                        >
-                          {showAllCleanPages ? 'بستن فهرست ▴' : `مشاهده همه (${pages.length} تصویر) ▾`}
-                        </button>
-                      )}
-                    </figcaption>
-                    <div
-                      className="preview-thumb is-scroll batch-stream clean-stream-zoom40"
-                      tabIndex={0}
-                      role="region"
-                      aria-label="پیش‌نمایش پیوستهٔ تصویرهای پاک‌شدهٔ فصل"
+                <div className="clean-preview-wrap">
+                  <div className="clean-preview-header">
+                    <button
+                      type="button"
+                      className="ghost small"
                       onClick={() => {
-                        if (manualTool !== 'none') return;
                         setPreviewModalKind('clean');
                         setPreviewModalOpen(true);
                       }}
+                      aria-label="بزرگ‌نمایی"
+                      title="بزرگ‌نمایی پیوستهٔ فصل"
                     >
-                      {(showAllCleanPages ? pages : pages.slice(0, 10)).map((p, idx) => (
-                        <div key={p.jobId} className="batch-stream-item" style={{position: 'relative'}}>
-                          <span className="batch-stream-tag">
-                            {idx + 1}. {p.name}
-                            {p.state === 'done' ? (isPlainPage(p) ? ' (بدون متن)' : ' ✓') : ''}
-                          </span>
-                          <img
-                            src={
-                              p.state === 'done'
-                                ? `/api/jobs/${p.jobId}/display/clean?width=800&v=${chapterVersion}`
-                                : `/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`
-                            }
-                            alt={`صفحهٔ ${p.page}: ${p.name}`}
-                            loading="lazy"
+                      بزرگ‌نمایی تصویر 🔍
+                    </button>
+                  </div>
+                  <div
+                    className="clean-stream-zoom40"
+                    tabIndex={0}
+                    role="region"
+                    aria-label="پیش‌نمایش پیوستهٔ تصویرهای پاک‌شدهٔ فصل"
+                  >
+                    {pages.map((p, idx) => (
+                      <div key={p.jobId} className="batch-stream-item" style={{position: 'relative'}}>
+                        <span className="batch-stream-tag">
+                          {idx + 1}. {p.name}
+                          {p.state === 'done' ? (isPlainPage(p) ? ' (بدون متن)' : ' ✓') : ''}
+                        </span>
+                        <img
+                          src={
+                            p.state === 'done'
+                              ? `/api/jobs/${p.jobId}/display/clean?width=800&v=${chapterVersion}`
+                              : `/api/jobs/${p.jobId}/display/ocr?width=800&v=${chapterVersion}`
+                          }
+                          alt={`صفحهٔ ${p.page}: ${p.name}`}
+                          loading="lazy"
+                        />
+                        {manualTool !== 'none' && (
+                          <ManualCleanOverlay
+                            jobId={p.jobId}
+                            pageIndex={idx}
+                            pageName={`صفحهٔ ${p.page}`}
+                            tool={manualTool}
+                            brushSize={brushSize}
+                            textPreview={customText}
+                            clearSignal={clearSignal}
+                            activeJobId={activeSelection?.jobId}
+                            onSelectionChange={sel => {
+                              if (sel) {
+                                setActiveSelection(sel);
+                              } else if (activeSelection?.jobId === p.jobId) {
+                                setActiveSelection(null);
+                              }
+                            }}
+                            onCleanDone={() => setChapterVersion(Date.now())}
                           />
-                          {manualTool !== 'none' && (
-                            <ManualCleanOverlay
-                              jobId={p.jobId}
-                              pageIndex={idx}
-                              pageName={`صفحهٔ ${p.page}`}
-                              tool={manualTool}
-                              brushSize={brushSize}
-                              textPreview={customText}
-                              clearSignal={clearSignal}
-                              activeJobId={activeSelection?.jobId}
-                              onSelectionChange={sel => {
-                                if (sel) {
-                                  setActiveSelection(sel);
-                                } else if (activeSelection?.jobId === p.jobId) {
-                                  setActiveSelection(null);
-                                }
-                              }}
-                              onCleanDone={() => setChapterVersion(Date.now())}
-                            />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                    {pages.length > 10 && (
-                      <div style={{display: 'flex', justifyContent: 'center', margin: '8px 0'}}>
-                        <button
-                          type="button"
-                          className="ghost small"
-                          onClick={() => setShowAllCleanPages(prev => !prev)}
-                          style={{fontSize: '12px', padding: '4px 14px'}}
-                        >
-                          {showAllCleanPages ? 'بستن فهرست ▴' : `مشاهده همه (${pages.length} تصویر) ▾`}
-                        </button>
+                        )}
                       </div>
-                    )}
-                  </figure>
+                    ))}
+                  </div>
+                </div>
               )}
 
               {!busy && (

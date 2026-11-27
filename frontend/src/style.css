@@ -2092,14 +2092,43 @@ button:disabled{cursor:default}
 }
 
 /* استایل پیش‌نمایش پاک‌سازی زوم ۴۰٪ */
+.clean-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  margin: 10px 0 16px;
+}
+.clean-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  max-width: 700px;
+  margin-bottom: 8px;
+}
 .clean-stream-zoom40 {
   display: flex;
   flex-direction: column;
   align-items: center;
   width: 100%;
+  max-width: 700px;
+  max-height: clamp(350px, 65vh, 750px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #050a0c;
+  border: 1px solid rgba(0, 255, 204, 0.2);
+  border-radius: 12px;
+  padding: 10px 0;
+  box-sizing: border-box;
 }
 .clean-stream-zoom40 .batch-stream-item {
   width: 40% !important;
   max-width: 40% !important;
-  margin: 0 auto;
+  margin: 0 auto !important;
+}
+.clean-stream-zoom40 .batch-stream-item img {
+  width: 100% !important;
+  height: auto !important;
+  display: block;
 }
